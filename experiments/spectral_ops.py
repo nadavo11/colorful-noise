@@ -4,7 +4,11 @@ Extends the Colorful-Noise (Cohen et al., SIGGRAPH 2026) frequency swap with:
   - colored noise generation (PSD ~ f^beta)
   - a generalized low-band conditioning that decouples phase / magnitude / DC
   - radial PSD measurement + the paper's band-wise whiteness metric
+  - FFT phase surgery: Hermitian uniform-phase sampling, phase quantization
+    with optional level omission (E6)
 """
+import math
+
 import torch
 
 
@@ -141,3 +145,82 @@ E2_CONDITIONS = {
     "mag_dc":     ("noise", "image", "image"),
     "dc_only":    ("noise", "noise", "image"),  # channel means alone
 }
+
+
+# ---------------------------------------------------------------------------
+# FFT phase surgery (E6)
+# ---------------------------------------------------------------------------
+
+def random_hermitian_phase(C, H, W, device="cuda", generator=None):
+    """Uniform iid phase field with exact Hermitian (conjugate) symmetry.
+
+    The FFT phase of a real white-Gaussian field is exactly uniform on
+    (-pi, pi] with the required phi(-f) = -phi(f) antisymmetry, so the
+    simplest correct construction is to take the angle of one.
+    Returns a (1, C, H, W) tensor (unshifted, DC at [0, 0]).
+    """
+    g = torch.randn(1, C, H, W, device=device, generator=generator)
+    return torch.fft.fft2(g).angle()
+
+
+def quantize_phase(x, k, omit=None, mode="zero", preserve_dc=True,
+                   return_stats=False):
+    """Quantize the FFT phase of x to k uniform levels, keeping magnitudes.
+
+    Works unshifted (fft2 convention). torch.round of the antisymmetric
+    phase stays antisymmetric (half-to-even is an odd function), so the
+    quantized spectrum remains Hermitian and ifft2(.).real discards only
+    ~1e-7 residue.
+
+    omit: int level index -- zero every bin whose quantized level falls in
+          {omit % k, (-omit) % k}; conjugate +/- pairs are zeroed together so
+          the drop mask is Hermitian-symmetric and the ifft stays real. For
+          k=8 the distinct pairs are levels {0, 1, 2, 3, 4(=pi)}; 0 and 4 are
+          self-conjugate singletons.
+    mode: 'zero' leaves the power hole (std drops ~ sqrt(kept_fraction));
+          'renorm' rescales the kept non-DC magnitudes per channel by
+          sqrt(P_total / P_remaining) (Parseval) so unit variance is
+          restored and only the phase hole differs from the control.
+    preserve_dc: restore the original DC bin and the 3 real Nyquist bins
+          after quantization/omission -- E0 showed the model is acutely
+          sensitive to the DC level, so it is held fixed by default.
+    k=None: early-return x unchanged (the k=inf control).
+    """
+    if k is None:
+        if return_stats:
+            return x, {"kept_fraction": 1.0, "power_ratio": 1.0,
+                       "imag_residue": 0.0}
+        return x
+    B, C, H, W = x.shape
+    F = torch.fft.fft2(x.float())
+    mag, phi = F.abs(), F.angle()
+    delta = 2 * math.pi / k
+    lvl = torch.round(phi / delta)
+    Fq = mag * torch.exp(1j * lvl * delta)
+
+    kept_fraction = 1.0
+    if omit is not None:
+        lv = lvl.long() % k
+        drop = (lv == omit % k) | (lv == (-omit) % k)
+        Fq = torch.where(drop, torch.zeros_like(Fq), Fq)
+        kept_fraction = float(1.0 - drop.float().mean())
+
+    if mode == "renorm":
+        pw = Fq.abs() ** 2
+        p_total = (mag ** 2).sum(dim=(-2, -1)) - mag[..., 0, 0] ** 2
+        p_rem = pw.sum(dim=(-2, -1)) - pw[..., 0, 0]
+        Fq = Fq * torch.sqrt(p_total / p_rem.clamp(min=1e-12))[..., None, None]
+
+    if preserve_dc:
+        for (i, j) in ((0, 0), (H // 2, 0), (0, W // 2), (H // 2, W // 2)):
+            Fq[..., i, j] = F[..., i, j]
+
+    out = torch.fft.ifft2(Fq)
+    if return_stats:
+        stats = {
+            "kept_fraction": kept_fraction,
+            "power_ratio": float((Fq.abs() ** 2).sum() / (F.abs() ** 2).sum()),
+            "imag_residue": float(out.imag.abs().max()),
+        }
+        return out.real, stats
+    return out.real

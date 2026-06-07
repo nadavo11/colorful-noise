@@ -14,6 +14,9 @@ SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified
 - `e1_colored.py` — generation from pure colored noise, β ∈ {−2,−1,0,+1,+2}.
 - `e4_zero_snr.py` — repeats key conditions on Playground v2.5 (EDM, terminal SNR ≈ 0)
   to test whether SDXL's terminal-SNR leak explains the method.
+- `e6_phase.py` — FFT-**phase** probes with kept Rayleigh magnitudes (power spectrum
+  stays exactly white): phase-rerandomization control, image-phase transplant sweep
+  p→1.0, phase quantization to k levels, quantize-and-omit-a-level (zero vs renorm).
 
 ## E2 condition names (phase, magnitude, DC of the lowest-α frequency band)
 | name | phase | mag | DC | meaning |
@@ -63,3 +66,23 @@ structure (coherent phase at white magnitude) is correctly destroyed.
 terminal SNR** (cf. Lin et al., "Common Diffusion Noise Schedules and Sample Steps Are
 Flawed") — its semantic, style-flexible reading of the low band does not transfer to
 corrected schedules.
+
+**E6** — Phase surgery on the white-noise FFT, magnitudes kept (PSD perfectly
+in-distribution at every step). **SDXL reads almost nothing from fine phase structure;
+it reads power.**
+- *P0*: rerandomizing **all** phases (Hermitian uniform) is indistinguishable from
+  fresh noise — confirms the exact Rayleigh × uniform factorization and calibrates the
+  harness.
+- *P2*: image-phase transplant at white amplitude transfers layout at every p, but
+  always in the flat-illustration register — already at the paper's p=0.015 (E2's
+  over-conditioning) and unchanged up to p=1.0, where the output is a near
+  seed-invariant flat poster of the image layout (seeds differ only via magnitudes).
+- *P4*: phase quantization is almost free: k=2 (binary phase ⇒ real, even-symmetric
+  spectrum) yields mirror/film-strip tiling artifacts, but **k=4 is already photoreal
+  and k≥8 is visually indistinguishable from continuous phase** — 2–3 bits of phase
+  suffice for the seed→image map.
+- *P4b*: zeroing one of 8 phase-level pairs (~25% of bins, broadband) gives dark foggy
+  silhouettes, but renormalizing the kept power restores full photorealism — the
+  **phase hole costs nothing; the power loss does all the damage** (power again,
+  cf. E0/E1). Self-conjugate singleton levels (0, π → 12.5% loss) survive even
+  un-renormalized.
