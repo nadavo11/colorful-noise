@@ -243,23 +243,39 @@ saturation; plus latent std/slope. `bandnorm.py` exposes `record_reference()`
 + `generate_bandnorm()`; driver `e9_bandnorm_classes.py` (`--part gen,analyze`,
 image-level caching → resumable).
 
-**Key results.** _(run in progress — interim, 4/6 classes; Δ = band-norm −
-plain cfg=3.5, 25 paired seeds)_
-- The "more detail" effect is **real but content-dependent**, not universal.
-  Δ`hf_frac`: animal **+0.0041**, portrait **+0.0042** (photos of subjects —
-  detail gain replicates), landscape **+0.0024** (smaller), urban_night
-  **−0.0121** (*reverses*). Working interpretation: band-norm helps when
-  detail is broadly-distributed texture (fur, skin) and hurts when detail
-  lives in concentrated high-power highlights (neon on dark) that the per-band
-  clamp smooths out.
-- Band-norm consistently tames contrast (Δ ≈ −0.03 to −0.05) and colorfulness
-  (largest for the most saturated classes: landscape −0.099, urban_night
-  −0.097), echoing E8's contrast reduction.
-- cfg=1.0 reference final-std varies widely by prompt (abstract 0.65,
-  landscape 0.72, portrait 0.82, animal 0.89, urban_night 0.90) — content
-  modulates the reference, so the transfer condition (cat ref everywhere) is a
-  genuine stress test; abstract (0.65, ~26% below the cat) is the biggest
-  mismatch.
+**Key results.** (Δ = band-norm − plain cfg=3.5, 25 paired seeds/class; all
+6 classes, tight error bars.) **The "more detail" effect is real but
+content-dependent — band-norm is a contrast/saturation tamer that *also*
+shifts detail toward fine texture only for the right content.**
+- Δ`hf_frac` (contrast-invariant detail): animal **+0.0041**, portrait
+  **+0.0042**, landscape **+0.0024**, watercolor **+0.0012** (positive) vs
+  urban_night **−0.0121**, abstract **−0.0057** (*reverses*). Band-norm adds
+  fine texture when detail is broadly distributed (fur, skin, foliage) and
+  removes it when detail lives in concentrated high-power structure (neon on
+  dark, bold painterly strokes) that the per-band clamp smooths out.
+- **Universal across all 6 classes:** band-norm reduces contrast (−0.028 to
+  −0.047), colorfulness (−0.009 to −0.151) and saturation (−0.04 to −0.28).
+  The taming is strongest for the most saturated classes (urban_night,
+  abstract, landscape). Absolute Laplacian sharpness drops for 5/6 classes
+  because it scales with contrast² — only `hf_frac` (energy *ratio*) isolates
+  detail from the contrast reduction, which is why the two diverge.
+- **Reference is content-specific.** cfg=1.0 reference final-std splits by
+  domain: photos 0.82–0.90 (portrait 0.82, animal 0.89, urban_night 0.90) vs
+  illustration/abstract 0.65–0.72 (abstract 0.65, watercolor 0.67, landscape
+  0.72). So a recorded reference encodes the prompt's natural power level.
+- **Transfer (E8 cat reference applied to every class) works but is not
+  free.** The cat clamp forces all classes to std ≈ 0.82, fine for the photo
+  classes (refdev ≤ 0.09) but a 0.12–0.21 mismatch for the low-power
+  illustration classes — there transfer pulls `hf_frac` *away* from the
+  class's own-reference result (landscape −0.0047, watercolor −0.0062),
+  i.e. over-powering a naturally-soft prompt erodes its texture. **One
+  universal reference is usable for in-domain (photo) prompts; out-of-domain
+  (illustration/abstract) prompts want their own 3-seed reference.**
+- **Practical recipe:** band-norm is best read as "cfg=3.5 composition with
+  cfg=1.0's calmer contrast/palette, plus a texture nudge on photographic
+  subjects." Use a per-prompt (or per-domain) reference; reserve it for
+  broadly-textured content and skip it where the look depends on bold color
+  or concentrated highlights.
 
 **Artifacts.** `results/e9/` (`grid_<class>.png`, `plots/ref_std_curves.png`,
 `plots/metrics_delta.png`, `report.json`, per-class `images/`, `latents/`,
