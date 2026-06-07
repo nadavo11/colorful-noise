@@ -303,3 +303,66 @@ def spectral_slope(centers, psd, fmin=0.02, fmax=0.4):
         xc = x - x.mean()
         slopes.append(float((xc * (y - y.mean())).sum() / (xc ** 2).sum()))
     return slopes
+
+
+# ---------------------------------------------------------------------------
+# Per-band PSD matching (E8)
+# ---------------------------------------------------------------------------
+
+def band_index_map(H, W, n_bins=24, device="cuda"):
+    """(H, W) long map: unshifted FFT bin -> radial band id in [0, n_bins).
+
+    Same binning recipe as radial_psd (linspace edges over radial_bins,
+    bucketize-1, clamped), so power measured with it and gains applied
+    through it land on identical bins. DC at [0, 0] -> band 0. The map is
+    Hermitian-symmetric (rr(-f) = rr(f)), so per-band gains preserve
+    spectrum symmetry."""
+    rr = radial_bins(H, W, device)
+    edges = torch.linspace(0, rr.max() + 1e-6, n_bins + 1, device=device)
+    idx = (torch.bucketize(rr.flatten(), edges) - 1).clamp(0, n_bins - 1)
+    return idx.view(H, W)
+
+
+def band_power(F2, idx_map, n_bins):
+    """Counts-weighted mean power per (channel, band).
+
+    F2: (C, H, W) real tensor of |fft2(x)|**2 values. Returns (C, n_bins)
+    float32. Same reduction as radial_psd (scatter_add / counts) without
+    the /(H*W) normalization -- gain ratios cancel it."""
+    C = F2.shape[0]
+    flat_idx = idx_map.flatten()
+    counts = torch.zeros(n_bins, device=F2.device).scatter_add_(
+        0, flat_idx, torch.ones_like(flat_idx, dtype=torch.float))
+    out = torch.zeros(C, n_bins, device=F2.device)
+    src = F2.float().reshape(C, -1)
+    for c in range(C):
+        out[c] = torch.zeros(n_bins, device=F2.device).scatter_add_(
+            0, flat_idx, src[c])
+    return out / counts.clamp(min=1)
+
+
+def psd_match(lat, ref_band_power, idx_map, n_bins, eps=1e-8,
+              return_stats=False):
+    """Scale the FFT magnitudes of lat per (channel, radial band) so each
+    band's mean power matches ref_band_power; phase untouched.
+
+    lat: (1, C, H, W), any float dtype (math in fp32, cast back on return).
+    ref_band_power: (C, n_bins) as produced by band_power.
+    gain[c, b] = sqrt(ref[c, b] / cur[c, b]); the gain map gain[c, idx_map]
+    is real and radially symmetric, hence Hermitian-preserving: the ifft
+    stays real (~1e-6 residue). The DC bin lives in band 0 and is scaled
+    with it -- channel means are part of the power story (E7), so they are
+    matched too."""
+    dt = lat.dtype
+    F = torch.fft.fft2(lat.float())
+    cur = band_power((F.abs() ** 2)[0], idx_map, n_bins)
+    gain = torch.sqrt(ref_band_power.to(cur.device) / cur.clamp(min=eps))
+    F = F * gain[:, idx_map][None]
+    out = torch.fft.ifft2(F)
+    if return_stats:
+        return out.real.to(dt), {
+            "imag_residue": float(out.imag.abs().max()),
+            "gain_min": float(gain.min()),
+            "gain_max": float(gain.max()),
+        }
+    return out.real.to(dt)
