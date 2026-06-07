@@ -1,0 +1,26 @@
+services:
+  dev:
+    image: ml-sandbox:base
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ..:/workspace                         # the ONLY host bind mount
+      - colorful-noise-home:/home/dev         # claude login, git PAT, shell history
+      - hf-cache:/home/dev/.cache/huggingface # model cache shared across projects
+      - /usr/local/bin/runai:/usr/local/bin/runai:ro # static host binary, read-only
+    environment:
+      - HF_HOME=/home/dev/.cache/huggingface
+      - TERM=xterm-256color   # docker exec defaults to 8-color xterm, hiding TUI menu highlights
+      - COLORTERM=truecolor
+
+volumes:
+  colorful-noise-home:
+  hf-cache:
+    external: true
