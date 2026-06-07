@@ -27,9 +27,39 @@ SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified
 | mag_dc | noise | image | image | |
 | dc_only | noise | noise | image | channel means alone |
 
-## Findings so far (E0, results/e0/)
-At the paper's defaults (α=0.015, γ=0.05) the mixed latent has a **low-frequency
-power notch** (~40× below white), not a natural-image peak — γ scales amplitudes, so
-power × γ². The injected signal is image *phase* + small per-channel *DC offsets*
-(e.g. cat_orange ch0: latent mean −2.55 → mix mean −0.127). A real peak only appears
-for γ ≳ 0.35.
+## Findings (2026-06-07, qualitative pass; all grids under results/)
+
+**E0** — At the paper's defaults (α=0.015, γ=0.05) the mixed latent has a
+**low-frequency power notch** (~40× below white), not a natural-image peak — γ scales
+amplitudes, so power × γ². The injected signal is image *phase* + small per-channel
+*DC offsets* (e.g. cat_orange ch0: latent mean −2.55 → mix mean −0.127). A real peak
+only appears for γ ≳ 0.35.
+
+**E2** — The mechanism decomposes cleanly on SDXL:
+**phase → layout, DC → palette, low-band amplitude → conditioning strength.**
+`phase_only` (perfectly white PSD) conditions layout *more* strongly than the paper's
+method, but at full white amplitude it over-conditions: outputs flip from photoreal to
+flat-illustration style. `mag_only` is spatially blind (global mood only).
+
+**E5** — Flat low-band magnitude `s·|noise|` + image phase + image DC, sweeping s:
+photoreal up to s=0.5, sharp transition to flat-graphic at s=1.0. **s=0.5 beats the
+paper's defaults on palette fidelity (green grass / blue sky preserved) at equal
+photorealism**, with a simpler spectral footprint (uniform 1.5%-of-bins attenuation).
+The natural-image magnitude profile is unnecessary.
+
+**E1** — Full-spectrum colored noise breaks SDXL in both directions:
+red/pink → prompt-ignoring color blobs (low-freq excess *rendered as signal*, nearly
+identical output across different prompts at the same seed); blue/violet → flat gray
+with surviving high-frequency texture. Output PSDs stay distorted — the model does not
+restore a natural spectrum. SDXL only tolerates *small-budget low-band* deviations.
+
+**E4** — On Playground v2.5 (EDM, terminal SNR ≈ 0, same architecture):
+the paper's method **fails catastrophically — it renders the conditioning image
+verbatim** (prompt ignored); `dc_only` → solid black; `phase_only` → no effect at all;
+violet noise → perfect generations (unlike SDXL). A zero-SNR model acts as an honest
+posterior: per-bin energy ≫ noise-typical is copied out literally, noise-typical
+structure (coherent phase at white magnitude) is correctly destroyed.
+**Colorful-Noise's photoreal-yet-conditioned regime is an exploit of SDXL's non-zero
+terminal SNR** (cf. Lin et al., "Common Diffusion Noise Schedules and Sample Steps Are
+Flawed") — its semantic, style-flexible reading of the low band does not transfer to
+corrected schedules.
