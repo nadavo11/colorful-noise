@@ -24,6 +24,11 @@ SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified
 - `e8_psd_clamp.py` — causal test of E7: generate at cfg=3.5 while clamping the
   latent's PSD to the cfg=1.0 per-step reference at every denoising step
   (per-band magnitude matching vs a global total-power scalar).
+- `bandnorm.py` — the E8 band-normalization packaged as a reusable method
+  (`record_reference()` + `generate_bandnorm()`).
+- `e9_bandnorm_classes.py` — band-norm as a generation technique across 6 prompt
+  classes (paired vs plain cfg=3.5 + cat-reference transfer); image-detail
+  metrics + grids.
 
 ## E2 condition names (phase, magnitude, DC of the lowest-α frequency band)
 | name | phase | mag | DC | meaning |

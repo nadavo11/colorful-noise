@@ -220,3 +220,47 @@ guidance look — PSD clamping does NOT reproduce the cfg=1 appearance.**
 
 **Artifacts.** `results/e8/` (`grid_e8.png`, `plots/perstep_std.png`,
 `ref_psd.pt`, `report.json`, `images/`).
+
+---
+
+## E9 — Band-normalized generation as a method, across prompt classes
+
+**Motivation.** In E8 the band-normalized cat read as *more finely detailed*
+than plain cfg=3.5 (the clamp keeps the guidance look but trades punchy
+contrast for texture). E9 turns the E8 intervention into a reusable method
+(`bandnorm.py`) and asks whether the detail effect generalizes beyond animals
+— across photo and non-photo classes — and whether one *universal* reference
+suffices or each prompt needs its own (the transfer condition).
+
+**Setup.** FLUX.1-dev (NF4 + offload), 28 steps, 6 prompt classes
+(animal, portrait, landscape, urban_night, abstract, watercolor). Per class:
+3 cfg=1.0 reference seeds → per-step per-(channel, 24-band) power reference;
+25 plain cfg=3.5 + 25 band-norm at identical seeds (paired); 2 transfer seeds
+(band-norm driven by E8's *cat* reference). Paired image metrics: Laplacian
+sharpness, image-FFT high-frequency fraction `hf_frac` (contrast-invariant
+detail measure), RMS contrast, Hasler–Suesstrunk colorfulness, mean
+saturation; plus latent std/slope. `bandnorm.py` exposes `record_reference()`
++ `generate_bandnorm()`; driver `e9_bandnorm_classes.py` (`--part gen,analyze`,
+image-level caching → resumable).
+
+**Key results.** _(run in progress — interim, 4/6 classes; Δ = band-norm −
+plain cfg=3.5, 25 paired seeds)_
+- The "more detail" effect is **real but content-dependent**, not universal.
+  Δ`hf_frac`: animal **+0.0041**, portrait **+0.0042** (photos of subjects —
+  detail gain replicates), landscape **+0.0024** (smaller), urban_night
+  **−0.0121** (*reverses*). Working interpretation: band-norm helps when
+  detail is broadly-distributed texture (fur, skin) and hurts when detail
+  lives in concentrated high-power highlights (neon on dark) that the per-band
+  clamp smooths out.
+- Band-norm consistently tames contrast (Δ ≈ −0.03 to −0.05) and colorfulness
+  (largest for the most saturated classes: landscape −0.099, urban_night
+  −0.097), echoing E8's contrast reduction.
+- cfg=1.0 reference final-std varies widely by prompt (abstract 0.65,
+  landscape 0.72, portrait 0.82, animal 0.89, urban_night 0.90) — content
+  modulates the reference, so the transfer condition (cat ref everywhere) is a
+  genuine stress test; abstract (0.65, ~26% below the cat) is the biggest
+  mismatch.
+
+**Artifacts.** `results/e9/` (`grid_<class>.png`, `plots/ref_std_curves.png`,
+`plots/metrics_delta.png`, `report.json`, per-class `images/`, `latents/`,
+`ref_psd.pt`).
