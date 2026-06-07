@@ -92,7 +92,7 @@ def paper_low_mask(H, W, p, device):
 
 
 def condition_latent(noise, img_latent, p=0.015, gamma=0.05,
-                     phase="image", mag="image", dc="image"):
+                     phase="image", mag="image", dc="image", mag_scale=1.0):
     """Generalized version of fft_radial_frequency_swap.
 
     Inside the lowest-p radial band, builds coefficients M * exp(i*phi) from:
@@ -111,7 +111,7 @@ def condition_latent(noise, img_latent, p=0.015, gamma=0.05,
 
     low = paper_low_mask(H, W, p, noise.device)[None, None]
 
-    M = gamma * fft_i.abs() if mag == "image" else fft_n.abs()
+    M = mag_scale * (gamma * fft_i.abs() if mag == "image" else fft_n.abs())
     phi = fft_i.angle() if phase == "image" else fft_n.angle()
     low_coeffs = M * torch.exp(1j * phi)
 
