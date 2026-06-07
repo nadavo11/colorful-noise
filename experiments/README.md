@@ -17,6 +17,10 @@ SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified
 - `e6_phase.py` — FFT-**phase** probes with kept Rayleigh magnitudes (power spectrum
   stays exactly white): phase-rerandomization control, image-phase transplant sweep
   p→1.0, phase quantization to k levels, quantize-and-omit-a-level (zero vs renorm).
+- `e7_flux_phase.py` — FLUX.1-dev (guidance-distilled): phase/spectrum statistics of
+  the **output** latents (16ch) at cfg=1 vs 3.5 across seeds, and band-split phase
+  interpolation between two generated latents decoded through the Flux VAE.
+  Needs HF auth (gated repo) + bitsandbytes (NF4 transformer fits the 24GB A5000).
 
 ## E2 condition names (phase, magnitude, DC of the lowest-α frequency band)
 | name | phase | mag | DC | meaning |
@@ -86,3 +90,25 @@ it reads power.**
   **phase hole costs nothing; the power loss does all the damage** (power again,
   cf. E0/E1). Self-conjugate singleton levels (0, π → 12.5% loss) survive even
   un-renormalized.
+
+**E7** — FLUX.1-dev *output* latents (16ch, 1024px → 128×128), "A photo of cat in the
+park", 10 seeds × guidance ∈ {1.0, 3.5} (distilled guidance, no true CFG).
+- *cfg=1 vs 3.5*: cfg=1 outputs are washed-out/low-contrast, and in the latents this is
+  a **power story, not a slope-steepening**: latent std 0.83 vs 1.17, low-frequency
+  power ~3× lower, radial slope −1.5 vs −2.0 (both converge to the same flat
+  high-frequency floor ≈0.1). **Distilled guidance pumps low-frequency amplitude**
+  (contrast / saturation / composition energy); per-bin phase marginals stay uniform
+  (flatness ≈0.003) and phase⊥magnitude (corr ≈0.005) in both groups.
+- *Cross-seed phase coherence* sits at the N=10 null (0.28) for all but the lowest
+  radial bin, where R = 0.45 (cfg 3.5) vs 0.35 (cfg 1.0): seeds share only gross
+  composition (centered cat, grass below, bokeh above), guidance amplifies that shared
+  layout, and everything above f≈0.05 is seed-independent. Small uptick at the highest
+  bin in both groups (fixed Nyquist/grid structure, likely VAE/packing related).
+- *Band-split phase interpolation* (phase from A in the lowest-c band, from B outside,
+  magnitudes fixed, VAE-decode only): the classic pixel-domain phase-dominance result
+  holds **in Flux latent space** — c=0 (all-B phase, A magnitudes) reads as cat B with
+  only a texture flavor from A's magnitudes; by **c ≈ 0.1–0.2 identity flips to A**,
+  with the partner's high-band phase surviving only as ghost contours; the magnitude
+  source mostly sets palette/contrast. Latent identity lives in low-band phase —
+  the complement of E6's input-side result (input phase ignored, output phase is
+  where the image lives).

@@ -224,3 +224,82 @@ def quantize_phase(x, k, omit=None, mode="zero", preserve_dc=True,
         }
         return out.real, stats
     return out.real
+
+
+# ---------------------------------------------------------------------------
+# Output-latent phase analysis + band-split phase hybrids (E7)
+# ---------------------------------------------------------------------------
+
+def phase_coherence(phis, n_bins=24):
+    """Cross-sample phase coherence, radially averaged.
+
+    phis: (N, C, H, W) stacked FFT phases (unshifted), one per sample/seed.
+    Per bin, the resultant length R = |mean_n exp(i*phi_n)|: 1 = identical
+    phase across samples, ~R_null for independent uniform phases.
+    Returns (centers, R[C, n_bins], R_null) with
+    R_null = sqrt(pi)/(2*sqrt(N)), the Rayleigh mean for N uniform phases.
+    """
+    N, C, H, W = phis.shape
+    R = torch.exp(1j * phis.float()).mean(dim=0).abs()  # (C, H, W)
+    rr = radial_bins(H, W, phis.device)
+    edges = torch.linspace(0, rr.max() + 1e-6, n_bins + 1, device=phis.device)
+    idx = (torch.bucketize(rr.flatten(), edges) - 1).clamp(0, n_bins - 1)
+    counts = torch.zeros(n_bins, device=phis.device).scatter_add_(
+        0, idx, torch.ones_like(idx, dtype=torch.float))
+    prof = torch.zeros(C, n_bins, device=phis.device)
+    flat = R.reshape(C, -1)
+    for c in range(C):
+        prof[c] = torch.zeros(n_bins, device=phis.device).scatter_add_(
+            0, idx, flat[c])
+    prof = prof / counts.clamp(min=1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    r_null = math.sqrt(math.pi) / (2 * math.sqrt(N))
+    return centers.cpu(), prof.cpu(), r_null
+
+
+def band_phase_swap(lat_a, lat_b, c, mag_from="A", dc_from=None):
+    """Hybrid spectrum: phase from A inside the lowest-c radial band, phase
+    from B outside; magnitude everywhere from `mag_from` ('A' or 'B').
+
+    c=0 -> pure-B phase, c=1.0 -> pure-A phase (the interpolation knob).
+    Works unshifted with a radial-quantile mask built on fftfreq coordinates
+    (same lowest-c-fraction-by-area semantics as paper_low_mask, but exactly
+    Hermitian-symmetric -- the shifted linspace grid is not, for even sizes
+    -- so conjugate bins never straddle the cutoff and the ifft stays real).
+    The DC bin (magnitude AND phase, i.e. the per-channel mean) comes from
+    `dc_from or mag_from`. Returns the complex ifft -- callers take .real
+    and may record .imag residue (same convention as e6's phase_rerand).
+    """
+    assert lat_a.shape == lat_b.shape
+    B, C, H, W = lat_a.shape
+    fft_a = torch.fft.fft2(lat_a.float())
+    fft_b = torch.fft.fft2(lat_b.float())
+
+    if c > 0:
+        rr = radial_bins(H, W, lat_a.device)
+        low = (rr <= torch.quantile(rr.flatten(), c)).float()[None, None]
+    else:
+        low = torch.zeros(1, 1, H, W, device=lat_a.device)
+    phi = fft_a.angle() * low + fft_b.angle() * (1.0 - low)
+    M = fft_a.abs() if mag_from == "A" else fft_b.abs()
+    mix = M * torch.exp(1j * phi)
+
+    # DC bin at [0,0] (unshifted); take it wholesale from one image
+    dc_src = fft_a if (dc_from or mag_from) == "A" else fft_b
+    mix[..., 0, 0] = dc_src[..., 0, 0]
+
+    return torch.fft.ifft2(mix)
+
+
+def spectral_slope(centers, psd, fmin=0.02, fmax=0.4):
+    """Per-channel log-log linear fit of a radial_psd output over
+    fmin <= f <= fmax. Returns a list of slopes (0 = white)."""
+    centers, psd = centers.float(), psd.float()
+    sel = (centers >= fmin) & (centers <= fmax) & (psd > 0).all(dim=0)
+    x = torch.log(centers[sel])
+    slopes = []
+    for c in range(psd.shape[0]):
+        y = torch.log(psd[c, sel])
+        xc = x - x.mean()
+        slopes.append(float((xc * (y - y.mean())).sum() / (xc ** 2).sum()))
+    return slopes
