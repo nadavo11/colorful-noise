@@ -257,6 +257,69 @@ def phase_coherence(phis, n_bins=24):
     return centers.cpu(), prof.cpu(), r_null
 
 
+def flatness(phi, bins=32):
+    """std/mean of the FFT-phase histogram over [-pi, pi] (0 = uniform).
+
+    The marginal phase-uniformity metric used by E6/E7 (white noise -> ~0).
+    `phase_histogram` returns the same quantity resolved per (channel, band)."""
+    h = torch.histc(phi.detach().flatten().float().cpu(), bins=bins,
+                    min=-math.pi, max=math.pi)
+    return float(h.std() / h.mean())
+
+
+def phase_histogram(phi, idx_map, n_bins_band=24, n_bins_hist=64):
+    """Per-(channel, band) FFT-phase distribution on [-pi, pi] + circular stats.
+
+    phi: (C, H, W) FFT phase (unshifted, DC at [0,0]), e.g. fft2(lat).angle().
+    idx_map: (H, W) long radial-band map from band_index_map (same H, W), so
+             bands match radial_psd / psd_match exactly (DC -> band 0).
+
+    Returns a dict (all tensors on cpu):
+      hist:  (C, n_bins_band, n_bins_hist) -- each row is the phase histogram of
+             one (channel, band), L1-normalized over [-pi, pi]; empty bands are
+             left all-zero.
+      edges: (n_bins_hist + 1,) shared histogram bin edges spanning [-pi, pi].
+      flat:  (C, n_bins_band) std/mean of each histogram row (0 = uniform;
+             empty/degenerate rows -> 0). Same definition as `flatness`.
+      R:     (C, n_bins_band) mean resultant length |mean exp(i*phi)| per band
+             (0 = uniform marginal, 1 = a single concentrated phase).
+
+    A uniform marginal (flat ~ 0, R ~ 0) is the white-noise null; deviations
+    (typically only the DC / lowest band) flag structured phase. Note marginal
+    uniformity does NOT mean phase is uninformative -- image structure lives in
+    cross-frequency phase *relationships* (see phase_coherence, E7)."""
+    C, H, W = phi.shape
+    dev = phi.device
+    flat_idx = idx_map.reshape(-1).to(dev)
+    counts = torch.zeros(n_bins_band, device=dev).scatter_add_(
+        0, flat_idx, torch.ones_like(flat_idx, dtype=torch.float))
+    edges = torch.linspace(-math.pi, math.pi, n_bins_hist + 1, device=dev)
+    phi_f = phi.reshape(C, -1).float()
+
+    hist = torch.zeros(C, n_bins_band, n_bins_hist, device=dev)
+    R = torch.zeros(C, n_bins_band, device=dev)
+    flat_stat = torch.zeros(C, n_bins_band, device=dev)
+    for c in range(C):
+        pb = (torch.bucketize(phi_f[c], edges) - 1).clamp(0, n_bins_hist - 1)
+        comb = flat_idx * n_bins_hist + pb
+        h = torch.zeros(n_bins_band * n_bins_hist, device=dev).scatter_add_(
+            0, comb, torch.ones_like(comb, dtype=torch.float))
+        h = h.view(n_bins_band, n_bins_hist)
+        ex = torch.zeros(n_bins_band, device=dev).scatter_add_(
+            0, flat_idx, torch.cos(phi_f[c]))
+        ey = torch.zeros(n_bins_band, device=dev).scatter_add_(
+            0, flat_idx, torch.sin(phi_f[c]))
+        R[c] = torch.sqrt(ex ** 2 + ey ** 2) / counts.clamp(min=1)
+        row_sum = h.sum(dim=1, keepdim=True)
+        hist[c] = h / row_sum.clamp(min=1)
+        m = hist[c].mean(dim=1)
+        flat_stat[c] = torch.where(
+            (m > 0) & (row_sum.squeeze(1) > 0),
+            hist[c].std(dim=1) / m.clamp(min=1e-12), torch.zeros_like(m))
+    return {"hist": hist.cpu(), "edges": edges.cpu(),
+            "flat": flat_stat.cpu(), "R": R.cpu()}
+
+
 def band_phase_swap(lat_a, lat_b, c, mag_from="A", dc_from=None):
     """Hybrid spectrum: phase from A inside the lowest-c radial band, phase
     from B outside; magnitude everywhere from `mag_from` ('A' or 'B').
