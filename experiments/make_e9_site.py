@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import RESULTS
 from e9_bandnorm_classes import CLASSES, METRICS
 
-OUT = os.path.join(RESULTS, "e9")
-SITE = os.path.join(OUT, "site")
+OUT = os.path.join(RESULTS, "e9")   # SBN data source (report/clip/universal/...)
+SITE = os.path.join(RESULTS, "site")  # multi-experiment site (E9-E12), not e9-local
 
 # Neutral, externally-framed per-class context.
 CLASS_META = {
@@ -325,7 +325,7 @@ function renderMotivation(){
   intensity measure — Fourier power, latent std, the latent's spectral norm, and
   low-band power — rises monotonically with <code>w</code>: from the unguided field to the
   strongest setting the latent gains <b>${fmt2(ratio,2)}×</b> in Fourier power.</p>
-  <img class="plot" src="../plots/cfg_power.png" alt="spectral intensity vs CFG"
+  <img class="plot" src="../e9/plots/cfg_power.png" alt="spectral intensity vs CFG"
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'cfg_power.png not found'}))">
   <p class="muted small">Spectral intensity measures vs the true-CFG scale. The green
   dashed line / band is the real-image level${real?` — it falls near <b>w ≈ ${nearestW}</b>,
@@ -333,7 +333,7 @@ function renderMotivation(){
   statistics, overshooting past them at high <code>w</code>.</p>
 
   <h3>The whole radial spectrum lifts — not just the slope</h3>
-  <img class="plot" src="../plots/cfg_psd.png" alt="radial PSD vs CFG"
+  <img class="plot" src="../e9/plots/cfg_psd.png" alt="radial PSD vs CFG"
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'cfg_psd.png not found'}))">
   <p class="muted small">Radially-averaged latent PSD per guidance scale, with real photos
   (dashed). Higher <code>w</code> ⇒ more power across the whole band; the real-image curve
@@ -411,7 +411,7 @@ function renderMethod(){
   runs of the prompt. Each kind of content settles at its own natural power level —
   photos high, illustration/abstract lower — which is why the reference is mildly
   content-specific (see <b>Universal reference</b> for using one general profile instead).</p>
-  <img class="plot" src="../plots/ref_std_curves.png" alt="per-step reference power curves"
+  <img class="plot" src="../e9/plots/ref_std_curves.png" alt="per-step reference power curves"
        onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'reference curves not found'}))">
   <p class="muted small">Per-step latent power (std) of each content type's weak-guidance reference.</p>`;
 }
@@ -539,7 +539,7 @@ function renderCompare(){
   <div id="clsblurb" class="card muted small"></div>`;
 }
 function tile(key, cond, seed){
-  const src = `../${key}/images/${cond.key}_s${seed}.png`;
+  const src = `../e9/${key}/images/${cond.key}_s${seed}.png`;
   let clip = "";
   if(clipt){
     const arr = ((clipt["class/"+key]||{}).per_seed||{})[cond.key];
@@ -649,11 +649,11 @@ function wireColorCorr(){
     const k=cls.value, m=meth.value, s=+seed.value; sv.textContent=s;
     trip.innerHTML =
       ccTile("Band-normalized","the washed-out starting frame",
-             `../${k}/images/bandnorm_s${s}.png`, `bandnorm_s${s}`) +
+             `../e9/${k}/images/bandnorm_s${s}.png`, `bandnorm_s${s}`) +
       ccTile(ccLabel(m),"palette recovered on the rendered frame",
-             `../../e11/${k}/${m}/${m}_s${s}.png`, `${m}_s${s}`) +
+             `../e11/${k}/${m}/${m}_s${s}.png`, `${m}_s${s}`) +
       ccTile("Full guidance","the palette target",
-             `../${k}/images/cfg3.5_s${s}.png`, `cfg3.5_s${s}`);
+             `../e9/${k}/images/cfg3.5_s${s}.png`, `cfg3.5_s${s}`);
     tbl.innerHTML = ccTable(k, m);
   }
   cls.onchange=draw; meth.onchange=draw; seed.oninput=draw; draw();
@@ -682,7 +682,7 @@ function renderQuant(){
   content-dependent one — positive for broadly-textured photos, negative where detail
   is concentrated in highlights (urban night, abstract). Laplacian sharpness scales with
   contrast², so it falls even when fine texture rises — only hf_frac isolates detail.</p>
-  <img class="plot" src="../plots/metrics_delta.png" alt="metric deltas"
+  <img class="plot" src="../e9/plots/metrics_delta.png" alt="metric deltas"
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'delta plot not found'}))">
   <hr>
   <h3>CLIP-T — does SBN stay on-prompt?</h3>
@@ -754,7 +754,7 @@ function wireUniversal(){
         trip=document.getElementById("utrip");
   function utile(key,cond,label,desc,seed){
     return `<div class="tile"><div class="imgwrap">
-      <img loading="lazy" src="../${key}/images/${cond}_s${seed}.png"
+      <img loading="lazy" src="../e9/${key}/images/${cond}_s${seed}.png"
         onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>image generating…<br><span class=mono>${cond}_s${seed}</span></div>'">
       </div><div class="cap"><b>${label}</b><div class="d">${desc}</div></div></div>`;
   }
@@ -818,7 +818,7 @@ function wireFreq(){
   function draw(){
     const gn=gains[+g.value]; gv.textContent=gn.toFixed(2); sv.textContent=seed.value;
     const t=tgt.value, s=+seed.value, tg=tag(t,gn);
-    const src=`../freqctrl/${cls.value}/images/${tg}_s${s}.png`;
+    const src=`../e9/freqctrl/${cls.value}/images/${tg}_s${s}.png`;
     const c=(cells()[tg]||{});
     const metric = t==="high" ? c.hf_frac : c.lowband_power;
     const mlabel = t==="high" ? "hf_frac (detail)" : "low-band power (structure)";
@@ -927,13 +927,13 @@ function renderModels(){
       <input type="range" id="mseed" min="0" max="${sd35pairs()-1}" value="0" style="width:100%"></div>
   </div>
   <div id="mtrip" class="triptych"></div>
-  <img class="plot" src="../../e12/plots/ref_std_curve.png" alt="SD3.5 reference std curve"
+  <img class="plot" src="../e12/plots/ref_std_curve.png" alt="SD3.5 reference std curve"
     onerror="this.style.display='none'">`;
 
   return intro + table + compare;
 }
 function mtile(cond, seed){
-  const src = `../../e12/portrait/images/${cond.key}_s${seed}.png`;
+  const src = `../e12/portrait/images/${cond.key}_s${seed}.png`;
   return `<div class="tile"><div class="imgwrap">
       <img loading="lazy" src="${src}" alt="${cond.label} seed ${seed}"
         onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>image generating…<br><span class=mono>${cond.key}_s${seed}</span></div>'">
