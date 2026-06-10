@@ -235,6 +235,9 @@ TEMPLATE = r"""<!DOCTYPE html>
   .tile .cap .clip{font-family:ui-monospace,monospace;font-size:12px;color:var(--accent);margin-top:4px}
   .tile .imgwrap{position:relative;aspect-ratio:1/1;background:#0b0e13;display:flex;align-items:center;justify-content:center}
   .tile img{width:100%;height:100%;object-fit:cover;display:block}
+  /* wide figures (matplotlib plots, multi-col grids): show whole image, no crop */
+  .tile.fig .imgwrap{aspect-ratio:auto;min-height:0}
+  .tile.fig img{height:auto;object-fit:contain}
   .ph{color:var(--muted);font-size:12.5px;text-align:center;padding:20px}
   .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:5px;font-weight:600}
   .b-up{background:rgba(63,185,80,.16);color:var(--good)}
@@ -998,7 +1001,7 @@ function renderCost(){
 /* ===================== PHASE & IDENTITY ===================== */
 const phaseKeys = rep => rep ? Object.keys(rep).filter(k=>k.startsWith("class/")).map(k=>k.slice(6)) : [];
 const pmean = a => a.length ? a.reduce((s,x)=>s+(+x||0),0)/a.length : null;
-const phImg = (p,cap) => `<div class="tile"><div class="imgwrap"><img loading="lazy" src="${S(p)}"
+const phImg = (p,cap) => `<div class="tile fig"><div class="imgwrap"><img loading="lazy" src="${S(p)}"
     onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>figure pending<br><span class=mono>${p}</span></div>'">
   </div><div class="cap">${cap}</div></div>`;
 
