@@ -187,9 +187,12 @@ def run(args, classes, out):
         save_grid([shift_imgs, off_imgs], ["ramp(=shift)", "const offset"],
                   [f"d={d}" for d in SHIFTS] + [""],
                   f"{out}/grid_{name}_shift.png")
-        save_grid([noise_imgs["low"], noise_imgs["high"]],
+        # prepend the unmodified decode as an eps=0 reference column so the
+        # identity erosion is visible relative to the original
+        save_grid([[base] + noise_imgs["low"], [base] + noise_imgs["high"]],
                   ["low-band noise", "high-band noise"],
-                  [f"eps={e}" for e in EPS], f"{out}/grid_{name}_noise.png")
+                  ["orig (eps=0)"] + [f"eps={e}" for e in EPS],
+                  f"{out}/grid_{name}_noise.png")
         del lat
         torch.cuda.empty_cache()
 
