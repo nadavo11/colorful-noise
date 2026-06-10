@@ -94,7 +94,12 @@ and an `EXPERIMENTS.md` entry after the run. Target model: **FLUX.1-dev** output
 (Numbering note: E10–E11 are unrelated experiments — `e10_cfg_spectral`,
 `e11_color_correct` — so this phase line starts at E12.)
 
-### E12 — Phase distributions *(implemented: `e12_phase_dist.py`)*
+### E12 — Phase distributions *(DONE: `e12_phase_dist.py`)*
+**Result:** confirmed as expected. Phase marginal is the white-noise null — global flatness
+≈0.006, per-band resultant length R≈0 at mid/high (0.029), only faintly elevated in the lowest
+band (R_low≈0.08). Cross-seed coherence rises above the N=3 null (0.512) **only** in the lowest
+band (≈0.676), ~identical across classes. So the signal is low-band cross-frequency *structure*,
+not the marginal — the baseline E13/E14 then exploit. See `EXPERIMENTS.md` E12.
 - **Question:** Is the phase marginal ever non-uniform, and where (band / channel / class)?
 - **Method:** generate `seeds` latents per class; compute `phase_histogram` per (channel,
   band) → per-band heatmaps, flatness-vs-band and resultant-length-vs-band curves, per-class
@@ -181,6 +186,7 @@ full spectrum the margin is content-graded. Perturbing it parametrically (E14) l
 low-band phase noise destroys identity while high-band phase is near-free, and a frequency-linear
 ramp is just a spatial shift. Clustering (E15) shows the manipulation→image map is structured as
 a *magnitude-of-effect axis* (distance from unmodified) rather than discrete classes — CLIP space
-is content-dominated, so only the radial ordering is manipulation-consistent. **Open next:**
-E13's content-grading (layout- vs palette-identity prompts) and the unrun E12 baseline are the
-remaining loose ends.
+is content-dominated, so only the radial ordering is manipulation-consistent. The E12 baseline
+(phase marginal = white-noise null; structure only in low-band cross-seed coherence) closes the
+loop. **Open next:** E13's content-grading — why phase dominance is clean for layout-defined
+prompts but ties for palette/texture-defined ones (e.g. `abstract`).

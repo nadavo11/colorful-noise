@@ -7,13 +7,24 @@ them. The rendered page contains no internal experiment naming.
 
     python make_e9_site.py
 """
+import argparse
+import base64
+import glob
 import json
 import os
 import sys
+from io import BytesIO
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import RESULTS
 from e9_bandnorm_classes import CLASSES, METRICS
+
+# Saturation is the recommended practical (cheap, single-pass) color correction;
+# pick the factor whose colorfulness lands closest to full guidance without
+# over-saturating. Chosen empirically from results/e11/report.json (sat 1.4 vs
+# 1.8): 1.4 has the smaller mean gap to the cfg=3.5 colorfulness and overshoots
+# far less, so it reads natural rather than garish.
+CC_BEST = "sat1.4"
 
 OUT = os.path.join(RESULTS, "e9")   # SBN data source (report/clip/universal/...)
 SITE = os.path.join(RESULTS, "site")  # multi-experiment site (E9-E12), not e9-local
@@ -54,12 +65,71 @@ def strip_internal(obj):
     return obj
 
 
+def _data_uri(abspath, max_px, quality):
+    """Downscale to max_px on the long side and re-encode as base64 JPEG."""
+    from PIL import Image
+    im = Image.open(abspath).convert("RGB")
+    if max(im.size) > max_px:
+        r = max_px / max(im.size)
+        im = im.resize((round(im.width * r), round(im.height * r)))
+    buf = BytesIO()
+    im.save(buf, "JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def build_img_map(data, max_px=512, quality=72):
+    """Embed every image the page can reference, keyed by results-relative path
+    (matching the JS S(...) keys). Walks only the referenced subtrees and filters
+    out conditions/dirs the page never shows (xfer/cat conds, e11 grids)."""
+    img, root = {}, RESULTS
+
+    def add(abspath):
+        rel = os.path.relpath(abspath, root).replace(os.sep, "/")
+        if rel not in img:
+            img[rel] = _data_uri(abspath, max_px, quality)
+
+    # e9 plots (the four referenced) + e10/e9 plot dir
+    for f in ("cfg_power", "cfg_psd", "ref_std_curves", "metrics_delta"):
+        p = os.path.join(root, "e9", "plots", f"{f}.png")
+        if os.path.exists(p):
+            add(p)
+    # e9 per-class condition images shown in Compare / Universal
+    keep = ("cfg1.0_", "cfg3.5_", "bandnorm_", "uninorm_")
+    for c in data["classes"]:
+        for p in glob.glob(os.path.join(root, "e9", c["key"], "images", "*.png")):
+            if os.path.basename(p).startswith(keep):
+                add(p)
+    # e9 frequency-control sweep images
+    for p in glob.glob(os.path.join(root, "e9", "freqctrl", "*", "images", "*.png")):
+        add(p)
+    # e11 corrected frames (every method dir, skip the grids contact sheets)
+    cc = data.get("colorcorr") or {}
+    for k in cc:
+        for p in glob.glob(os.path.join(root, "e11", k, "*", "*.png")):
+            if os.sep + "grids" + os.sep not in p:
+                add(p)
+    # phase thread (E12-E15) plots + representative grids
+    for f in ("e12/plots/coherence_radial.png", "e12/plots/global_hist.png",
+              "e13/plots/identity_phase_vs_mag.png", "e13/grid_animal.png",
+              "e13/grid_abstract.png",
+              "e14/plots/identity_vs_eps.png", "e14/grid_landscape_noise.png",
+              "e15/plots/proj_by_manipulation.png", "e15/plots/proj_by_class.png"):
+        p = os.path.join(root, f)
+        if os.path.exists(p):
+            add(p)
+    return img
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--standalone", action="store_true",
+                    help="also write index_standalone.html with images inlined")
+    ap.add_argument("--max-px", type=int, default=512)
+    ap.add_argument("--quality", type=int, default=72)
+    args = ap.parse_args()
+
     os.makedirs(SITE, exist_ok=True)
     report = strip_internal(load_json(os.path.join(OUT, "report.json")) or {})
-    # E12: same band-norm method on SD3.5-large, a true-CFG (non-distilled)
-    # flow model -- the control for the distilled-guidance Flux portrait.
-    sd35 = load_json(os.path.join(RESULTS, "e12", "report.json"))
     data = {
         "report": report,
         "cfgspec": load_json(os.path.join(RESULTS, "e10", "cfg_spectral.json")),
@@ -67,12 +137,14 @@ def main():
         "universal": load_json(os.path.join(OUT, "universal.json")),
         "freqctrl": load_json(os.path.join(OUT, "freqctrl.json")),
         "cost": load_json(os.path.join(OUT, "cost.json")),
-        "sd35": sd35,
         # E11: cheap image-level color correction of SBN frames toward the
         # full-guidance palette (keyed by bare class name, no internal naming).
         "colorcorr": load_json(os.path.join(RESULTS, "e11", "report.json")),
-        # Flux portrait deltas for the side-by-side cross-model contrast.
-        "fluxportrait": report.get("class/portrait", {}),
+        # Phase thread (E12-E15): the complement of the band-norm power story.
+        "phaseDist":  load_json(os.path.join(RESULTS, "e12", "report.json")),
+        "phaseSwap":  load_json(os.path.join(RESULTS, "e13", "report.json")),
+        "phaseFn":    load_json(os.path.join(RESULTS, "e14", "report.json")),
+        "phaseClust": load_json(os.path.join(RESULTS, "e15", "report.json")),
         "classes": [{"key": k, "prompt": p, **CLASS_META.get(k, {"label": k})}
                     for k, p in CLASSES],
         "conds": [{"key": k, "label": l, "tag": t, "desc": d}
@@ -80,14 +152,28 @@ def main():
         "metrics": METRICS,
         "pairs": report.get("params", {}).get("pairs", 25),
     }
-    html = TEMPLATE.replace("/*__DATA__*/", json.dumps(data))
+    base = (TEMPLATE.replace("/*__DATA__*/", json.dumps(data))
+                    .replace("/*__CC_BEST__*/", CC_BEST))
+    # Lightweight build: IMG empty, S() falls back to relative ../eN paths.
     out_path = os.path.join(SITE, "index.html")
     with open(out_path, "w") as f:
-        f.write(html)
-    flags = [n for n in ("cfgspec", "clipt", "universal", "freqctrl", "cost")
-             if data[n]]
+        f.write(base)
+    flags = [n for n in ("cfgspec", "clipt", "universal", "freqctrl", "cost",
+                         "colorcorr") if data[n]]
     print(f"[site] wrote {out_path}  (data: {', '.join(flags) or 'base only'})",
           flush=True)
+
+    if args.standalone:
+        img = build_img_map(data, args.max_px, args.quality)
+        # Substitute the populated map for the empty placeholder. json.dumps the
+        # map alone and drop the trailing "{}" the placeholder carried.
+        html = base.replace("/*__IMG__*/{}", "/*__IMG__*/" + json.dumps(img))
+        sa_path = os.path.join(SITE, "index_standalone.html")
+        with open(sa_path, "w") as f:
+            f.write(html)
+        mb = os.path.getsize(sa_path) / 1e6
+        print(f"[site] wrote {sa_path}  ({len(img)} images inlined, {mb:.1f} MB)",
+              flush=True)
 
 
 TEMPLATE = r"""<!DOCTYPE html>
@@ -179,7 +265,12 @@ TEMPLATE = r"""<!DOCTYPE html>
 
 <script>
 const DATA = /*__DATA__*/;
-const {report, cfgspec, clipt, universal, freqctrl, cost, sd35, colorcorr, fluxportrait, classes, conds, metrics, pairs} = DATA;
+// Image map for the self-contained build: results-relative path -> data URI.
+// Empty in the lightweight build, so S() falls back to the relative path.
+const IMG = /*__IMG__*/{};
+const S = p => IMG[p] || ("../" + p);
+const {report, cfgspec, clipt, universal, freqctrl, cost, colorcorr, classes, conds, metrics, pairs} = DATA;
+const {phaseDist, phaseSwap, phaseFn, phaseClust} = DATA;
 const fmt = (x,d=4)=> (x==null||isNaN(x))?"—":(x>=0?"+":"")+Number(x).toFixed(d);
 const fmt2 = (x,d=3)=> (x==null||isNaN(x))?"—":Number(x).toFixed(d);
 const sem = a => a && a.std!=null ? a.std/Math.sqrt(Math.max(a.n,1)) : null;
@@ -205,7 +296,7 @@ const TABS = [
   ["universal","Universal reference", renderUniversal],
   ["freq","Frequency control", renderFreq],
   ["cost","Compute cost", renderCost],
-  ["models","True CFG (SD3.5)", renderModels],
+  ["phase","Phase & identity", renderPhase],
   ["takeaways","Takeaways", renderTakeaways],
 ];
 let current = "overview";
@@ -222,7 +313,6 @@ function renderMain(){
   if(current==="colorcorr") wireColorCorr();
   if(current==="universal") wireUniversal();
   if(current==="freq") wireFreq();
-  if(current==="models") wireModels();
 }
 
 /* ===================== OVERVIEW ===================== */
@@ -325,7 +415,7 @@ function renderMotivation(){
   intensity measure — Fourier power, latent std, the latent's spectral norm, and
   low-band power — rises monotonically with <code>w</code>: from the unguided field to the
   strongest setting the latent gains <b>${fmt2(ratio,2)}×</b> in Fourier power.</p>
-  <img class="plot" src="../e9/plots/cfg_power.png" alt="spectral intensity vs CFG"
+  <img class="plot" src="${S('e9/plots/cfg_power.png')}" alt="spectral intensity vs CFG"
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'cfg_power.png not found'}))">
   <p class="muted small">Spectral intensity measures vs the true-CFG scale. The green
   dashed line / band is the real-image level${real?` — it falls near <b>w ≈ ${nearestW}</b>,
@@ -333,7 +423,7 @@ function renderMotivation(){
   statistics, overshooting past them at high <code>w</code>.</p>
 
   <h3>The whole radial spectrum lifts — not just the slope</h3>
-  <img class="plot" src="../e9/plots/cfg_psd.png" alt="radial PSD vs CFG"
+  <img class="plot" src="${S('e9/plots/cfg_psd.png')}" alt="radial PSD vs CFG"
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'cfg_psd.png not found'}))">
   <p class="muted small">Radially-averaged latent PSD per guidance scale, with real photos
   (dashed). Higher <code>w</code> ⇒ more power across the whole band; the real-image curve
@@ -411,7 +501,7 @@ function renderMethod(){
   runs of the prompt. Each kind of content settles at its own natural power level —
   photos high, illustration/abstract lower — which is why the reference is mildly
   content-specific (see <b>Universal reference</b> for using one general profile instead).</p>
-  <img class="plot" src="../e9/plots/ref_std_curves.png" alt="per-step reference power curves"
+  <img class="plot" src="${S('e9/plots/ref_std_curves.png')}" alt="per-step reference power curves"
        onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'reference curves not found'}))">
   <p class="muted small">Per-step latent power (std) of each content type's weak-guidance reference.</p>`;
 }
@@ -539,7 +629,7 @@ function renderCompare(){
   <div id="clsblurb" class="card muted small"></div>`;
 }
 function tile(key, cond, seed){
-  const src = `../e9/${key}/images/${cond.key}_s${seed}.png`;
+  const src = S(`e9/${key}/images/${cond.key}_s${seed}.png`);
   let clip = "";
   if(clipt){
     const arr = ((clipt["class/"+key]||{}).per_seed||{})[cond.key];
@@ -567,8 +657,9 @@ function wireCompare(){
 /* ===================== COLOR CORRECTION ===================== */
 const CC_LABELS = {hist_match:"Histogram match", autocontrast:"Auto-contrast",
   lum_eq:"Luminance equalize", "contrast1.2":"Contrast ×1.2",
-  "sat1.2":"Saturation ×1.2", "sat1.4":"Saturation ×1.4"};
-const CC_ORDER = ["hist_match","autocontrast","lum_eq","contrast1.2","sat1.2","sat1.4"];
+  "sat1.4":"Saturation ×1.4", "sat1.8":"Saturation ×1.8"};
+const CC_ORDER = ["sat1.4","sat1.8","contrast1.2","autocontrast","lum_eq","hist_match"];
+const CC_BEST = "/*__CC_BEST__*/";  // chosen practical (saturation) method, filled at build
 const ccLabel = m => CC_LABELS[m] || m;
 function ccMethods(){
   if(!colorcorr) return [];
@@ -588,21 +679,29 @@ function renderColorCorr(){
   <h2>Recovering the palette without re-baking</h2>
   <p class="lede">Band normalization deliberately calms contrast and saturation — good for
   composition and texture, but the frame can read as washed-out next to full guidance. Because
-  that is a global palette shift, it can be put back with cheap, image-level color correction on
-  the <i>already-rendered</i> frame — no regeneration, no GPU. The goal: lift colorfulness /
-  contrast back toward the full-guidance look while keeping the contrast-invariant detail
-  (<code>hf_frac</code>) that band-norm bought.</p>
+  that is a global palette shift, it can be put back as <b>post-processing on the already-rendered
+  frame</b> — no regeneration, no GPU. The goal: lift colorfulness / contrast back toward the
+  full-guidance look while keeping the contrast-invariant detail (<code>hf_frac</code>) that
+  band-norm bought.</p>
 
-  <div class="card thesis"><b>Histogram matching wins.</b> Matching each RGB channel's tone
-  curve to the paired full-guidance frame restores colorfulness, contrast and saturation almost
-  exactly to the full-guidance target, while leaving fine detail essentially untouched — the
-  calm-but-detailed render with the full-guidance palette grafted back on.</div>
+  <div class="card thesis"><b>The practical fix is a saturation boost.</b> A single
+  <code>${ccLabel(CC_BEST)}</code> multiply on the rendered frame puts most of the lost color back —
+  with <b>no extra generation, no reference image, no GPU</b> — and leaves detail
+  (<code>hf_frac</code>) and contrast essentially untouched. It is the recommended, deployable
+  correction.</div>
+
+  <div class="card note"><b>Why not histogram matching?</b> Matching each channel's tone curve to the
+  paired full-guidance frame does hit the palette target most precisely — but it <b>requires a second,
+  full-guidance (cfg 3.5) generation pass per image</b> to produce that reference frame. That roughly
+  <b>doubles generation cost</b> and needs the very full-guidance output band-norm is meant to avoid.
+  So histogram match is an <i>upper-bound oracle</i> for "how close can correction get," not a
+  practical, cheap correction. The saturation boost is what you would actually ship.</div>
 
   <div class="controls card">
     <div><label>Content</label><br>
       <select id="ccls">${classes.map(c=>`<option value="${c.key}">${c.label}</option>`).join("")}</select></div>
     <div><label>Correction</label><br>
-      <select id="cmeth">${methods.map(m=>`<option value="${m}"${m==="hist_match"?" selected":""}>${ccLabel(m)}</option>`).join("")}</select></div>
+      <select id="cmeth">${methods.map(m=>`<option value="${m}"${m===CC_BEST?" selected":""}>${ccLabel(m)}</option>`).join("")}</select></div>
     <div style="flex:1;min-width:220px"><label>Seed <span class="seedval" id="csv">0</span></label><br>
       <input type="range" id="cseed" min="0" max="${ccSeeds()-1}" value="0" style="width:100%"></div>
   </div>
@@ -628,16 +727,18 @@ function ccTable(k, sel){
       return `<td class="${cl}">${fmt(v)}</td>`;
     }).join("");
     const hl = m===sel ? ' style="background:rgba(88,166,255,.10)"' : '';
-    const star = m==="hist_match" ? ' ★' : '';
-    return `<tr${hl}><td>${ccLabel(m)}${star}</td>${cells}<td>${fmt2(Math.abs(dc.colorfulness),4)}</td></tr>`;
+    const star = m===CC_BEST ? ' ★' : '';
+    const tagCost = m==="hist_match" ? ' <span class="muted small">(needs extra cfg 3.5 pass)</span>' : '';
+    return `<tr${hl}><td>${ccLabel(m)}${star}${tagCost}</td>${cells}<td>${fmt2(Math.abs(dc.colorfulness),4)}</td></tr>`;
   }).join("");
   return `<h3>How each correction moves the metrics — ${classes.find(c=>c.key===k).label}</h3>
   <table>${head}${rows}</table>
   <p class="small muted">Δ vs the band-normalized frame, averaged over ${ce.n_seeds||"n"} seeds.
   Want <b>colorfulness / contrast / saturation up</b> and <b>Δ hf_frac ≈ 0</b> (detail kept).
   "Gap to full" is the remaining |colorfulness − full guidance|; smaller = closer to the
-  full-guidance palette. Histogram match (★) closes the gap with the smallest residual while
-  leaving detail essentially unchanged.</p>`;
+  full-guidance palette. The saturation boost (★) is the recommended cheap, single-pass fix;
+  histogram match closes the gap slightly more but only by paying a second full cfg 3.5 pass per
+  image, so it is a reference upper bound, not a practical correction.</p>`;
 }
 function wireColorCorr(){
   if(!colorcorr) return;
@@ -649,11 +750,11 @@ function wireColorCorr(){
     const k=cls.value, m=meth.value, s=+seed.value; sv.textContent=s;
     trip.innerHTML =
       ccTile("Band-normalized","the washed-out starting frame",
-             `../e9/${k}/images/bandnorm_s${s}.png`, `bandnorm_s${s}`) +
+             S(`e9/${k}/images/bandnorm_s${s}.png`), `bandnorm_s${s}`) +
       ccTile(ccLabel(m),"palette recovered on the rendered frame",
-             `../e11/${k}/${m}/${m}_s${s}.png`, `${m}_s${s}`) +
+             S(`e11/${k}/${m}/${m}_s${s}.png`), `${m}_s${s}`) +
       ccTile("Full guidance","the palette target",
-             `../e9/${k}/images/cfg3.5_s${s}.png`, `cfg3.5_s${s}`);
+             S(`e9/${k}/images/cfg3.5_s${s}.png`), `cfg3.5_s${s}`);
     tbl.innerHTML = ccTable(k, m);
   }
   cls.onchange=draw; meth.onchange=draw; seed.oninput=draw; draw();
@@ -682,7 +783,7 @@ function renderQuant(){
   content-dependent one — positive for broadly-textured photos, negative where detail
   is concentrated in highlights (urban night, abstract). Laplacian sharpness scales with
   contrast², so it falls even when fine texture rises — only hf_frac isolates detail.</p>
-  <img class="plot" src="../e9/plots/metrics_delta.png" alt="metric deltas"
+  <img class="plot" src="${S('e9/plots/metrics_delta.png')}" alt="metric deltas"
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',innerText:'delta plot not found'}))">
   <hr>
   <h3>CLIP-T — does SBN stay on-prompt?</h3>
@@ -754,7 +855,7 @@ function wireUniversal(){
         trip=document.getElementById("utrip");
   function utile(key,cond,label,desc,seed){
     return `<div class="tile"><div class="imgwrap">
-      <img loading="lazy" src="../e9/${key}/images/${cond}_s${seed}.png"
+      <img loading="lazy" src="${S(`e9/${key}/images/${cond}_s${seed}.png`)}"
         onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>image generating…<br><span class=mono>${cond}_s${seed}</span></div>'">
       </div><div class="cap"><b>${label}</b><div class="d">${desc}</div></div></div>`;
   }
@@ -787,8 +888,9 @@ function renderFreq(){
       artifact and real detail (hf_frac) <b>falls</b>; strong gains corrupt the subject.
       Image detail is not a high-frequency latent dial you can turn up.</p></div>
   </div>
-  <p class="small muted">Move the slider to the extremes (×0.7, ×1.3) to see the effect — the
-  high-band side visibly degrades into stipple, the low-band side mostly holds together.</p>
+  <p class="small muted">Move the slider to the extremes (×0.55, ×1.3) to see the effect — the
+  high-band side visibly degrades into stipple, the low-band side mostly holds together.
+  Each result is shown next to the matched cfg3.5 full-guidance baseline.</p>
   <div class="controls card">
     <div><label>Content</label><br>
       <select id="fcls">${pk.map(k=>`<option value="${k}">${k}</option>`).join("")}</select></div>
@@ -800,7 +902,7 @@ function renderFreq(){
       <input type="range" id="fseed" min="0" max="${freqctrl.seeds-1}" value="0"></div>
   </div>
   <div class="grid2">
-    <div id="fimg" class="tile"></div>
+    <div id="fimg" style="display:flex;gap:10px;flex-wrap:wrap"></div>
     <div class="card"><b>Effect of the gain sweep</b><div id="fchart"></div>
       <p class="small muted" id="fnote"></p></div>
   </div>`;
@@ -818,23 +920,38 @@ function wireFreq(){
   function draw(){
     const gn=gains[+g.value]; gv.textContent=gn.toFixed(2); sv.textContent=seed.value;
     const t=tgt.value, s=+seed.value, tg=tag(t,gn);
-    const src=`../e9/freqctrl/${cls.value}/images/${tg}_s${s}.png`;
+    const src=S(`e9/freqctrl/${cls.value}/images/${tg}_s${s}.png`);
     const c=(cells()[tg]||{});
     const metric = t==="high" ? c.hf_frac : c.lowband_power;
     const mlabel = t==="high" ? "hf_frac (detail)" : "low-band power (structure)";
-    img.innerHTML = `<div class="imgwrap"><img loading="lazy" src="${src}"
-        onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>image generating…<br><span class=mono>${tg}_s${s}</span></div>'">
-      </div><div class="cap"><b>${cls.value}</b> · <span class="tag-${t==='high'?'hi':'lo'}">${t} ×${gn.toFixed(2)}</span>
-      <div class="d">${mlabel}: <b>${metric?fmt2(metric.mean,4):"—"}</b></div></div>`;
-    // mini bar chart of metric vs gain for this target
+    // cfg3.5 full-guidance baseline for this prompt (same metric + matched seed image)
+    const base=(freqctrl.prompts[cls.value]||{}).cfg35||{};
+    const bmetric = t==="high" ? base.hf_frac : base.lowband_power;
+    const bsrc=S(`e9/${cls.value}/images/cfg3.5_s${s}.png`);
+    const dlt = (metric&&bmetric) ? metric.mean-bmetric.mean : null;
+    const dstr = dlt==null ? "" : ` · Δ vs cfg3.5 <b>${dlt>=0?"+":""}${fmt2(dlt,4)}</b>`;
+    img.innerHTML = `
+      <div class="tile" style="flex:1;min-width:200px"><div class="imgwrap"><img loading="lazy" src="${src}"
+          onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>image generating…<br><span class=mono>${tg}_s${s}</span></div>'">
+        </div><div class="cap"><b>${cls.value}</b> · <span class="tag-${t==='high'?'hi':'lo'}">${t} ×${gn.toFixed(2)}</span>
+        <div class="d">${mlabel}: <b>${metric?fmt2(metric.mean,4):"—"}</b>${dstr}</div></div></div>
+      <div class="tile" style="flex:1;min-width:200px"><div class="imgwrap"><img loading="lazy" src="${bsrc}"
+          onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>cfg3.5 baseline<br><span class=mono>cfg3.5_s${s}</span></div>'">
+        </div><div class="cap"><b>cfg3.5</b> · <span class="muted">full guidance baseline</span>
+        <div class="d">${mlabel}: <b>${bmetric?fmt2(bmetric.mean,4):"—"}</b></div></div></div>`;
+    // mini bar chart of metric vs gain for this target, with a cfg3.5 reference row
     const vals = gains.map(gg=>{const cc=cells()[tag(t,gg)]||{}; const mm=t==="high"?cc.hf_frac:cc.lowband_power; return mm?mm.mean:null;});
-    const good=vals.filter(v=>v!=null); const lo=Math.min(...good), hi=Math.max(...good), rng=(hi-lo)||1;
+    const bval = bmetric?bmetric.mean:null;
+    const good=vals.concat(bval).filter(v=>v!=null); const lo=Math.min(...good), hi=Math.max(...good), rng=(hi-lo)||1;
+    const baseRow = bval==null ? "" :
+      `<div class="barrow"><div class="lbl">cfg3.5</div>
+        <div class="bartrack"><div class="barfill" style="width:${8+(bval-lo)/rng*92}%;background:var(--accent)">${fmt2(bval,4)}</div></div></div>`;
     chart.innerHTML = `<div class="bars">`+gains.map((gg,i)=>{
       const v=vals[i]; const w=v==null?0:(8+(v-lo)/rng*92);
       const cur = gg===gn ? `style="outline:2px solid var(--accent)"`:"";
       return `<div class="barrow"><div class="lbl">×${gg.toFixed(2)}</div>
         <div class="bartrack" ${cur}><div class="barfill" style="width:${w}%;background:${t==='high'?'var(--hi)':'var(--lo)'}">${v!=null?fmt2(v,4):"—"}</div></div></div>`;
-    }).join("")+`</div>`;
+    }).join("")+baseRow+`</div>`;
     note.textContent = t==="high"
       ? "Inverse / destructive: as the high-band gain rises, real image detail (hf_frac) falls and the decoder produces a granular stipple artifact — amplifying high-frequency latent power does not sharpen the image."
       : "Clean knob: raising the low-band gain monotonically increases large-scale structure / contrast; the image stays coherent through the mild range.";
@@ -878,75 +995,119 @@ function renderCost(){
   </div>`;
 }
 
-/* ===================== TRUE CFG (SD3.5) ===================== */
-function sd35entry(){ return (sd35||{})["class/portrait"] || null; }
-function sd35pairs(){ return ((sd35||{}).params||{}).pairs || pairs; }
+/* ===================== PHASE & IDENTITY ===================== */
+const phaseKeys = rep => rep ? Object.keys(rep).filter(k=>k.startsWith("class/")).map(k=>k.slice(6)) : [];
+const pmean = a => a.length ? a.reduce((s,x)=>s+(+x||0),0)/a.length : null;
+const phImg = (p,cap) => `<div class="tile"><div class="imgwrap"><img loading="lazy" src="${S(p)}"
+    onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>figure pending<br><span class=mono>${p}</span></div>'">
+  </div><div class="cap">${cap}</div></div>`;
 
-function renderModels(){
-  const e = sd35entry();
-  const intro = `
-  <h2>Does it hold on a true-CFG model?</h2>
-  <p class="lede">Everything so far ran on a <b>guidance-distilled</b> model, where the
-  "guidance scale" is a baked-in embedding, not a real classifier-free guidance (CFG) pass.
-  This is the control: the same band-norm method, the same portrait prompt, run on
-  <b>Stable Diffusion 3.5-large</b> — a rectified-flow model that uses genuine two-pass CFG
-  (conditional + unconditional). Reference guidance 1.0, full guidance 3.5, 28 steps.</p>
-  <div class="card thesis"><b>Why this matters.</b> If band-norm's signature — tames
-  contrast/saturation, with a content-dependent texture nudge — appears here too, it is a
-  property of the spectral intervention, not an artifact of distilled guidance. On a
-  true-CFG model, guidance 1.0 is simply the conditional-only prediction (the unconditional
-  pass is unused), the honest analogue of the distilled reference.</div>
-  <p class="small muted">Note: SD3.5 and the distilled model use different VAE normalization,
-  so absolute latent std/slope are not comparable across models — only the within-model Δ
-  (band-norm − full guidance) and the qualitative pattern compare.</p>`;
+function renderPhase(){
+  const head = `
+  <h2>Phase: where latent identity lives</h2>
+  <p>The rest of this site is about spectral <b>power</b> — band-norm moves it and freezes the
+  Fourier <b>phase</b>. This companion thread asks the opposite question: what does the phase
+  carry? Across four experiments the answer is consistent — <b>a latent's identity lives in its
+  low-band FFT phase</b>, the complement of the power story.</p>`;
 
-  if(!e) return intro + `<div class="card note">⏳ SD3.5 portrait run pending
-    (<span class="mono">results/e12/report.json</span> not found).</div>`;
+  // 1 — phase vs magnitude swap (E13)
+  let swap = `<div class="card note">⏳ Phase↔magnitude swap pending.</div>`;
+  if(phaseSwap && phaseKeys(phaseSwap).length){
+    const ks = phaseKeys(phaseSwap);
+    const rows = ks.map(k=>{const d=phaseSwap["class/"+k];
+      return `<tr><td>${k}</td><td><b>${fmt2(d.Aphase_Bmag.clip_to_A)}</b></td>
+        <td>${fmt2(d.Aphase_Bmag.clip_to_B)}</td><td>${fmt2(d.phaseonly_A.clip_to_A)}</td>
+        <td>${fmt2(d.magonly_A.clip_to_A)}</td></tr>`;}).join("");
+    const mPh=pmean(ks.map(k=>phaseSwap["class/"+k].Aphase_Bmag.clip_to_A));
+    const mMg=pmean(ks.map(k=>phaseSwap["class/"+k].Aphase_Bmag.clip_to_B));
+    const mPo=pmean(ks.map(k=>phaseSwap["class/"+k].phaseonly_A.clip_to_A));
+    const mMo=pmean(ks.map(k=>phaseSwap["class/"+k].magonly_A.clip_to_A));
+    swap = `
+    <p>Build a latent from one image's phase and another's magnitude (full spectrum), decode, and
+    measure CLIP cosine to each source. <b>Magnitude alone carries no layout</b> (mag-only ≈
+    ${fmt2(mMo)}, a textured swatch); <b>phase alone stays recognizable</b> but flat / desaturated
+    (${fmt2(mPo)}). In the swap, identity follows the phase donor — by a modest, content-graded
+    margin, since CLIP also reads palette from the magnitude.</p>
+    <div class="grid2">
+      ${phImg('e13/plots/identity_phase_vs_mag.png','A-phase + B-mag: CLIP to phase donor vs magnitude donor, per class.')}
+      <div class="card"><b>Oppenheim–Lim in the Flux latent</b>
+        <table><tr><th>class</th><th>swap→phase</th><th>swap→mag</th><th>phase-only</th><th>mag-only</th></tr>${rows}
+        <tr style="border-top:2px solid var(--line)"><td><b>mean</b></td><td><b>${fmt2(mPh)}</b></td>
+        <td>${fmt2(mMg)}</td><td>${fmt2(mPo)}</td><td>${fmt2(mMo)}</td></tr></table>
+        <p class="small muted">The clean signal is the gap between phase-only (~0.75) and
+        mag-only (~0.51); the swap margin itself is small.</p></div>
+    </div>
+    ${phImg('e13/grid_animal.png','Per pair: A, B, A-phase+B-mag, B-phase+A-mag, phase-only(A), mag-only(A). The swaps carry the phase donor\'s composition; mag-only is a structureless swatch.')}`;
+  }
 
-  // Cross-model Δ table: SD3.5 vs the distilled-model portrait.
-  const fp = fluxportrait || {};
-  const row = (label, src) => `<tr><td>${label}</td>${metrics.map(m=>{
-      const a=src["delta_"+m]; if(!a) return `<td>—</td>`;
-      const cl=a.mean>0?"pos":(a.mean<0?"neg":"");
-      return `<td class="${cl}">${fmt(a.mean)}<span class="muted"> ±${fmt2(sem(a),4)}</span></td>`;
-    }).join("")}</tr>`;
-  const table = `
-  <h3>Δ image metrics — band-norm − full guidance (portrait)</h3>
-  <table><tr><th>model</th>${metrics.map(m=>`<th>Δ ${m}</th>`).join("")}</tr>
-    ${row("SD3.5-large (true CFG)", e)}
-    ${fp.delta_hf_frac?row("Distilled model (Flux)", fp):""}</table>
-  <p class="small muted">Averaged over ${sd35pairs()} paired seeds (± standard error). The
-  taming signature — contrast, colorfulness and saturation all drop — is the cross-model
-  invariant to look for; hf_frac (contrast-invariant detail) is the content-dependent one.</p>`;
+  // 2 — which bands carry identity (E14)
+  let fn = `<div class="card note">⏳ Phase-function sweeps pending.</div>`;
+  if(phaseFn && phaseFn._noise_curves){
+    const eps=phaseFn._eps, nc=phaseFn._noise_curves, ks=Object.keys(nc.low||{});
+    const row=b=>eps.map((e,i)=>`<td>${fmt2(pmean(ks.map(k=>nc[b][k][i])))}</td>`).join("");
+    fn = `
+    <p>Add Hermitian phase noise to a band and decode: <b>low-band phase noise destroys identity,
+    high-band phase noise is almost free</b> — identity is concentrated in the low band. Scaling
+    φ→αφ collapses identity at both α=0 and α=2; a frequency-linear ramp is just a spatial shift,
+    while a constant phase offset genuinely distorts.</p>
+    <div class="grid2">
+      ${phImg('e14/plots/identity_vs_eps.png','CLIP-to-original vs phase-noise amplitude, low vs high band.')}
+      <div class="card"><b>Identity erosion (CLIP to unmodified)</b>
+        <table><tr><th>band</th>${eps.map(e=>`<th>ε=${e}</th>`).join("")}</tr>
+        <tr><td class="tag-lo">low</td>${row('low')}</tr>
+        <tr><td class="tag-hi">high</td>${row('high')}</tr></table>
+        <p class="small muted">Low-band noise already erodes at ε=0.25 and saturates near 0.67;
+        high-band barely moves.</p></div>
+    </div>
+    ${phImg('e14/grid_landscape_noise.png','Graded phase noise — low band (top row) vs high band (bottom): low-band loses the scene fast, high-band stays recognizable.')}`;
+  }
 
-  const compare = `
-  <h3>Compare — weak / full / band-norm (SD3.5)</h3>
-  <p>Same seed, three conditions, on SD3.5-large.</p>
-  <div class="controls card">
-    <div style="flex:1;min-width:240px"><label>Seed <span class="seedval" id="msv">0</span></label><br>
-      <input type="range" id="mseed" min="0" max="${sd35pairs()-1}" value="0" style="width:100%"></div>
-  </div>
-  <div id="mtrip" class="triptych"></div>
-  <img class="plot" src="../e12/plots/ref_std_curve.png" alt="SD3.5 reference std curve"
-    onerror="this.style.display='none'">`;
+  // 3 — classify by manipulation (E15)
+  let clust = `<div class="card note">⏳ Clustering pending.</div>`;
+  if(phaseClust && phaseClust.centroid_dist_to_orig){
+    const cd=phaseClust.centroid_dist_to_orig, cl=phaseClust.clip||{};
+    const rows=Object.keys(cd).map(k=>`<tr><td>${k}</td><td>${fmt2(cd[k])}</td></tr>`).join("");
+    clust = `
+    <p>Embed every manipulated output (CLIP) and ask whether edits form consistent groups. They do
+    <i>not</i> cluster into discrete classes — CLIP space is dominated by image content (KMeans
+    purity vs manipulation ${fmt2(cl.kmeans_purity_vs_manipulation)} vs vs-class
+    ${fmt2(cl.kmeans_purity_vs_class)}). Instead the manipulation→output map is a clean
+    <b>magnitude-of-effect axis</b>: distance from the unmodified centroid is monotone in how much
+    the edit touches identity-bearing structure.</p>
+    <div class="grid2">
+      ${phImg('e15/plots/proj_by_manipulation.png','CLIP PCA colored by manipulation: content/class dominates; identity-destroying edits spread to the periphery.')}
+      <div class="card"><b>CLIP distance to unmodified</b>
+        <table><tr><th>manipulation</th><th>dist→orig</th></tr>${rows}</table>
+        <p class="small muted">High-band edits collapse onto <i>orig</i>; mag-only is the far outlier.</p></div>
+    </div>`;
+  }
 
-  return intro + table + compare;
-}
-function mtile(cond, seed){
-  const src = `../e12/portrait/images/${cond.key}_s${seed}.png`;
-  return `<div class="tile"><div class="imgwrap">
-      <img loading="lazy" src="${src}" alt="${cond.label} seed ${seed}"
-        onerror="this.style.display='none';this.parentNode.innerHTML='<div class=ph>image generating…<br><span class=mono>${cond.key}_s${seed}</span></div>'">
-    </div><div class="cap"><b>${cond.label}</b> <span class="muted small">${cond.tag}</span>
-      <div class="d">${cond.desc}</div></div></div>`;
-}
-function wireModels(){
-  if(!sd35entry()) return;
-  const seed=document.getElementById("mseed"), sv=document.getElementById("msv"),
-        trip=document.getElementById("mtrip");
-  function draw(){ const s=+seed.value; sv.textContent=s;
-    trip.innerHTML = conds.map(c=>mtile(c,s)).join(""); }
-  seed.oninput=draw; draw();
+  // 4 — phase distributions baseline (E12)
+  let dist = `<div class="card note">⏳ Phase-distribution baseline (E12) running…</div>`;
+  if(phaseDist && phaseKeys(phaseDist).length){
+    const ks=phaseKeys(phaseDist);
+    const rows=ks.map(k=>{const d=phaseDist["class/"+k];
+      return `<tr><td>${k}</td><td>${fmt2(d.R_lowest_band)}</td><td>${fmt2(d.R_midhigh_mean)}</td>
+        <td>${fmt2(d.coherence_lowest_band)}</td><td>${fmt2(d.coherence_null)}</td></tr>`;}).join("");
+    dist = `
+    <p>The baseline that motivates all of the above: the phase <b>marginal</b> is uniform (the
+    white-noise null) everywhere except the very lowest band — a flat phase histogram is expected
+    and is <i>not</i> evidence that phase is uninformative. The signal is in cross-frequency
+    <b>structure</b>, and cross-seed coherence is elevated only in the low band.</p>
+    <div class="grid2">
+      ${phImg('e12/plots/coherence_radial.png','Cross-seed phase coherence vs radial frequency: above the null only at low frequency.')}
+      <div class="card"><b>Phase marginal vs joint structure</b>
+        <table><tr><th>class</th><th>R low</th><th>R mid/high</th><th>coh low</th><th>null</th></tr>${rows}</table>
+        <p class="small muted">Resultant length R≈0 (uniform) at mid/high; coherence rises above the
+        null only in the lowest band.</p></div>
+    </div>`;
+  }
+
+  return head
+    + `<h2 style="margin-top:1.4em">1 · Phase ↔ magnitude swap <span class="muted">(Oppenheim–Lim)</span></h2>` + swap
+    + `<h2 style="margin-top:1.4em">2 · Which bands carry identity</h2>` + fn
+    + `<h2 style="margin-top:1.4em">3 · Classifying by manipulation</h2>` + clust
+    + `<h2 style="margin-top:1.4em">4 · Phase distributions <span class="muted">(baseline)</span></h2>` + dist;
 }
 
 /* ===================== TAKEAWAYS ===================== */

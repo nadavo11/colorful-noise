@@ -256,7 +256,8 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=28)
     ap.add_argument("--cfg", type=float, default=3.5)
     ap.add_argument("--n_bins", type=int, default=24)
-    ap.add_argument("--mem", default="bnb4", choices=["bnb4", "seq_offload"])
+    ap.add_argument("--mem", default="gpu_resident",
+                    choices=["gpu_resident", "bnb4", "seq_offload"])
     ap.add_argument("--classes", default="",
                     help="comma list of class names; empty = all 6")
     main(ap.parse_args())

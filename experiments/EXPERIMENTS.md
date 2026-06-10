@@ -431,7 +431,23 @@ was dropped; this is the renumbered former E13.)
 histogram + circular stats (flatness, mean resultant length) and cross-seed phase
 coherence, vs the `random_hermitian_phase` null. Analysis-only (no intervention).
 
-**Key results.** _(entry to be completed after the run.)_
+**Key results.** (3 seeds/class, 24 radial bins.) **The phase marginal is the white-noise
+null — uniform everywhere except a faint low-band elevation; the only structured signal is
+joint (cross-seed coherence), concentrated in the low band.** This is the baseline that
+motivates E13–E15.
+- Global phase-marginal flatness ≈ **0.006** (≈ uniform); per-band resultant length R is ≈ 0
+  at mid/high frequency (R_mid/high ≈ **0.029**) and only faintly elevated in the lowest band
+  (R_low ≈ 0.08; watercolor the outlier at 0.17). A flat phase histogram is therefore
+  *expected* and is **not** evidence that phase is uninformative.
+- **Cross-seed phase coherence rises above the N=3 null (0.512) only in the lowest band**
+  (coh_low ≈ **0.676** mean), ~identical across classes — seeds share gross low-frequency
+  composition and nothing above it. So the phase signal lives in cross-frequency *structure*
+  (Oppenheim–Lim), localized to the low band — exactly what E13 (full-spectrum swap) and E14
+  (band-localized phase-noise erosion) then exploit.
+
+**Artifacts.** `results/e12/` (`plots/band_hist_<class>.png`, `global_hist.png`,
+`flatness_band.png`, `coherence_radial.png`, `grid_classes.png`, `report.json`, `latents/`).
+Surfaced as section 4 of the "Phase & identity" tab in the explainer site.
 
 ---
 
