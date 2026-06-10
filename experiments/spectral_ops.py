@@ -429,3 +429,143 @@ def psd_match(lat, ref_band_power, idx_map, n_bins, eps=1e-8,
             "gain_max": float(gain.max()),
         }
     return out.real.to(dt)
+
+
+# ---------------------------------------------------------------------------
+# Parametric phase surgery on output latents (E13 / E14)
+# ---------------------------------------------------------------------------
+#
+# All operators below work UNSHIFTED (DC at [0, 0], torch.fft convention) and
+# are Hermitian-preserving so ifft2(.).real loses only ~1e-6 residue. The four
+# self-conjugate bins -- DC (0,0) and the Nyquist axes (H/2,0), (0,W/2),
+# (H/2,W/2) -- carry a real coefficient (phase in {0, pi}); any edit that would
+# rotate them off the real axis is undone by restoring them from the source.
+
+_SELF_CONJ = lambda H, W: ((0, 0), (H // 2, 0), (0, W // 2), (H // 2, W // 2))
+
+
+def _restore_self_conj(F_new, F_src, H, W):
+    """In-place restore the 4 self-conjugate bins from F_src (keeps realness +
+    the per-channel DC mean)."""
+    for (i, j) in _SELF_CONJ(H, W):
+        F_new[..., i, j] = F_src[..., i, j]
+    return F_new
+
+
+def odd_sign_mask(H, W, device="cuda"):
+    """(H, W) tensor in {-1, 0, +1}, odd under frequency negation: +1 on the
+    lexicographically-first bin of each conjugate pair, -1 on its partner, 0 on
+    self-conjugate bins. Adding `delta * mask` to the FFT phase is the
+    Hermitian-preserving *constant phase offset* (NOT a spatial shift -- that is
+    `phase_ramp`). Demonstrates why a naive constant added to every phase breaks
+    realness: only the antisymmetric version stays real."""
+    iy = torch.arange(H, device=device)
+    ix = torch.arange(W, device=device)
+    lin = iy[:, None] * W + ix[None, :]
+    conj_lin = ((-iy) % H)[:, None] * W + ((-ix) % W)[None, :]
+    s = torch.zeros(H, W, device=device)
+    s[lin < conj_lin] = 1.0
+    s[lin > conj_lin] = -1.0
+    return s
+
+
+def _band_mask(idx_map, bands, device):
+    """(H, W) {0,1} mask selecting the union of radial `bands` (iterable of band
+    ids) in a band_index_map. `bands=None` -> all-ones (whole spectrum)."""
+    H, W = idx_map.shape
+    if bands is None:
+        return torch.ones(H, W, device=device)
+    m = torch.zeros(H, W, device=device)
+    for b in bands:
+        m = m + (idx_map == b).float()
+    return (m > 0).float()
+
+
+def phase_only(lat, eps=1e-12):
+    """Oppenheim-Lim phase-only latent: keep the FFT phase, flatten every
+    non-DC magnitude to a per-channel constant chosen to preserve total power
+    (hence latent std); the DC bin (per-channel mean) is held fixed.
+    Hermitian-preserving -> real. Expected decode: recognizable layout, flat /
+    desaturated palette (magnitude envelope erased)."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    mag = F.abs()
+    p_total = (mag ** 2).sum(dim=(-2, -1))
+    p_dc = mag[..., 0, 0] ** 2
+    const = torch.sqrt(((p_total - p_dc) / (H * W - 1)).clamp(min=eps))
+    newmag = const[..., None, None].expand_as(mag).clone()
+    Fp = newmag * torch.exp(1j * F.angle())
+    _restore_self_conj(Fp, F, H, W)   # DC + Nyquist back to source (real)
+    return torch.fft.ifft2(Fp).real
+
+
+def magnitude_only(lat, generator=None):
+    """Keep the FFT magnitude, replace the phase with a fresh Hermitian-uniform
+    phase field (random_hermitian_phase). DC + Nyquist kept from source.
+    Expected decode: textured palette swatch (no layout)."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    phi = random_hermitian_phase(C, H, W, device=lat.device, generator=generator)
+    Fm = F.abs() * torch.exp(1j * phi)              # phi: (1, C, H, W)
+    _restore_self_conj(Fm, F, H, W)
+    return torch.fft.ifft2(Fm).real
+
+
+def scale_phase(lat, alpha):
+    """phi -> alpha * phi, magnitude kept. alpha scaling preserves antisymmetry
+    (alpha*phi(-f) = -alpha*phi(f)); self-conjugate bins are restored so the
+    result is real. alpha=1 is identity; alpha=0 -> zero-phase real-even latent;
+    alpha=2 doubles every phase angle."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    Fs = F.abs() * torch.exp(1j * alpha * F.angle())
+    _restore_self_conj(Fs, F, H, W)
+    return torch.fft.ifft2(Fs).real
+
+
+def phase_offset(lat, delta):
+    """Hermitian-preserving *constant phase offset*: F(f) *= exp(i*delta*s(f))
+    with s the odd_sign_mask. This is NOT a spatial shift (cf. phase_ramp) and
+    is the correct way to 'add a constant to the phase' while staying real."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    s = odd_sign_mask(H, W, lat.device)
+    return torch.fft.ifft2(F * torch.exp(1j * delta * s)[None, None]).real
+
+
+def phase_ramp(lat, dy, dx):
+    """Linear phase ramp = spatial (sub-pixel) shift by (dy, dx) via the Fourier
+    shift theorem: F(f) *= exp(-2pi i (fy*dy + fx*dx)). For integer (dy, dx)
+    this equals torch.roll(lat, (dy, dx), dims=(-2,-1)) exactly. Included to
+    *demonstrate* that a frequency-linear phase ramp is a translation."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    fy = torch.fft.fftfreq(H, device=lat.device)
+    fx = torch.fft.fftfreq(W, device=lat.device)
+    ramp = torch.exp(-2j * math.pi * (fy[:, None] * dy + fx[None, :] * dx))
+    return torch.fft.ifft2(F * ramp[None, None]).real
+
+
+def rotate_band_phase(lat, idx_map, bands, delta):
+    """Add a constant phase rotation `delta` only inside the selected radial
+    `bands`, applied antisymmetrically (odd_sign_mask) so the latent stays real.
+    Magnitude untouched. `bands=None` rotates the whole spectrum (== phase_offset)."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    s = odd_sign_mask(H, W, lat.device) * _band_mask(idx_map, bands, lat.device)
+    return torch.fft.ifft2(F * torch.exp(1j * delta * s)[None, None]).real
+
+
+def add_band_phase_noise(lat, idx_map, bands, eps, generator=None):
+    """phi -> phi + eps*eta inside the selected radial `bands`, eta a Hermitian
+    uniform phase field (random_hermitian_phase, antisymmetric -> stays real).
+    DC + Nyquist restored. Magnitude untouched. Sweeping eps per band localizes
+    where latent identity lives: low-band noise is expected to destroy identity
+    at small eps, high-band noise to be near-free (cf. E6 quantization)."""
+    B, C, H, W = lat.shape
+    F = torch.fft.fft2(lat.float())
+    eta = random_hermitian_phase(C, H, W, device=lat.device, generator=generator)
+    m = _band_mask(idx_map, bands, lat.device)
+    Fn = F.abs() * torch.exp(1j * (F.angle() + eps * eta * m))
+    _restore_self_conj(Fn, F, H, W)
+    return torch.fft.ifft2(Fn).real

@@ -5,6 +5,13 @@ One section per experiment: **Motivation / Setup / Key results / Artifacts**.
 updated after **every** experiment run. (E3 was never run; the gap is
 intentional.)
 
+**Convention (resolution).** New experiments should generate at **512×512**
+(latent 64×64), not the **1024×1024** used for the Flux work in E7–E11, to
+iterate faster (~4× less compute). Scripts take resolution via the `SIZE`
+constant (`height=SIZE, width=SIZE`); the radial-band machinery is
+resolution-agnostic — pass the matching latent size to
+`band_index_map(H, W, n_bins, ...)` (64×64 at 512px instead of 128×128).
+
 ---
 
 ## E0 — PSD diagnostics of the Colorful-Noise mix
@@ -280,3 +287,276 @@ shifts detail toward fine texture only for the right content.**
 **Artifacts.** `results/e9/` (`grid_<class>.png`, `plots/ref_std_curves.png`,
 `plots/metrics_delta.png`, `report.json`, per-class `images/`, `latents/`,
 `ref_psd.pt`).
+
+## E9b — Band-norm follow-ups: CLIP-T, universal reference, frequency control, cost, explainer site
+
+**Motivation.** Package E9's band-norm as an external method ("Spectral Band
+Normalization", SBN) with an interactive explainer, and answer four open
+questions: does band-norm stay on-prompt; can one general reference replace the
+per-prompt pass; can we steer high/low frequencies independently; is it more
+expensive than ordinary generation.
+
+**Setup.** Backfilled cfg=1.0 to 25 seeds/class (batched gen, list-of-generators
+reproduces single-image renders, corr 0.9999 — `e9_extra_cfg1.py --batch 4`).
+New scripts: `e9_clipt.py` (CLIP ViT-L/14 text–image cosine), `e9_universal_ref.py`
+(mean of the 6 class refs → `universal_ref.pt`; deviation stats; 5 seeds/class
+`uninorm` demo), `e9_freqctrl.py` (modulate a band range of the reference by g²,
+then clamp — `bandnorm.modulate_reference`; portrait+landscape × 2 seeds × {low,high}
+× g∈{0.7,0.85,1,1.15,1.3}), `e9_cost.py` (per-step wall-time, plain vs clamp).
+Site generator `make_e9_site.py` → `results/e9/site/index.html` (self-contained,
+no internal naming).
+
+**Key results.**
+- **CLIP-T (prompt fidelity):** full guidance highest; SBN slightly below; biggest
+  cost on **urban_night (−0.029)** — the same class whose texture effect reverses,
+  so an independent semantic metric flags the same worst-fit case. portrait/watercolor
+  Δ positive.
+- **Universal reference works.** Averaging the 6 per-class references → std **0.774**;
+  each prompt's own reference sits within **3.7% mean** band-power deviation (abstract
+  the outlier at 5.1%). `uninorm` CLIP-T ≈ per-prompt band-norm (within ~0.01) → the
+  per-prompt reference pass is largely avoidable.
+- **Frequency control is asymmetric.** Low-band gain is a **clean monotonic structure
+  /contrast knob** (lowband_power rises smoothly, image stays coherent in the mild
+  range). High-band gain is **inverse/destructive**: amplifying high-frequency *latent*
+  power does NOT add image detail — hf_frac falls monotonically (landscape
+  0.023→0.002 over g 0.7→1.3) and the VAE renders the off-distribution energy as a
+  granular stipple artifact that corrupts the subject. Confirms image detail is not a
+  high-frequency latent dial (consistent with structure living in low bands/phase, E7/E8).
+- **Cost is negligible.** Per-step overhead of the FFT clamp = **+0.77%** (1265→1275 ms
+  on FLUX NF4). The only real extra cost is the reference pass, which a universal
+  reference amortizes to ~0.
+
+**Artifacts.** `results/e9/`: `clip_t.json`, `universal_ref.pt`, `universal.json`,
+`freqctrl.json` + `freqctrl/<prompt>/images/`, `cost.json`, per-class `uninorm_s*`;
+external explainer at `results/e9/site/index.html`.
+
+---
+
+## E10 — CFG inflates spectral power; where real images sit (the SBN motivation)
+
+**Motivation.** Motivate the whole spectral-power line of work: show that the latent's
+spectral power / PSD / spectral norm rises with classifier-free guidance, and locate
+real-image statistics on that axis. Flux trains a velocity field by flow-matching with
+**no CFG term** in the loss (`L = E‖v_θ(x_t,t,c) − (x_1−x_0)‖²`); CFG is an inference-time
+extrapolation `ṽ = v_u + w(v_c − v_u)`. w=1 integrates the trained field; w>1 extrapolates.
+
+**Setup.** `e10_cfg_spectral.py`. **True CFG** on Flux via diffusers `true_cfg_scale` +
+empty `negative_prompt` (genuine two-pass `v_u + w(v_c−v_u)`), distilled `guidance_scale`
+held neutral at 1.0 — isolates the cfg-equation effect, not Flux's distilled guidance.
+Sweep w∈{1,1.5,2,3,4,5} × the 6 E9 prompt classes × 3 seeds = 108 final latents
+(16×128×128, 28 steps). Per latent: Fourier power `mean|X|²`, latent std, radial PSD
+(`radial_psd`), low-band power (centers<0.25), and the literal **spectral norm**
+(mean σ_max per channel). Real-image anchor: 20 natural photos (seeded `picsum.photos`),
+VAE-encoded into the generation latent space (`lat=(z−shift)·scale`). Memory: pre-encode
+all prompts once then **drop the T5/CLIP text encoders** (process RSS ~1.3 GB vs ~10 GB),
+so the whole sweep runs in one process on a RAM-contended shared box without OOM.
+
+**Key results.**
+- **Spectral power rises monotonically with CFG** — Fourier power 0.636 → 1.928 (w=1→5,
+  **≈3.0×**); latent std 0.775→1.318; spectral norm 69.0→126.7; low-band power 21.4→77.7.
+  The whole radial PSD lifts, not just the slope. Unambiguous on every measure.
+- **Real photos sit at w ≈ 3, NOT at w = 1.** 20-photo anchor: power 1.229 (≈ cfg3's 1.224),
+  std 1.074 (≈ cfg3 1.069), spectral norm 99.6 (≈ cfg3 100.6). So the **unguided trained
+  field (w=1) is spectrally *weaker* than real data**; standard guidance (~3) is where the
+  latent's power matches real-image statistics; higher w overshoots. (Refines the naive
+  "cfg=1 = real" guess from a noisy 4-photo pilot — n=20 lands at cfg≈3.)
+- **Takeaway / nuance.** The elevated spectral scale CFG produces is roughly where natural
+  images live, so a generation *should* carry it. Band-norm operates on this same axis
+  (set per-band power to a reference level): SBN's clamp toward the calm cfg=1 look is a
+  deliberate stylistic choice *below* the real-image scale, not a realism restoration.
+
+**Artifacts.** `results/e10/cfg_spectral.json` (per-cfg + real aggregates, PSD curves),
+`results/e10/{class}/{images,latents}/tcfg{w}_s*`, `real_photos/`, `real_latents.pt`;
+plots `results/e9/plots/cfg_power.png`, `cfg_psd.png`; surfaced as the **"Why normalize?"**
+tab in the SBN explainer (`results/e9/site/index.html`).
+
+---
+
+## E11 — cheap color/contrast correction of band-norm outputs
+
+**Motivation.** E9 showed band-norm (SBN) clamps cfg=3.5 latent power back to the
+cfg=1.0 reference; a measured side effect is washed-out output (vs cfg=3.5: ~−23%
+RMS contrast, slightly lower colorfulness) — it "lacks color." Can quick
+*image-level* post-processing restore color/contrast toward the cfg=3.5 look
+**without** discarding the SBN detail gain? The detail-preservation test is the
+contrast-invariant high-frequency fraction `hf_frac`: a good correction lifts
+colorfulness/contrast while leaving `hf_frac` ≈ SBN (i.e. doesn't re-bake).
+
+**Setup.** Post-processing only — no regeneration, no GPU. Reprocessed the existing
+SBN PNGs (6 classes × 25 seeds) under `results/e9/`. Four method families, PIL +
+numpy only: `sat` (ImageEnhance.Color, **f∈{1.4,1.8}**), `contrast` (ImageEnhance.Contrast
+f=1.2 + autocontrast), `lum_eq` (equalize Y channel of YCbCr → no hue shift),
+`hist_match` (per-channel CDF match to the paired cfg=3.5 image — reference upper
+bound). Scored every variant with E9's `image_metrics()`; deltas reported vs SBN and
+vs cfg=3.5. Code: `e11_color_correct.py --sat-factors 1.4 1.8`.
+
+**Key results** (means over 25 seeds; representative across all 6 classes).
+- **Saturation boost is the practical fix for "lack of color."** `sat` raises
+  colorfulness with ~zero change to contrast and **hf_frac unchanged**. **f=1.4 is
+  the chosen factor**: its colorfulness lands closest to cfg=3.5 (mean |gap| 0.030 vs
+  0.037 for f=1.8) and it overshoots on only 2/6 classes, whereas **f=1.8 overshoots
+  on 5/6** (over-saturated/garish). Cheap, single-pass, reference-free, detail-safe.
+- **`hist_match` reaches the palette target most precisely but is EXPENSIVE.** It
+  matches each SBN frame to its **paired cfg=3.5 image**, so it requires a *second,
+  full-guidance generation pass per image* — roughly doubling generation cost and
+  needing the very cfg=3.5 output SBN is meant to avoid. It is an **oracle / upper
+  bound on how close correction can get**, not a deployable correction.
+- **`contrast`=1.2 lifts both** colorfulness (+0.018…+0.054) **and** RMS contrast
+  (+0.03…+0.04), hf_frac preserved — a no-reference way to also recover contrast.
+- **`autocontrast` is a near no-op** — SBN images already span the full 0–255 range
+  (all Δ ≈ 0). **`lum_eq` overshoots contrast** (+0.08…+0.14, often past cfg=3.5),
+  *lowers* colorfulness, and is the only method that perturbs `hf_frac` — avoid.
+- **Takeaway / standing recommendation.** Ship a **saturation ×1.4** post-process on
+  SBN outputs — it puts the color back for free. `hist_match` is only an oracle (needs
+  the extra cfg=3.5 pass); reserve it for measuring the ceiling, not for production.
+
+**Artifacts.** `results/e11/report.json` (per-class/per-method mean metrics + deltas
+vs SBN and vs cfg=3.5); `results/e11/<class>/<method>/` corrected PNGs;
+`results/e11/<class>/grids/<method>.png` (SBN | corrected | cfg3.5 contact sheets).
+Presented in the explainer site Color-correction tab (`results/site/index.html`;
+`make_e9_site.py --standalone` also writes a self-contained `index_standalone.html`
+with images inlined).
+
+---
+
+## E12 — Latent FFT phase distributions across image classes (`e12_phase_dist.py`)
+
+**Motivation.** The baseline that motivates the E13–E15 phase line: is the latent
+FFT-phase *marginal* ever non-uniform (per band / channel / class), or is the white-noise
+null the whole story — so that any phase signal must live in cross-frequency *structure*
+(Oppenheim–Lim), not the marginal? (A separate SD3.5 control once occupied this slot but
+was dropped; this is the renumbered former E13.)
+
+**Setup.** FLUX.1-dev, the 6 prompt classes × seeds; per (channel, radial band) phase
+histogram + circular stats (flatness, mean resultant length) and cross-seed phase
+coherence, vs the `random_hermitian_phase` null. Analysis-only (no intervention).
+
+**Key results.** _(entry to be completed after the run.)_
+
+---
+
+## E13 — Full-spectrum phase ↔ magnitude swap (Oppenheim–Lim in Flux latent space)
+
+**Motivation.** E7 found latent identity follows the *low-band* phase donor in a
+band-split interpolation. E13 asks the global Oppenheim–Lim (1981) question across the
+*whole* spectrum: does perceived identity track FFT phase or magnitude, and what do
+phase-only / magnitude-only latents decode to?
+
+**Setup.** FLUX.1-dev, the 6 E9 prompt classes × 4 seeds at cfg=3.5 → a base latent
+bank (1,16,128,128). Decode-only (no re-diffusion) through the Flux VAE. Per class,
+seeds paired (A,B); six decoded variants — baseA, baseB, A-phase+B-mag, B-phase+A-mag,
+phase-only(A), magnitude-only(A) — built with new Hermitian-safe ops in `spectral_ops.py`
+(`band_phase_swap` at c=1, `phase_only`, `magnitude_only`; all preserve the 4
+self-conjugate bins so the ifft stays real, ~1e-6 residue). Scored with `image_metrics`
++ CLIP ViT-L image cosine to source A and B (new `clip_sim.py`). Driver
+`e13_phase_mag_swap.py` (`--part gen,analyze`, image+latent cached → resumable).
+Memory: new `gpu_resident` loader (NF4 transformer + bf16 T5 on GPU, no cpu-offload) —
+identical numerics to `bnb4` but keeps CPU RAM ~baseline; this RAM-contended box
+OOM-kills cpu-offload runs.
+
+**Key results.** (CLIP image cosine, mean over 6 classes × 2 pairs.) **Identity follows
+phase; magnitude alone carries no layout — but the full-spectrum margin is
+content-graded, not absolute.**
+- **The phase/magnitude asymmetry is unambiguous in the pure conditions:**
+  magnitude-only ≈ **0.514** CLIP-to-source (≈ the cross-pair floor; a textured palette
+  swatch, no recognizable subject) vs phase-only **0.747** (recognizable layout,
+  flat/desaturated — magnitude envelope erased). Magnitude alone = no identity; phase
+  alone = identity minus palette.
+- **In the full-spectrum swap, identity tracks the phase donor on average but by a
+  modest margin:** A-phase+B-mag → phase **0.858** vs mag **0.842**; B-phase+A-mag →
+  phase **0.865** vs mag **0.833**. Softer than E7's low-band flip because CLIP image
+  cosine also reads palette/contrast from the magnitude donor.
+- **Content dependence (flag).** `abstract` ties/reverses: its magnitude-only retains
+  real identity (0.63/0.65 vs the ~0.49 floor) and A-phase+B-mag is a dead heat
+  (0.804 vs 0.802) — a structureless colourful speckle still reads as "abstract
+  colourful painting" to CLIP. Phase dominance is cleanest for layout-defined photo
+  classes (animal, portrait, urban_night), weakest for palette/texture-defined prompts.
+- **Refines E7:** at full spectrum phase still wins, but the dominance is graded by how
+  much of the prompt's identity is layout vs palette.
+
+**Artifacts.** `results/e13/` (`grid_<class>.png` 6-variant rows,
+`plots/identity_phase_vs_mag.png`, `report.json` per-class clip_to_A/B + metrics,
+`images/`, `latents/`). New code: `spectral_ops.py` phase ops (`phase_only`,
+`magnitude_only`, `scale_phase`, `phase_offset`, `phase_ramp`, `rotate_band_phase`,
+`add_band_phase_noise`, `odd_sign_mask`), `clip_sim.py`, `gpu_resident` mode in
+`e7_flux_phase.load_flux`. (Also fixed `common.py` to resolve repo paths from `__file__`
+rather than a hardcoded `/workspace`, un-breaking all scripts under the current docker
+mount.)
+
+---
+
+## E14 — Functions on phase: which bands carry identity
+
+**Motivation.** E13 swapped phase vs magnitude wholesale. E14 deforms the phase
+*parametrically* to localize identity by band and to demonstrate the Fourier shift
+theorem.
+
+**Setup.** Decode-only on E13's bank (seed 0 per class as the representative latent),
+Flux VAE + CLIP. Four sweeps via the new `spectral_ops` ops (all Hermitian-preserving;
+preflight asserts `phase_ramp == torch.roll` to 1e-5, constant offset ≠ any roll,
+low-band noise erodes more): scale φ→αφ (α∈{0,0.5,1,2}); ramp (= spatial shift,
+d∈{8,16,32}) vs constant antisymmetric offset (δ∈{0.5,1,2}); per-band rotation (low vs
+high band); graded per-band phase noise φ→φ+εη (η Hermitian, low vs high band,
+ε∈{0.25,0.5,1,2}). Each output scored CLIP-cosine-to-unmodified + `image_metrics`.
+Driver `e14_phase_functions.py`.
+
+**Key results.** (CLIP-to-unmodified, mean over 6 classes.) **Identity lives in low-band
+phase; high-band phase edits are near-free — and a frequency-linear ramp is a
+translation, a constant offset is not.**
+- **Graded phase noise, low vs high band (the headline):** low-band ε=0.25→2.0 =
+  **0.86 / 0.78 / 0.68 / 0.67**; high-band = **0.97 / 0.93 / 0.88 / 0.88**. Low-band
+  noise erodes identity already at ε=0.25 and saturates near 0.67; high-band barely
+  moves. Confirms E7 (identity in low-band phase) and complements E6 (high-band phase
+  is cheap).
+- **Scale φ→αφ:** α=1 → 1.000 (identity, by construction); α=0.5 → 0.81; **α=0 → 0.48
+  and α=2 → 0.46 both collapse to ~chance** — zero-phase (real-even latent) and
+  phase-doubling each scramble identity symmetrically.
+- **Ramp vs constant offset (shift theorem, pedagogical):** the ramp = spatial shift
+  stays benign (d=8/16/32 → 0.92/0.90/0.88 — a wrap-around translation CLIP largely
+  ignores), while the constant antisymmetric offset *degrades monotonically*
+  (δ=0.5/1/2 → 0.89/0.82/0.73). A linear phase ramp in frequency is exactly a
+  translation (`phase_ramp` matches `torch.roll` to 1e-5); a constant added to every
+  phase is not a shift and must be applied antisymmetrically (`odd_sign_mask`) just to
+  stay real — and even then it distorts.
+- **Per-band rotation:** rotating low-band phase (δ=1 → 0.83) corrupts more than
+  high-band (0.94). Same low-band-carries-identity story.
+
+**Artifacts.** `results/e14/` (`grid_<class>_{scale,shift,noise}.png`,
+`plots/identity_vs_eps.png`, `report.json`).
+
+---
+
+## E15 — Classify outputs by phase manipulation
+
+**Motivation.** E13/E14 produced a battery of phase-manipulated decodes. E15 asks
+whether the manipulation→output relation is structured enough to "classify": do phase
+edits map to consistent output groups independent of seed and image class?
+
+**Setup.** No generation. Embed all **210** cached E13+E14 output PNGs (11 manipulation
+families × 6 classes) with CLIP ViT-L + `image_metrics`; KMeans (k = #families) purity
+& silhouette vs manipulation labels and vs class labels; nearest-neighbour
+manipulation-consistency; per-family CLIP-centroid distance to the `orig` centroid; 2-D
+PCA projection. `e15_phase_clusters.py` (sklearn if present, else numpy
+PCA/KMeans/silhouette fallbacks — this box has no sklearn).
+
+**Key results.** **The manipulation→output map is structured as a consistent
+*magnitude-of-effect axis* (distance from unmodified), not as discrete
+seed/class-independent clusters.**
+- **Distance-to-`orig` (CLIP centroid) is monotone in how much the edit touches
+  identity-bearing structure:** high-band edits sit closest to unmodified —
+  rotate_high **0.17**, noise_high **0.22** (near-invisible, collapse onto the orig
+  cluster) — then rotate_low 0.26, shift 0.28, phase_mag_swap 0.30, offset 0.35, then
+  the identity-altering edits farthest — scale 0.46, noise_low 0.47, phase_only 0.47 —
+  with **mag_only 0.76 the clear outlier** (layout stripped). Exactly the roadmap's
+  expectation: low-band-touching edits move far, high-band-only edits collapse near
+  unmodified.
+- **But manipulations do NOT form clean clusters:** KMeans purity vs manipulation
+  **0.28** (vs class **0.62**); NN-consistency vs manipulation **0.71** (vs class
+  **0.94**). Raw CLIP space is dominated by image *content* — an edited fox still
+  embeds near foxes — so KMeans groups by class, and a manipulation is "classifiable"
+  only along the radial orig-distance axis, not as a content-independent cluster
+  (mag_only is the exception that *does* cluster, since it erases content to swatches).
+
+**Artifacts.** `results/e15/` (`report.json` purity/silhouette/NN-consistency +
+per-family centroid-distance-to-orig; `plots/proj_by_manipulation.png`,
+`proj_by_class.png`; `embeddings.pt` cached CLIP+metrics).

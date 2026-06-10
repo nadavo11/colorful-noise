@@ -62,6 +62,23 @@ def load_flux(mem="bnb4"):
         pipe = FluxPipeline.from_pretrained(REPO, transformer=tr,
                                             torch_dtype=torch.bfloat16)
         pipe.enable_model_cpu_offload()
+    elif mem == "gpu_resident":
+        # NF4 transformer + bf16 T5, all GPU-resident (no cpu offload). Same
+        # numerics as bnb4 -- only the weights' residence differs -- but keeps
+        # CPU RAM low (~baseline) so it survives a RAM-contended box where
+        # enable_model_cpu_offload()'s ~17GB CPU footprint gets OOM-killed.
+        # Peak GPU ~17GB (NF4 transformer 6.8 + T5-XXL bf16 9.5 + VAE/CLIP),
+        # fits the 24GB A5000. (cf. E12, which kept SD3.5 GPU-resident for the
+        # same reason.)
+        qc = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                bnb_4bit_compute_dtype=torch.bfloat16)
+        tr = FluxTransformer2DModel.from_pretrained(
+            REPO, subfolder="transformer", quantization_config=qc,
+            torch_dtype=torch.bfloat16)
+        pipe = FluxPipeline.from_pretrained(REPO, transformer=tr,
+                                            torch_dtype=torch.bfloat16)
+        pipe.to("cuda")
+        pipe.vae.enable_tiling()
     elif mem == "seq_offload":
         pipe = FluxPipeline.from_pretrained(REPO, torch_dtype=torch.bfloat16)
         pipe.enable_sequential_cpu_offload()

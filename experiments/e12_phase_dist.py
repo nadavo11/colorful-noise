@@ -1,4 +1,4 @@
-"""E13: latent FFT phase distributions across image classes (FLUX.1-dev).
+"""E12: latent FFT phase distributions across image classes (FLUX.1-dev).
 
 The phase question, framed. E6/E7 already showed the FFT phase *marginal* of
 output latents is ~uniform on [-pi, pi] (flatness ~0.003, phase _|_ magnitude)
@@ -7,7 +7,7 @@ is the white-noise null, not evidence that phase carries nothing: image
 structure lives in cross-frequency phase *relationships* (Oppenheim-Lim), and
 E7's band-split swap showed latent identity follows the low-band phase donor.
 
-E13 produces the per-[-pi, pi] phase histogram that did not yet exist -- not
+E12 produces the per-[-pi, pi] phase histogram that did not yet exist -- not
 just one global curve (E7) but resolved per radial band, per channel, and per
 image class -- plus per-band circular stats (flatness, mean resultant length)
 and cross-seed coherence. Expected signature: near-flat marginals everywhere
@@ -59,7 +59,7 @@ def band_centers(n_bins):
 
 def preflight(args):
     """Numeric asserts on the histogram machinery; no model download."""
-    print("[e13] pre-flight asserts ...", flush=True)
+    print("[e12] pre-flight asserts ...", flush=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 1. band map: shape, range, DC in band 0 (same recipe as radial_psd)
@@ -84,7 +84,7 @@ def preflight(args):
     assert ((rs - 1).abs() < 1e-4)[rs > 0].all(), "rows must sum to 1"
     midhigh = out["R"][:, 2:].mean()
     assert midhigh < 0.1, f"white phase not uniform: R_midhigh={midhigh:.3f}"
-    print(f"[e13] pre-flight OK (white flatness={f:.4f}, "
+    print(f"[e12] pre-flight OK (white flatness={f:.4f}, "
           f"R_midhigh={float(midhigh):.4f})", flush=True)
 
 
@@ -125,7 +125,7 @@ def analyze_class(args, name, lats, idx_map, centers, report, out):
         "coherence_null": r_null,
         "flat_per_channel": flat.mean(1).tolist(),
     }
-    print(f"[e13] {name}: global_flat={report[f'class/{name}']['global_flatness']:.4f} "
+    print(f"[e12] {name}: global_flat={report[f'class/{name}']['global_flatness']:.4f} "
           f"R_low={float(R_band[0]):.3f} R_mid={float(R_band[2:].mean()):.3f} "
           f"coh_low={float(coh_band[0]):.3f} (null={r_null:.3f})", flush=True)
 
@@ -186,7 +186,7 @@ def make_cross_class_plots(args, summ, centers, out):
     fig.savefig(f"{out}/plots/coherence_radial.png", dpi=120,
                 bbox_inches="tight")
     plt.close(fig)
-    print("[e13] cross-class plots saved", flush=True)
+    print("[e12] cross-class plots saved", flush=True)
 
 
 def run(args, report, out):
@@ -207,12 +207,12 @@ def run(args, report, out):
             img_path = f"{out}/images/{tag}.png"
             if os.path.exists(lat_path) and os.path.exists(img_path):
                 lat = torch.load(lat_path, weights_only=True)
-                print(f"[e13] {tag} (cached)", flush=True)
+                print(f"[e12] {tag} (cached)", flush=True)
             else:
                 img, lat = flux_generate(pipe, prompt, s, args.cfg, args.steps)
                 torch.save(lat, lat_path)
                 img.save(img_path)
-                print(f"[e13] {tag} done", flush=True)
+                print(f"[e12] {tag} done", flush=True)
             lats.append(lat)
         lats = torch.cat(lats).cuda()
         summ[name] = analyze_class(args, name, lats, idx_map, centers,
@@ -228,11 +228,11 @@ def run(args, report, out):
             for name, _ in classes]
     save_grid(rows, [n for n, _ in classes],
               [f"seed {s}" for s in range(ncol)], f"{out}/grid_classes.png")
-    print("[e13] grid_classes saved", flush=True)
+    print("[e12] grid_classes saved", flush=True)
 
 
 def main(args):
-    out = os.path.join(RESULTS, "e13")
+    out = os.path.join(RESULTS, "e12")
     os.makedirs(out, exist_ok=True)
     preflight(args)
 
@@ -247,7 +247,7 @@ def main(args):
         report = merged
     with open(path, "w") as f:
         json.dump(report, f, indent=2)
-    print(f"[e13] report -> {path}", flush=True)
+    print(f"[e12] report -> {path}", flush=True)
 
 
 if __name__ == "__main__":

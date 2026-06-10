@@ -25,9 +25,9 @@ conclusion about information**.
 So "can we classify phase changes to images?" splits into two very different questions:
 
 1. **Does the marginal distribution of phase ever deviate from uniform?** (Mostly no — a
-   baseline/control. E13 measures this properly, per band/channel/class.)
+   baseline/control. E12 measures this properly, per band/channel/class.)
 2. **Does the joint phase *structure* carry identity, and which part of it?** (Yes — E7 already
-   saw identity follow the low-band phase donor. E14–E16 probe this.)
+   saw identity follow the low-band phase donor. E13–E15 probe this.)
 
 Keeping these separate is the whole point: a flat histogram is *expected* and is not evidence
 against phase mattering.
@@ -68,19 +68,19 @@ Flip side (output latents, 16ch 128×128), cfg 1.0 vs 3.5.
 | `condition_latent` | low-band decoupling of phase / magnitude / DC |
 | `phase_coherence` | cross-sample phase resultant length, radially averaged, vs null |
 | `flatness` | std/mean of the $[-\pi,\pi]$ phase histogram (marginal uniformity) |
-| `phase_histogram` | **new (E13):** per-(channel, band) phase histogram + flatness + resultant length |
+| `phase_histogram` | **new (E12):** per-(channel, band) phase histogram + flatness + resultant length |
 
 ---
 
 ## 3. Open gaps
 
 - No per-band / per-channel / per-class phase **distribution** — only one aggregate histogram
-  (E7) and per-band *coherence*. → **E13 (this round)**.
-- No **full-spectrum** (not low-band-only) phase/magnitude swap on Flux. → **E14**.
+  (E7) and per-band *coherence*. → **E12 (this round)**.
+- No **full-spectrum** (not low-band-only) phase/magnitude swap on Flux. → **E13**.
 - No systematic **"functions on phase"** sweep (scaling, offset vs ramp, per-band rotation,
-  graded phase noise). → **E15**.
+  graded phase noise). → **E14**.
 - No **clustering** of outputs by phase manipulation (does a phase edit map to a consistent
-  output class?). → **E16**.
+  output class?). → **E15**.
 
 ---
 
@@ -91,10 +91,10 @@ a `preflight()` of numeric asserts before any GPU work, file-cached generation f
 and an `EXPERIMENTS.md` entry after the run. Target model: **FLUX.1-dev** output latents
 (16ch, 128×128), canonical 6 classes in `e9_bandnorm_classes.CLASSES`.
 
-(Numbering note: E10–E12 are unrelated experiments — `e10_cfg_spectral`,
-`e11_color_correct`, `e12_sd35_portrait` — so this phase line starts at E13.)
+(Numbering note: E10–E11 are unrelated experiments — `e10_cfg_spectral`,
+`e11_color_correct` — so this phase line starts at E12.)
 
-### E13 — Phase distributions *(implemented: `e13_phase_dist.py`)*
+### E12 — Phase distributions *(implemented: `e12_phase_dist.py`)*
 - **Question:** Is the phase marginal ever non-uniform, and where (band / channel / class)?
 - **Method:** generate `seeds` latents per class; compute `phase_histogram` per (channel,
   band) → per-band heatmaps, flatness-vs-band and resultant-length-vs-band curves, per-class
@@ -104,9 +104,16 @@ and an `EXPERIMENTS.md` entry after the run. Target model: **FLUX.1-dev** output
   (preflight null), `load_flux`/`flux_generate`, `CLASSES`.
 - **Expected:** near-flat marginals everywhere except the DC/lowest band, ~identical across
   classes; coherence is what separates classes (elevated only in the low band). Establishes the
-  baseline that motivates E14–E16.
+  baseline that motivates E13–E15.
 
-### E14 — Full-spectrum phase ↔ magnitude swap (Oppenheim–Lim in latent space)
+### E13 — Full-spectrum phase ↔ magnitude swap (Oppenheim–Lim in latent space) *(DONE: `e13_phase_mag_swap.py`)*
+**Result:** identity follows phase, content-graded. Pure conditions unambiguous —
+magnitude-only ≈ 0.514 CLIP-to-source (textured swatch, no layout) vs phase-only 0.747
+(recognizable but flat/desaturated). The full-spectrum swap favors the phase donor only by a
+modest margin (A-phase+B-mag → 0.858 phase vs 0.842 mag) because CLIP also reads palette from
+the magnitude donor; `abstract` (palette/texture identity) ties/reverses. Softer than E7's
+low-band flip — phase dominance is graded by how much of a prompt's identity is layout. See
+`EXPERIMENTS.md` E13.
 - **Question:** Across the *whole* spectrum (not just the low band), does perceived identity
   follow phase or magnitude? And what does phase-only / magnitude-only decode to?
 - **Method:** for latent pairs A,B per class: (i) A-phase + B-magnitude and the reverse,
@@ -118,7 +125,14 @@ and an `EXPERIMENTS.md` entry after the run. Target model: **FLUX.1-dev** output
 - **Expected:** identity tracks phase; magnitude-only ≈ textured palette swatch; phase-only
   ≈ recognizable but flat/desaturated — confirming Oppenheim–Lim holds in the Flux latent.
 
-### E15 — Functions on phase
+### E14 — Functions on phase *(DONE: `e14_phase_functions.py`)*
+**Result:** identity lives in low-band phase; high-band phase edits are near-free. Graded phase
+noise (CLIP-to-unmodified, ε=0.25→2): low band 0.86→0.67 vs high band 0.97→0.88. Scale φ→αφ:
+α=1 identity (1.000), but α=0 (0.48) and α=2 (0.46) both collapse to ~chance. Shift theorem
+demonstrated: a frequency-linear ramp = spatial shift (`phase_ramp` == `torch.roll` to 1e-5)
+and stays benign (d=8/16/32 → 0.92/0.90/0.88), whereas a constant antisymmetric offset is NOT a
+shift and degrades monotonically (δ=0.5/1/2 → 0.89/0.82/0.73). Per-band rotation: low (0.83) >
+high (0.94) corruption. Confirms E7/E6. See `EXPERIMENTS.md` E14.
 - **Question:** how does the output deform under parametric phase edits, and which *bands*
   carry the identity?
 - **Method (sweeps):**
@@ -137,13 +151,21 @@ and an `EXPERIMENTS.md` entry after the run. Target model: **FLUX.1-dev** output
 - **Expected:** low-band phase noise destroys identity at small $\varepsilon$; high-band phase
   noise is near-free (mirrors E6 quantization); the ramp produces a clean spatial shift.
 
-### E16 — Classify / cluster outputs by phase manipulation
+### E15 — Classify / cluster outputs by phase manipulation *(DONE: `e15_phase_clusters.py`)*
+**Result:** the manipulation→output map is structured as a consistent *magnitude-of-effect
+axis* (CLIP distance from unmodified), not as discrete clusters. Distance-to-`orig` is monotone
+in how much the edit touches identity-bearing structure: high-band edits closest (rotate_high
+0.17, noise_high 0.22 — collapse onto orig), low-band/phase edits farthest (scale 0.46,
+noise_low 0.47, phase_only 0.47), mag_only the outlier (0.76). But manipulations do NOT form
+clean clusters (KMeans purity vs manipulation 0.28 vs class 0.62; NN-consistency 0.71 vs 0.94)
+— raw CLIP space is dominated by image content, so an edited image still embeds near its class.
+See `EXPERIMENTS.md` E15.
 - **Question:** do phase edits map to *consistent* output classes — i.e. is the
   manipulation→output relation structured enough to "classify"?
-- **Method:** run a battery of E14/E15 manipulations across seeds/classes; embed outputs (CLIP)
+- **Method:** run a battery of E13/E14 manipulations across seeds/classes; embed outputs (CLIP)
   + `image_metrics`; cluster / low-dim project to see whether manipulations form coherent
   groups independent of seed.
-- **Reuses:** `image_metrics`, a CLIP embedder, outputs cached from E14/E15.
+- **Reuses:** `image_metrics`, a CLIP embedder, outputs cached from E13/E14.
 - **Expected:** manipulations that touch the low band cluster by *effect*; high-band-only edits
   collapse near the unmodified cluster.
 
@@ -151,7 +173,14 @@ and an `EXPERIMENTS.md` entry after the run. Target model: **FLUX.1-dev** output
 
 ## 5. One-line takeaway
 
-Phase marginals are uniform by construction (E13 confirms, per band/class) — so the signal is
-in **phase structure**, concentrated in the **low band** (E7). E14–E16 turn that observation
-into method: swap it (E14), perturb it parametrically (E15), and test whether the
-manipulation→image map is classifiable (E16).
+Phase marginals are uniform by construction (E12 confirms, per band/class) — so the signal is
+in **phase structure**, concentrated in the **low band** (E7). E13–E15 turned that observation
+into method and confirmed it: **latent identity is carried by low-band FFT phase.** Swapping it
+(E13) shows identity follows the phase donor (magnitude alone → a textured swatch), though at
+full spectrum the margin is content-graded. Perturbing it parametrically (E14) localizes it:
+low-band phase noise destroys identity while high-band phase is near-free, and a frequency-linear
+ramp is just a spatial shift. Clustering (E15) shows the manipulation→image map is structured as
+a *magnitude-of-effect axis* (distance from unmodified) rather than discrete classes — CLIP space
+is content-dominated, so only the radial ordering is manipulation-consistent. **Open next:**
+E13's content-grading (layout- vs palette-identity prompts) and the unrun E12 baseline are the
+remaining loose ends.

@@ -5,12 +5,19 @@ import sys
 import torch
 from PIL import Image
 
-sys.path.insert(0, "/workspace/colorful_noise")  # reuse the paper's code
+# Repo root is resolved from this file's location (experiments/common.py ->
+# repo root), so paths work regardless of where the repo is mounted (the docker
+# image historically mounted it at /workspace; the current compose mounts it at
+# its host path). Override with env vars if needed.
+_REPO = os.environ.get(
+    "CN_REPO", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+sys.path.insert(0, os.path.join(_REPO, "colorful_noise"))  # reuse paper's code
 from utils import encode_img_sdxl, fft_radial_frequency_swap  # noqa: F401,E402
 
 SDXL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
-INPUTS = "/workspace/colorful_noise/inputs"
-RESULTS = "/workspace/experiments/results"
+INPUTS = os.environ.get("CN_INPUTS", os.path.join(_REPO, "colorful_noise", "inputs"))
+RESULTS = os.environ.get("CN_RESULTS", os.path.join(_REPO, "experiments", "results"))
 
 
 def load_pipe(model_id=SDXL_ID):
