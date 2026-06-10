@@ -113,6 +113,7 @@ def build_img_map(data, max_px=512, quality=72):
               "e13/plots/identity_phase_vs_mag.png", "e13/grid_animal.png",
               "e13/grid_abstract.png",
               "e14/plots/identity_vs_eps.png", "e14/grid_landscape_noise.png",
+              "e14/images/landscape_base.png",
               "e15/plots/proj_by_manipulation.png", "e15/plots/proj_by_class.png"):
         p = os.path.join(root, f)
         if os.path.exists(p):
@@ -880,6 +881,22 @@ function renderFreq(){
   <h2>Selective high / low frequency control</h2>
   <p>Instead of clamping every band to the reference, scale just one frequency range of
   the target before clamping. Gain 1.0 = plain SBN. The two ranges behave very differently:</p>
+  <details class="card" style="margin:.2em 0 1em">
+    <summary style="cursor:pointer;font-weight:600">How the gain knob works</summary>
+    <p class="small" style="margin:.6em 0 0">SBN holds every radial frequency band of the
+    latent at a fixed <b>power target</b> taken from a calm reference, re-clamping each
+    denoising step. The <b>gain <code>g</code></b> scales that target for just the selected
+    band range (high or low) before the clamp. Power is scaled by <code>g²</code>, so the
+    band's <i>magnitude</i> is driven to <b><code>g</code>× its plain-SBN level</b>:</p>
+    <ul class="small" style="margin:.4em 0 0">
+      <li><b><code>g = 1.15</code> on high bands</b> → ask for ~15% <i>more</i> fine-detail
+        power than the reference. <code>g = 1.3</code> → +30%; <code>g = 0.55</code> → ~45% <i>less</i>.</li>
+      <li>It's a <b>stable knob, not a runaway one</b>: the clamp targets a fixed level every
+        step, so the effect doesn't compound across steps.</li>
+      <li><code>g = 1.0</code> is plain SBN; each result below is shown beside its
+        <b>cfg3.5 full-guidance baseline</b> (no SBN) so the change is legible.</li>
+    </ul>
+  </details>
   <div class="grid2">
     <div class="card" style="border-left:3px solid var(--lo)"><b class="tag-lo">Low bands → structure (works)</b>
       <p class="small" style="margin:.4em 0 0">Raising the low-band target monotonically increases
@@ -1054,15 +1071,16 @@ function renderPhase(){
     φ→αφ collapses identity at both α=0 and α=2; a frequency-linear ramp is just a spatial shift,
     while a constant phase offset genuinely distorts.</p>
     <div class="grid2">
+      ${phImg('e14/images/landscape_base.png','The original landscape (ε=0) — the unmodified decode that the phase noise below erodes from.')}
       ${phImg('e14/plots/identity_vs_eps.png','CLIP-to-original vs phase-noise amplitude, low vs high band.')}
-      <div class="card"><b>Identity erosion (CLIP to unmodified)</b>
-        <table><tr><th>band</th>${eps.map(e=>`<th>ε=${e}</th>`).join("")}</tr>
-        <tr><td class="tag-lo">low</td>${row('low')}</tr>
-        <tr><td class="tag-hi">high</td>${row('high')}</tr></table>
-        <p class="small muted">Low-band noise already erodes at ε=0.25 and saturates near 0.67;
-        high-band barely moves.</p></div>
     </div>
-    ${phImg('e14/grid_landscape_noise.png','Graded phase noise — low band (top row) vs high band (bottom): low-band loses the scene fast, high-band stays recognizable.')}`;
+    <div class="card"><b>Identity erosion (CLIP to unmodified)</b>
+      <table><tr><th>band</th>${eps.map(e=>`<th>ε=${e}</th>`).join("")}</tr>
+      <tr><td class="tag-lo">low</td>${row('low')}</tr>
+      <tr><td class="tag-hi">high</td>${row('high')}</tr></table>
+      <p class="small muted">Low-band noise already erodes at ε=0.25 and saturates near 0.67;
+      high-band barely moves.</p></div>
+    ${phImg('e14/grid_landscape_noise.png','Graded phase noise — the <b>leftmost column is the original</b> (ε=0); columns increase ε left→right. Low band (top row) loses the scene fast; high band (bottom) stays recognizable.')}`;
   }
 
   // 3 — classify by manipulation (E15)
