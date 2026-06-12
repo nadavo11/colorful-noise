@@ -8,7 +8,7 @@ if [ ! -f "$HOME/.gitconfig" ]; then
     git config --global credential.helper store
     git config --global init.defaultBranch main
 fi
-git config --global --replace-all safe.directory /workspace
+git config --global --replace-all safe.directory "${HOST_REPO:-/workspace}"
 
 # Prefer the native Claude Code install (~/.local/bin, persisted in the home
 # volume) over the root-owned npm install baked into the image.

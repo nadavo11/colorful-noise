@@ -10,12 +10,14 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    working_dir: ${HOST_REPO:-/workspace}
     volumes:
-      - ..:/workspace                         # the ONLY host bind mount
+      - ..:${HOST_REPO:-/workspace}           # the ONLY host bind mount (at the host path)
       - colorful-noise-home:/home/dev         # claude login, git PAT, shell history
       - hf-cache:/home/dev/.cache/huggingface # model cache shared across projects
       - /usr/local/bin/runai:/usr/local/bin/runai:ro # static host binary, read-only
     environment:
+      - HOST_REPO=${HOST_REPO:-/workspace}
       - HF_HOME=/home/dev/.cache/huggingface
       - TERM=xterm-256color   # docker exec defaults to 8-color xterm, hiding TUI menu highlights
       - COLORTERM=truecolor
