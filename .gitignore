@@ -7,3 +7,9 @@ __pycache__/
 
 # Experiment outputs (large, regenerable)
 experiments/results/
+
+# Runtime logs
+experiments/.freqctrl_watcher.log
+
+# Claude Code harness state (locks, worktrees)
+.claude/
