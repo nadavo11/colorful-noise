@@ -15,6 +15,7 @@ Usage:
 The reference is recorded at fixed (steps, n_bins) and must match the
 generation call (asserted).
 """
+import math
 import sys
 import os
 
@@ -47,6 +48,30 @@ def record_reference(pipe, prompt, seeds=3, ref_cfg=1.0, steps=28, n_bins=24):
     ref = {"band": acc_band / seeds, "total": acc_total / seeds,
            "std": acc_std / seeds}
     return ref, outs
+
+
+def band_centers(n_bins=24):
+    """Center radial frequency of each band (matches band_index_map binning)."""
+    fmax = math.sqrt(0.5)  # max radial frequency of an unshifted FFT grid
+    edges = torch.linspace(0, fmax + 1e-6, n_bins + 1)
+    return 0.5 * (edges[:-1] + edges[1:])
+
+
+def modulate_reference(ref, target, g, cut_freq=0.25, n_bins=24):
+    """Return a copy of `ref` with the power target of a frequency range scaled.
+
+    target='high' scales bands with center freq >= cut_freq; target='low' scales
+    bands below it. Power is scaled by g**2 so the clamp drives band magnitude to
+    g x its plain-band-norm level (stable: the clamp targets a level each step,
+    it does not compound). g=1.0 reproduces plain band-norm.
+    """
+    centers = band_centers(n_bins)
+    sel = centers >= cut_freq if target == "high" else centers < cut_freq
+    out = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in ref.items()}
+    band = ref["band"].clone()                 # (steps, C, n_bins)
+    band[:, :, sel] *= g ** 2
+    out["band"] = band
+    return out
 
 
 def generate_bandnorm(pipe, prompt, seed, ref, cfg=3.5, steps=28, n_bins=24,
