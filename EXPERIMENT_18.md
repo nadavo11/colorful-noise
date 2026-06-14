@@ -74,13 +74,48 @@ reliable readouts here, and E19 measures style match in latent band-power space.
 (3) Numerics verified: `restyle` band-power match rel-err 2e-6, phase drift 2e-4;
 hybrid/swap imag-residue ~1e-6 (stays real).
 
+### Cross-domain rerun (photo → painting) — the conclusion is VAE-dependent
+
+`fetch_styles.py` pulls public-domain paintings (Van Gogh / Hokusai / Monet /
+Vermeer / Bruegel); rerun pairs photos (A=content) × paintings (B=style), A↔B
+baseline CLIP ≈ **0.60** (real domain gap, vs 0.73 for photo↔photo). Means over the
+photo→painting pairs:
+
+| variant | clip→A | clip→B | psd→B (↓ closer) | colorful (paint=0.17) |
+|---|---|---|---|---|
+| baseA (photo) | 1.000 | 0.604 | 1.92 | 0.098 |
+| **styleA_s1 (Flux VAE)** | 0.920 | 0.619 | 1.80 | 0.104 |
+| **styleA_s1 (SD3.5 VAE)** | 0.900 | 0.609 | **1.03** | **0.122** |
+| phaseA_magB (SD3.5) | 0.835 | 0.611 | 0.57 | 0.137 |
+| hybrid_c0.1 (SD3.5) | 0.677 | **0.695** | — | 0.110 |
+
+- **It's VAE-dependent — and SD3.5 is the favourable one.** In **Flux** latent space
+  isotropic band-power is nearly inert across domains (psd→B 1.92→1.80, colorful
+  +0.006) — the earlier "weak style" read was partly a Flux-VAE artifact. In **SD3.5**
+  latent space (the actual E19 model) it's **real**: restyling a photo toward a
+  painting roughly **halves the spectral distance** (psd→B 1.92→1.03) and moves
+  colorfulness ~30% toward the painting, while keeping content (clip→A 0.90).
+- **But still palette/tone, not strokes.** `clip→B` barely moves (0.604→0.609) under
+  restyle — CLIP (content-dominated) confirms the *layout/subject* stays photographic;
+  what transfers is global palette/tone/spectral-energy, not painterly brushwork. The
+  isotropy ceiling holds; the win is "spectral tone transfer," and it's stronger than
+  the photo-only smoke test implied.
+- **Wholesale-magnitude and hybrid remain the heavier levers** (phaseA_magB: colorful
+  0.137, psd→B 0.57 but content cost; hybrid: clip→B up to 0.695). Report:
+  `results/e18/{report_sd35.json, grids/recombine_sd35.png, site/index_sd35.html}`.
+
+**Net for E19:** the AdaIN-in-Fourier clamp on **SD3.5** is worth running — frame it
+honestly as **spectral tone/palette transfer** (measurable, content-safe), with
+hybrid (E19 split mode) as the stronger structural blend.
+
 **Run** (from `experiments/`):
 ```bash
 cd experiments
 python e18_spectral_recombine.py --part preflight                 # math asserts, no model
 python e18_spectral_recombine.py --part analyze --vae flux --n 6  # cached Flux VAE smoke
+python fetch_styles.py                                            # public-domain paintings
 python e18_spectral_recombine.py --part analyze --vae sd35 \
-       --styles <paintings_dir> --pairs 0:1,0:2                   # real run (SD3.5 VAE)
+       --styles results/e18/styles --n 3 --n_styles 3            # cross-domain (SD3.5 VAE)
 ```
 
 ---
@@ -107,14 +142,19 @@ python e19_spectral_style.py --part gen,score,analyze --num_prompts 2 --seeds 4 
        --styles <paintings_dir> --num_styles 2 --strengths 0.5,1.0
 ```
 
-## E20–E22 — operators already in `experiments/style_ops.py`, drivers are thin variants of E19
+## E19 follow-on modes — operators already in `experiments/style_ops.py`
 
-- **E20 hybrid synthesis** — `build_hybrid_reference` (low-band envelope from A,
-  high from B). Generation-time controls the *energy* split only (phase from the
-  prompt); the strong offline hybrid is E18's `band_spectrum_split`. Stretch:
-  inject phase during generation. Readout: does low-pass(out)→A and high-pass(out)→B?
-- **E21 spectral morph** — `build_morph_reference` (geometric interpolation between
-  two style envelopes over α) → a palette/texture morph sequence.
-- **E22 two-prompt SBN** — `blend_references` (per-band geometric mean of two cfg=1
+These are thin variants of the E19 driver (same `ClampPSD3` path), **not** separate
+top-level experiments — the operators already exist and are unit-tested, so they fold
+into E19 as modes. (This frees the **E20** number for spectral warm-start; see
+`EXPERIMENT_20.md`. Note an unrelated **E23** real-PSD-clamp thread also exists.)
+
+- **hybrid synthesis** — `build_hybrid_reference` (low-band envelope from A, high from
+  B). Generation-time controls the *energy* split only (phase from the prompt); the
+  strong offline hybrid is E18's `band_spectrum_split`. Readout: low-pass(out)→A and
+  high-pass(out)→B?
+- **spectral morph** — `build_morph_reference` (geometric interpolation between two
+  style envelopes over α) → a palette/texture morph sequence.
+- **two-prompt SBN** — `blend_references` (per-band geometric mean of two cfg=1
   references) → "a cat" with the spectral signature of "a Van Gogh painting"; no
   reference image, fully generation-native, cheapest.

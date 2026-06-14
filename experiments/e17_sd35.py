@@ -145,7 +145,7 @@ class ClampPSD3:
 # ---------------------------------------------------------------------------
 
 def gen_sd3(pipe, prompt, seed, guidance, steps, step_override=None,
-            cb_obj=None, neg_prompt=""):
+            cb_obj=None, neg_prompt="", init_latents=None):
     """One SD3.5 generation -> (pil, (1,16,128,128) fp32 cpu latent).
 
     step_override(records, model_output, sample) -> new model_output : optional
@@ -181,6 +181,8 @@ def gen_sd3(pipe, prompt, seed, guidance, steps, step_override=None,
         img = pipe(prompt=prompt, height=SIZE, width=SIZE,
                    guidance_scale=guidance, num_inference_steps=steps,
                    negative_prompt=neg_prompt,
+                   latents=(init_latents.to(pipe.dtype).cuda()
+                            if init_latents is not None else None),
                    generator=torch.Generator("cuda").manual_seed(seed),
                    callback_on_step_end=cb).images[0]
     finally:
@@ -298,3 +300,76 @@ def record_reference_sd3(pipe, prompt, seeds=3, steps=28, n_bins=24, guidance=1.
     ref = {"band": acc_band / seeds, "total": acc_total / seeds,
            "std": acc_std / seeds}
     return ref, outs
+
+
+# ---------------------------------------------------------------------------
+# Spectral warm-start (E20): skip the early steps from a constructed latent
+# ---------------------------------------------------------------------------
+
+class RecordTraj(RecordPSD3):
+    """RecordPSD3 + the per-step LATENT itself (fp16 cpu), so cross-seed phase
+    coherence can be measured (band power alone is insufficient -- E8/E20 found
+    power locks in late while low-band PHASE locks early)."""
+
+    def __init__(self, idx_map, n_bins, steps):
+        super().__init__(idx_map, n_bins, steps)
+        self.lats = [None] * steps
+
+    def __call__(self, p, i, t, kw):
+        out = super().__call__(p, i, t, kw)
+        self.lats[i] = kw["latents"].detach().half().cpu()
+        return out
+
+
+def load_sd35_img2img(pipe):
+    """SD3.5 img2img pipe sharing `pipe`'s weights (no extra VRAM). Used for the
+    warm-start: it maps strength -> start step via get_timesteps + set_begin_index."""
+    from diffusers import StableDiffusion3Img2ImgPipeline
+    p = StableDiffusion3Img2ImgPipeline(**pipe.components)
+    p.set_progress_bar_config(disable=True)
+    return p
+
+
+def warmstart_sigma(scheduler, steps, strength, device="cuda"):
+    """(t_start, sigma_at_t_start) for an img2img-style partial run: skip the first
+    t_start of `steps`, re-entering at noise level sigma. Mirrors the pipeline's
+    get_timesteps math (t_start = steps - min(steps*strength, steps))."""
+    scheduler.set_timesteps(steps, device=device)
+    t_start = int(max(steps - min(steps * strength, steps), 0))
+    return t_start, float(scheduler.sigmas[t_start])
+
+
+def gen_sd3_warmstart(pipe_i2i, x0, strength, prompt, seed, steps, guidance=4.5,
+                      cb_obj=None, neg_prompt=""):
+    """Denoise only the last `strength` fraction of `steps`, starting from the
+    constructed generation-space latent `x0` (1,16,128,128).
+
+    x0 is interpolated to the start noise level -- x_t = (1-sigma)*x0 + sigma*eps,
+    exactly FlowMatchEulerDiscreteScheduler.scale_noise -- then fed via `latents=`
+    so the pipeline SKIPS prepare_latents (which would otherwise run the VAE image
+    preprocessor over our 16-ch latent). The dummy `image` only satisfies the
+    required arg + sets H/W; it is unused once `latents` is supplied.
+    Returns (pil, final fp32 cpu latent). strength=1 -> x_t~=pure noise == a full
+    txt2img run; strength->0 -> x_t~=x0 (no denoising)."""
+    from PIL import Image as _Image
+    dev = "cuda"
+    _, sig = warmstart_sigma(pipe_i2i.scheduler, steps, strength, dev)
+    g = torch.Generator(dev).manual_seed(seed)
+    noise = torch.randn(x0.shape, generator=g, device=dev, dtype=torch.float32)
+    x_t = (1.0 - sig) * x0.float().to(dev) + sig * noise
+
+    captured = {}
+
+    def cb(p, i, t, kw):
+        out = cb_obj(p, i, t, kw) if cb_obj is not None else {}
+        captured["latents"] = out.get("latents", kw["latents"])
+        return out
+
+    dummy = _Image.new("RGB", (SIZE, SIZE))
+    img = pipe_i2i(prompt=prompt, image=dummy, strength=strength,
+                   num_inference_steps=steps, guidance_scale=guidance,
+                   negative_prompt=neg_prompt,
+                   latents=x_t.to(pipe_i2i.dtype),
+                   generator=torch.Generator(dev).manual_seed(seed + 1),
+                   callback_on_step_end=cb).images[0]
+    return img, captured["latents"].float().cpu()

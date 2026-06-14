@@ -190,3 +190,14 @@ def latent_band_power(lat, idx_map, n_bins):
     """(C, n_bins) band power of a single (1,C,H,W) latent -- the style descriptor
     extracted from an encoded style image."""
     return band_power((torch.fft.fft2(lat.float()).abs() ** 2)[0], idx_map, n_bins)
+
+
+def color_noise(noise, target_band, idx_map, n_bins, unit_var=True):
+    """Color a white-noise latent so its radial band power matches target_band
+    (reuse psd_match; phase left random), then renormalize to unit per-element
+    variance so it stays a valid diffusion init. The FreeInit/colorful-noise lever
+    for E20 part C -- shape the step-0 spectrum toward natural-latent statistics."""
+    out = psd_match(noise, target_band, idx_map, n_bins)
+    if unit_var:
+        out = out / out.std().clamp(min=1e-8)
+    return out

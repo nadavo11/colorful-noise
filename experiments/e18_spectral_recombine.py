@@ -155,15 +155,28 @@ def analyze(args):
 
     photos = sorted(p for p in os.listdir(args.photos)
                     if p.lower().endswith((".jpg", ".jpeg", ".png")))[:args.n]
-    assert len(photos) >= 2, f"need >=2 images in {args.photos}"
-    pils = [Image.open(os.path.join(args.photos, p)).convert("RGB").resize((SIZE, SIZE))
-            for p in photos]
+    imgnames, dirs = list(photos), [args.photos] * len(photos)
+    n_photo = len(photos)
+    if args.styles:                         # cross-domain: paintings as the B set
+        styles = sorted(p for p in os.listdir(args.styles)
+                        if p.lower().endswith((".jpg", ".jpeg", ".png")))[:args.n_styles]
+        imgnames += styles
+        dirs += [args.styles] * len(styles)
+    assert len(imgnames) >= 2, "need >=2 images"
+    pils = [Image.open(os.path.join(d, p)).convert("RGB").resize((SIZE, SIZE))
+            for d, p in zip(dirs, imgnames)]
     lats = [sd3_vae_encode(vae, im).to(dev) for im in pils]
     img_psd = [lum_psd(im) for im in pils]   # style descriptor of the originals
     print(f"[e18] encoded {len(lats)} images via {args.vae} VAE", flush=True)
 
     model, proc = load_clip()
-    pairs = parse_pairs(args.pairs, len(lats))
+    if args.pairs:
+        pairs = parse_pairs(args.pairs, len(lats))
+    elif args.styles:                       # content=photo x style=painting
+        pairs = [(i, n_photo + j) for i in range(min(n_photo, 3))
+                 for j in range(min(len(imgnames) - n_photo, 2))]
+    else:
+        pairs = parse_pairs("", len(lats))
     report, rows, row_labels = {}, [], []
     col_labels = None
 
@@ -189,7 +202,7 @@ def analyze(args):
                    for m in ("colorfulness", "saturation", "hf_frac")},
             }
         rows.append([decoded[k] for k in names])
-        row_labels.append(f"A={photos[ai][:8]} B={photos[bi][:8]}")
+        row_labels.append(f"A={imgnames[ai][:10]} B={imgnames[bi][:10]}")
 
     grid = save_grid(rows, row_labels, col_labels, f"{OUT}/grids/recombine_{args.vae}.png")
     with open(f"{OUT}/report_{args.vae}.json", "w") as fh:
@@ -219,7 +232,9 @@ def main():
     ap.add_argument("--part", default="preflight,analyze")
     ap.add_argument("--vae", default="sd35", choices=["sd35", "flux"])
     ap.add_argument("--photos", default=os.path.join(RESULTS, "e10", "real_photos"))
-    ap.add_argument("--n", type=int, default=6, help="images to load")
+    ap.add_argument("--n", type=int, default=6, help="photos (content set) to load")
+    ap.add_argument("--styles", default="", help="dir of style images (B set, e.g. paintings)")
+    ap.add_argument("--n_styles", type=int, default=4, help="style images to load")
     ap.add_argument("--pairs", default="", help="content:style index pairs, e.g. 0:1,2:3")
     ap.add_argument("--strengths", default="0.5,1.0",
                     type=lambda s: [float(x) for x in s.split(",")])
