@@ -165,7 +165,13 @@ THREADS = [
             "band anchors to the source so the velocity delta ~0; it can't out-edit a plain prompt "
             "swap. Net: the spectrum is structured and interpretable, but neither blending nor "
             "frequency-surgery editing beats the trivial baseline. Latent-band editing (E22) remains "
-            "the usable image-editing handle.",
+            "the usable image-editing handle. E32 reopened one untested angle -- localising the band "
+            "edit to a SINGLE object's token span (windowed FFT) -- and FOUND the thread's first "
+            "controllable per-object lever: targeted band gain is object-selective and steerable in "
+            "CLIP (boost->target up/other down, t up to 3.1) while the global-gain control is a null, "
+            "though the effect is small and the presence/binding effect (high band) is noisy. Two "
+            "follow-ups are queued: textual-inversion of an object then frequency-control of its span, "
+            "and channel-axis (D=4096) interpretability for direct attribute steering.",
     },
 ]
 
@@ -449,4 +455,44 @@ EXPERIMENTS = [
      "verdict": "Token-frequency surgery does not drive inversion-free editing; can't out-edit a plain prompt swap.",
      "nxt": "Closes the text-freq editing route; latent-band editing (E22) remains the usable handle.",
      "script": "experiments/e31_flowedit_freq.py", "doc": "EXPERIMENT_31.md", "results": "e31", "image": None},
+    {"id": "E32", "title": "Per-object token-frequency control on two-object prompts", "thread": "text-freq",
+     "models": "FLUX.1-dev", "status": "mapped",
+     "motivation": "E30's band gain is global; can we boost/cut ONE object's frequencies and have it be "
+                   "selective to that object?",
+     "method": "Map each object phrase to its T5 token span (offset mapping); windowed FFT over the span "
+               "(apply_on_subspan + band_gain_1d), median split cut=0.51; targeted vs a global-gain "
+               "control; 10 two-object prompts x 3 seeds (n=60/cell). Metric: per-object CLIP/B-VQA "
+               "selectivity (Delta_target - Delta_other), paired to baseline.",
+     "result": "Ran on runai. Object-SELECTIVE and steerable in CLIP: boosting an object's band raises ITS "
+               "CLIP and lowers the other's; cutting reverses it, both bands, sign tracks gain (sel "
+               "+0.005..-0.008, t up to 3.1). The global-gain control is a null (sel~0, no sign pattern) -> "
+               "localisation, not gain, drives it. B-VQA presence shifts in-direction for the HIGH band "
+               "(boost target +0.04 / cut -0.05, echoing E30 high=binding) but is noisy (|t|<=1.8 at n=60). "
+               "Effect size small (~0.005 CLIP on a ~0.22 baseline).",
+     "verdict": "First CONTROLLABLE per-object text lever (beats E24-MERGE/E31 nulls), but a weak one; "
+                "high band carries the binding effect.",
+     "nxt": "Strengthen with longer object phrases (more bins) / larger N for presence significance; then "
+            "the TI (E33) and channel-axis (E34) follow-ups.",
+     "script": "experiments/e32_object_freq.py", "doc": "EXPERIMENT_32.md", "results": "e32", "image": None},
+    {"id": "E33", "title": "Textual inversion of an object, then frequency-control its span (proposed)",
+     "thread": "text-freq", "models": "SDXL / SD1.5 (TI tooling safer than Flux)", "status": "pending",
+     "motivation": "Learn an embedding for a pseudo-token <obj> from a few images, then boost/cut the "
+                   "token-frequencies of ITS span in a multi-object prompt.",
+     "method": "PROPOSED -- not yet implemented. No TI scaffolding exists in the repo; would use diffusers "
+               "load_textual_inversion or a custom loop adapted from the E25/E26 seed-opt loops, then reuse "
+               "E32's span-windowed band_gain.",
+     "result": "—", "verdict": "—",
+     "nxt": "Implement after E32 reports; pick SDXL/SD1.5 for mature TI tooling.",
+     "script": None, "doc": "EXPERIMENT_32.md", "results": None, "image": None},
+    {"id": "E34", "title": "Channel-axis (D=4096) interpretability of the text embedding (proposed)",
+     "thread": "text-freq", "models": "FLUX.1-dev", "status": "pending",
+     "motivation": "Which CHANNELS of the T5 embedding own which attributes (identity/color/texture/style), "
+                   "so they can be steered directly for editing/generation?",
+     "method": "PROPOSED -- not yet implemented. Attribute probing (per-channel variance/correlation with an "
+               "attribute label) + causal ablation (zero/scale channels, score with CLIP/B-VQA); E24 noted the "
+               "hidden axis is NOT semantically ordered, so likely learned channel directions, not raw indices. "
+               "Composes with E32 span masking for per-object x per-channel edits.",
+     "result": "—", "verdict": "—",
+     "nxt": "Implement after E32; complements the frequency knob with a channel knob.",
+     "script": None, "doc": "EXPERIMENT_32.md", "results": None, "image": None},
 ]

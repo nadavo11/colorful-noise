@@ -216,3 +216,18 @@ def apply_on_span(fn, E_full, L):
     out = E_full.clone()
     out[:, :L] = fn(E_full[:, :L])
     return out
+
+
+def apply_on_subspan(fn, E_full, a, b):
+    """Run `fn` on an arbitrary contiguous token sub-span E_full[:, a:b] and stitch
+    everything outside it (tokens before `a`, the rest of the prompt, and the padding)
+    back unchanged. This is the per-OBJECT generalisation of apply_on_span: `fn` does a
+    windowed FFT over just one object's tokens (E24/E30 only ever windowed the prefix
+    [:, :L]). `fn` takes and returns a (1, b-a, D) tensor.
+
+    NOTE: the window is short (an object phrase is a few tokens), so the windowed rfft
+    has only (b-a)//2+1 bins -- 'low vs high' inside a span is coarse. Use multi-token
+    object phrases and check bins-per-object (the e32 preflight prints this)."""
+    out = E_full.clone()
+    out[:, a:b] = fn(E_full[:, a:b])
+    return out
