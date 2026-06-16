@@ -8,6 +8,10 @@ __pycache__/
 # Experiment outputs (large, regenerable)
 experiments/results/
 
+# Benchmark data (downloadable/regenerable, kept out of git)
+experiments/compbench_data/
+experiments/dpg_bench_data/
+
 # Runtime logs
 experiments/.freqctrl_watcher.log
 

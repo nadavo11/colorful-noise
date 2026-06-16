@@ -40,7 +40,8 @@ from e9_bandnorm_classes import cached_gen, image_metrics, load_set, METRICS
 from e9_clipt import load_clip, clip_scores
 from fidelity_metrics import (load_aesthetic, aesthetic_scores,
                               load_imagereward, imagereward_scores,
-                              spectral_dist_to_real)
+                              spectral_dist_to_real, load_real_psd,
+                              SD35_REAL_LATENTS)
 from vqascore import load_vqascore, vqa_scores_paths
 
 OUT = os.path.join(RESULTS, "e17")
@@ -119,9 +120,9 @@ def run_score(args, report):
     mlp = load_aesthetic()
     ir = load_imagereward()
     scorer = None if args.no_vqa else load_vqascore(args.vqa_model)
-    real_ref = None  # see module docstring: needs SD3.5-VAE-encoded real images
+    real_ref = load_real_psd(args.n_bins, path=SD35_REAL_LATENTS)  # SD3.5 VAE space
     print(f"[e17] scorers: aesthetic={mlp is not None} imagereward={ir is not None} "
-          f"vqa={scorer is not None} spectral=DISABLED(sd35-vae)", flush=True)
+          f"vqa={scorer is not None} spectral={real_ref is not None}", flush=True)
 
     scores = {}
     for pid, prompt in DETAILED[: args.num_prompts]:

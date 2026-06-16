@@ -157,17 +157,18 @@ def imagereward_scores(model, prompt, paths):
 # Spectral distance to real (E10)
 # ---------------------------------------------------------------------------
 
-REAL_LATENTS = os.path.join(RESULTS, "e10", "real_latents.pt")
+REAL_LATENTS = os.path.join(RESULTS, "e10", "real_latents.pt")          # Flux VAE space
+SD35_REAL_LATENTS = os.path.join(RESULTS, "e10", "sd35_real_latents.pt")  # SD3.5 VAE space
 
 
-def load_real_psd(n_bins=24, drop_dc=True):
-    """Channel-mean radial PSD of the E10 real-photo latents (log-space ref),
-    or None if results/e10/real_latents.pt is missing. Returns (centers, log_psd)."""
-    if not os.path.exists(REAL_LATENTS):
-        print(f"[fidelity] no {REAL_LATENTS}; spectral-dist disabled "
-              "(run e10 --part download,real)", flush=True)
+def load_real_psd(n_bins=24, drop_dc=True, path=REAL_LATENTS):
+    """Channel-mean radial PSD of real-photo latents (log-space ref), or None if
+    the latents file is missing. Returns (centers, log_psd). Pass path=
+    SD35_REAL_LATENTS for SD3.5 (its VAE latent space differs from Flux's)."""
+    if not os.path.exists(path):
+        print(f"[fidelity] no {path}; spectral-dist disabled", flush=True)
         return None
-    real = torch.load(REAL_LATENTS, weights_only=True)  # (N,16,128,128)
+    real = torch.load(path, weights_only=True)  # (N,16,128,128)
     centers, psd = radial_psd(real.cuda(), n_bins)       # psd: (C, n_bins)
     cmean = psd.mean(0).clamp(min=1e-12)
     if drop_dc:

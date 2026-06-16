@@ -22,10 +22,16 @@ python -c "import torch; print('[job] torch',torch.__version__,'cuda',torch.cuda
 python -c "import diffusers,transformers; print('[job] diffusers',diffusers.__version__,'transformers',transformers.__version__)"
 
 echo "[job] installing optional scoring deps (graceful) ..."
-( apt-get update -qq && apt-get install -y -qq git ) >/dev/null 2>&1 || echo "[job] WARN: git install failed"
+( apt-get update -qq && apt-get install -y -qq git ffmpeg ) >/dev/null 2>&1 || echo "[job] WARN: apt (git/ffmpeg) install failed"
 pip install --quiet --no-input image-reward ftfy regex \
     "git+https://github.com/openai/CLIP.git" 2>&1 | tail -2 || \
     echo "[job] WARN: optional scoring deps failed; ImageReward degrades gracefully"
+# spaCy (+model) for T2I-CompBench B-VQA noun-phrase extraction (e17_compbench)
+pip install --quiet --no-input spacy 2>&1 | tail -1 && \
+    python -m spacy download en_core_web_sm 2>&1 | tail -1 || \
+    echo "[job] WARN: spaCy install failed; B-VQA will degrade gracefully"
+# (E23 adherence uses B-VQA = BLIP-VQA via transformers, deps already above. We do
+# NOT install t2v-metrics: it pins torch<2.6, which then breaks BLIP's torch.load.)
 
 SCRIPT="$1"; shift
 echo "[job] launching $SCRIPT with args: $*"
