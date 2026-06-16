@@ -34,6 +34,27 @@ flowchart TD
 
 *(The HTML explainer `results/e24/index.html` carries the same schematic as an inline SVG.)*
 
+## How the FFT works (1D per channel, on the full sequence)
+
+A common point of confusion — to be explicit about what is and isn't transformed:
+
+- **The signal is the token sequence.** The conditioning is `E ∈ (N_T × d)` with
+  `N_T` = number of real prompt tokens and `d = 4096`. We take a **1‑D DFT along the
+  token axis** (`torch.fft.rfft(E, dim=1)`), computed **independently for each of the
+  4096 embedding channels** — i.e. `d` separate length‑`N_T` transforms. "Frequency"
+  means *how fast a given channel's value oscillates as you walk along the tokens*
+  (DC = that channel's average over the prompt). The transform **never mixes across
+  the embedding dimension**.
+- **This is not a 2‑D transform.** A 2‑D FFT over *(tokens × channels)* appears only in
+  the `fnet_swap_2d` control condition (the literal FNet operation). Because the
+  embedding dimension has no natural ordering, that 2‑D version is not interpretable and
+  is included only as an "is the mixing transform itself enough?" baseline.
+- **It operates on the full sequence, not the pooled vector.** All band ops act on the
+  T5 **sequence** embeddings `(1, L, 4096)` that feed cross‑attention — *not* on the
+  single pooled `(1, 4096)` vector. (The pooled CLIP vector is left untouched in most
+  conditions; the `pooled_swap` baseline confirmed it barely steers the image — the
+  sequence dominates.)
+
 ## Method
 
 All ops live in `experiments/text_spectral_ops.py` and act on the **real-token span**

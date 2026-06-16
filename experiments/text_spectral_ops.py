@@ -86,6 +86,29 @@ def split_bands_1d(E_span, cut):
     return low, high
 
 
+def band_gain_1d(E_span, lo, hi, gain, keep_dc=True):
+    """Multiply token-frequencies in the normalised range [lo, hi] by `gain` -- the
+    continuous-control knob: gain<1 attenuates, gain>1 amplifies, gain=1 is identity.
+    With keep_dc (default) DC is left at unity so amplifying the high band doesn't
+    rescale the prompt's global (bag-of-words) level."""
+    L = E_span.shape[SEQ]
+    F = torch.fft.rfft(E_span.float(), dim=SEQ)
+    f = _norm_freqs(L, E_span.device)
+    sel = (f >= lo) & (f <= hi)
+    if keep_dc:
+        sel = sel & (f != 0)
+    g = torch.where(sel, torch.as_tensor(float(gain), device=f.device),
+                    torch.ones((), device=f.device))
+    F = F * g.to(F.dtype)[None, :, None]
+    return torch.fft.irfft(F, n=L, dim=SEQ).to(E_span.dtype)
+
+
+def band_notch_1d(E_span, lo, hi):
+    """Zero a single token-frequency band [lo, hi] (per-band knockout); keeps the
+    complement, including DC. notch + band_filter(lo,hi) reconstructs the input."""
+    return E_span - band_filter_1d(E_span, lo, hi, keep_dc=False)
+
+
 # ---------------------------------------------------------------------------
 # two-prompt recombination (the 'merge' / 'edit')
 # ---------------------------------------------------------------------------
