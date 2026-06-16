@@ -146,7 +146,7 @@ THREADS = [
     {
         "id": "text-freq",
         "title": "Text-frequency conditioning",
-        "status": "active",
+        "status": "mapped",
         "summary": "FFT along the token axis of the text embedding.",
         "narrative":
             "Move the spectral idea off the image latent and onto the *text conditioning*. "
@@ -156,12 +156,16 @@ THREADS = [
             "characterises each band; E31 integrates frequency-surgery target conditioning "
             "into FlowEdit for inversion-free real-image editing.",
         "proceed":
-            "ALIVE. Bands are meaningful and on-manifold; the continuous knob (E30) and "
-            "FlowEdit editing (E31) are code-complete with cluster runs the open item. Next: "
-            "land the E30/E31 result runs and the metric strips (CLIP-T, sharpness, hf-frac, "
-            "colourfulness, B-VQA); note MERGE of two text spectra was negative in E24 "
-            "(snaps to the low-band/phase owner, doesn't beat a plain lerp) -- favour the "
-            "EDIT/gain framing over merging.",
+            "CHARACTERISED, but no new control lever. E30 mapped the token spectrum (ran on "
+            "runai): PHASE carries the content (phase_only~full, mag_only collapses); LOW band = "
+            "coarse gist, MID+HIGH bands = attribute-object binding (low-pass kills B-VQA, notch-lo "
+            "keeps it); no single band is load-bearing. But spectral MERGE/BLEND still loses to "
+            "literally writing 'A and B' (concat B-VQA 0.85 vs merges ~0), confirming E24. E31 then "
+            "showed token-frequency surgery does NOT drive inversion-free FlowEdit -- the kept low "
+            "band anchors to the source so the velocity delta ~0; it can't out-edit a plain prompt "
+            "swap. Net: the spectrum is structured and interpretable, but neither blending nor "
+            "frequency-surgery editing beats the trivial baseline. Latent-band editing (E22) remains "
+            "the usable image-editing handle.",
     },
 ]
 
@@ -422,21 +426,27 @@ EXPERIMENTS = [
      "script": "experiments/e29_phase_inherit.py", "doc": "EXPERIMENT_29.md", "results": "e29", "image": None},
     # ---- text-frequency follow-ups ----------------------------------------
     {"id": "E30", "title": "Continuous text-frequency control & extraction", "thread": "text-freq",
-     "models": "FLUX.1-dev", "status": "pending",
+     "models": "FLUX.1-dev", "status": "mapped",
      "motivation": "Turn E24's discrete band ops into a continuous knob and characterise each band.",
      "method": "band_gain_1d (continuous attenuate/amplify) + band_notch_1d (per-band knockout); "
-               "image strips as the knob varies; CLIP-T / sharpness / hf-frac / colourfulness / aesthetic / B-VQA / VQAScore.",
-     "result": "Operators + metric harness built; cluster run pending (VQAScore stack dropped on the job).",
-     "verdict": "Code-complete continuous control; awaiting the result strips.",
-     "nxt": "Land the run; read off which band moves which attribute.",
+               "image strips as the knob varies; CLIP-T / sharpness / hf-frac / colourfulness / aesthetic / B-VQA.",
+     "result": "Ran on runai. Token spectrum IS structured: phase carries the content (phase_only~full, "
+               "mag_only collapses); low band = coarse gist, mid+high bands = attribute-object binding "
+               "(low-pass kills B-VQA, notch-lo keeps it). But no single band is load-bearing, and spectral "
+               "blending still loses to literally writing 'A and B' (concat B-VQA 0.85 vs merges ~0).",
+     "verdict": "Spectrum characterised and structured, but blending is descriptive, not a better control knob.",
+     "nxt": "Optional VQAScore corroboration; structure understood, no new control lever here.",
      "script": "experiments/e30_text_freq_control.py", "doc": "EXPERIMENT_30.md", "results": "e30", "image": None},
     {"id": "E31", "title": "Real-image editing via FlowEdit + frequency-surgery conditioning", "thread": "text-freq",
-     "models": "FLUX.1-dev", "status": "pending",
+     "models": "FLUX.1-dev", "status": "dead-end",
      "motivation": "Use token-frequency surgery as the target conditioning inside inversion-free editing.",
      "method": "FlowEdit (ODE delta integration, no inversion); target conditioning = band_swap(low:src, high:style); "
                "VAE-encode real input; a skip knob for edit strength.",
-     "result": "Driver + Flux velocity accessor + real-image path built; cluster run pending.",
-     "verdict": "Inversion-free editing route for the text-frequency thread; awaiting run.",
-     "nxt": "Run on real images; compare edit strength vs the E22 latent-band route.",
+     "result": "Ran on runai. Recon identity holds (px-dist ~0.003, gate passed) and plain prompt-swap FlowEdit "
+               "edits (scene-dependent). But frequency-surgery target conditioning barely moves the image: the "
+               "kept low band anchors to the source so v(C_tar)-v(C_src)~0 => delta~0. High-band style injection "
+               "too weak to redirect the flow.",
+     "verdict": "Token-frequency surgery does not drive inversion-free editing; can't out-edit a plain prompt swap.",
+     "nxt": "Closes the text-freq editing route; latent-band editing (E22) remains the usable handle.",
      "script": "experiments/e31_flowedit_freq.py", "doc": "EXPERIMENT_31.md", "results": "e31", "image": None},
 ]

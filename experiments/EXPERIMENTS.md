@@ -961,8 +961,13 @@ A↔B swap-cut morph), **concat** (spectral merge vs writing "A and B"), **longp
 (DPG-Bench: does dropping high freq drop the tail objects?), **compositional** (CompBench
 B-VQA). Metrics: CLIP-T, image stats, aesthetic, B-VQA, VQAScore.
 
-**Status.** Code complete and offline-verified (ops + builders); cluster run pending.
-**Results: TBD.**
+**Results.** Ran on runai (`e30-text-freq`, Succeeded; CLIP-T + B-VQA, `--no_vqa`). The
+token spectrum is genuinely structured: **PHASE carries the content** (phase_only≈full,
+mag_only collapses for objects), **low band = coarse gist, mid+high bands = attribute–object
+binding** (low-pass kills B-VQA, e.g. color_000 .945→2e-5; `notch_lo` keeps it, e.g.
+texture_000 .99). But **no single band is load-bearing** (any one knockout ≤~0.02 CLIP), and
+**spectral blending still loses to writing "A and B"** (concat B-VQA 0.85 vs every merge ~0).
+Net: structure is descriptive, not a better control knob. **Status: complete.**
 
 **Artifacts.** `experiments/e30_text_freq_control.py`; `results/e30/`. See EXPERIMENT_30.md.
 
@@ -984,7 +989,12 @@ strength. `C_tar = band_swap_1d(low: C_src, high: C_style)` at a couple of cuts,
 `recon` reproduces the source by construction — validates the VAE/packing path before any GPU.
 Metrics: CLIP-to-style (edit) vs CLIP-to-source + pixel-distance (preservation), aesthetic.
 
-**Status.** Code complete; model-free preflight + wiring verified offline (FlowEdit identity
-holds by construction); cluster run pending. **Results: TBD.**
+**Results.** Ran on runai (`e31-flowedit`, Succeeded). Reconstruction identity holds
+(`recon` px-dist ~0.003 — VAE/packing/velocity path validated) and plain prompt-swap FlowEdit
+(`full`) edits scene-dependently (street_snow CLIP-style .093→.208). But **frequency-surgery
+target conditioning barely edits**: `band_swap` (low←src, high←style) leaves CLIP-style at
+recon level — the kept low band anchors to the source so `v(C_tar)−v(C_src)≈0 ⇒ δ≈0`, and the
+style's high band is too weak to redirect the flow. Token-frequency surgery is **not** a
+usable editing handle; it can't out-edit a plain prompt swap. **Status: complete (dead-end).**
 
 **Artifacts.** `experiments/e31_flowedit_freq.py`; `results/e31/`. See EXPERIMENT_31.md.

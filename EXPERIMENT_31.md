@@ -65,6 +65,35 @@ python experiments/e31_flowedit_freq.py   # full -> results/e31/{<key>/strip.png
 > Cluster note: ship code with `kubectl cp` (the `/storage` checkout is not git; the image
 > has no git).
 
+## Results (runai `e31-flowedit`, Flux, 3 scenes, 28 steps, skip=0.33, guidance 3.5)
+Preflight (model-free) and the reconstruction gate both passed, then the full run completed.
+Per-scene CLIP-to-style / CLIP-to-source / pixel-distance below; n=1 per cell.
+
+**Reconstruction identity holds** (the gate). `recon` (C_tar=C_src) reproduces the source by
+construction: px-dist **0.0031 / 0.0022 / 0.0029** (house_storm / cat_paint / street_snow).
+The Flux velocity accessor, σ schedule, packing, and VAE path are all validated.
+
+**Plain prompt-swap FlowEdit (`full`) edits — unevenly.** Strong on street_snow
+(CLIP-style 0.093→**0.208**, px-dist 0.121), modest on house_storm (px-dist 0.063 but
+CLIP-style barely moves, .094→.099), near-recon on cat_paint. So inversion-free FlowEdit
+works on Flux, scene-dependent.
+
+**Frequency-surgery target conditioning barely edits — the negative result.**
+`swap_c0.25` / `swap_c0.4` (`band_swap`: low band from source, high band from style) leave
+CLIP-style at **recon level** (street_snow 0.086 — *below* recon's 0.093; cat_paint 0.169 ≈
+recon 0.168; house_storm 0.088–0.096) with small px-dist. Mechanism: the kept low band
+anchors the conditioning to the source (E24/E30's "low band = owner"), so the velocity
+difference `v(x,C_tar) − v(x,C_src)` stays ≈0 ⇒ δ≈0 ⇒ no edit; the style's high band is too
+weak to redirect the flow (E24's "high band = weak style-strength knob"). Caveat: short
+prompts collapse the two cuts onto the same integer frequency index (`swap_c0.25` ==
+`swap_c0.4` exactly for street_snow).
+
+**Bottom line.** Token-frequency surgery is **not** a usable handle for inversion-free
+editing — it can't out-edit a plain prompt swap, and usually does nothing. This unifies the
+text-freq thread (E24→E30→E31): the low band owns the result, and high-band injection is a
+weak style knob, never a compositional or editing lever.
+
 ## Status
-Code complete; model-free preflight + wiring verified offline (FlowEdit identity holds by
-construction). Cluster run pending. **Results: TBD.**
+Complete. Preflight + recon gate + full run all passed on runai (`e31-flowedit`, Succeeded).
+Results above; artifacts in `experiments/results/e31/` (`report.json` + per-scene
+`<key>/strip.png` + self-contained `index.html`). Real-image editing (`--real_dir`) untested.

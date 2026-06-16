@@ -74,5 +74,49 @@ python experiments/e30_text_freq_control.py   # full -> results/e30/{...,index.h
 > Cluster note: ship code with `kubectl cp` (the `/storage` checkout is not git; the image
 > has no git). Heavy scorers (VQAScore ~11 GB, B-VQA) load in `analyze` after Flux is freed.
 
+## Results (runai `e30-text-freq`, Flux, 28 steps, true-CFG=1 / guidance 3.5)
+Full sweep ran clean (`probe_deep,continuous,concat,longprompt,compositional,analyze`),
+`--no_vqa` (VQAScore deferred to an isolated env — CLIP-T + B-VQA already settle the story).
+Headline strips/sweeps/morph grids generated (`results/e30/index.html`, self-contained).
+Metrics below are CLIP-T (prompt adherence) and B-VQA (per-object attribute binding); n=1
+per cell (single seed), so read **directions**, not third-decimal differences.
+
+**1. Phase carries the conditioning; magnitude is nearly discardable** (`probe_deep`).
+Decomposing the per-channel token-axis spectrum into phase vs magnitude:
+`phase_only` (unit magnitude, keep phase) ≈ `full` CLIP — cat .316 vs .313, car .296 vs
+.286, castle .316 vs .300 — while `mag_only` (keep magnitude, zero phase) **collapses** for
+object prompts (cat .019, car .049) and only partly survives for the style-heavy castle
+(.276). The token-axis phase spectrum holds almost all the content; magnitude is close to
+noise. (Mirrors the classic image-FFT "phase carries structure" result, now in the *text
+embedding* domain — and sharpens E24's "phase≈identity" observation.)
+
+**2. No single band is load-bearing** (`probe_deep`). Knocking out any one of 6 bands
+(`notch_b0..b5`) moves CLIP by ≤~0.02 — content is redundantly distributed across bands, so
+narrow-band surgery is a weak lever.
+
+**3. Writing "A and B" still beats spectral blending** (`concat`). Literal concat B-VQA
+(both objects present): cat_car **0.852**, castle_forest 0.350. Every spectral merge
+(`band_blend`/`band_swap`/`lerp`) drops object B (clip_B ~0.10–0.16, B-VQA ~0.001–0.006),
+snapping to the low-band / prompt-A owner. Lone exception: `band_blend` matched concat on
+castle_forest (0.377 vs 0.350). Confirms E24's "merge snaps to the low-band owner, doesn't
+beat the baseline" at scale.
+
+**4. Attribute–object binding lives in the MID/HIGH bands, not the low band**
+(`compositional`, CompBench color/shape/texture, B-VQA = binding). Low-pass (`low`)
+**destroys** binding almost everywhere (color_000 .945→2e-5, color_003 .921→1e-4,
+texture_000 .998→.002), but `notch_lo` (remove *only* the low band, keep mid+high) **retains**
+it in many cases (shape_000 .87, shape_003 .92, texture_000 .99, texture_001 .91,
+texture_002 .92). High-pass is mixed (great on some textures/colors, collapses on others).
+So the token spectrum *is* structured: **low band = coarse gist / global object presence;
+mid+high bands = which-adjective-binds-to-which-noun**. (`longprompt`: B-VQA too sparse on
+~80-word DPG/Parti prompts to read object retention; CLIP corroborates that `notch_lo` hurts
+most — low band carries the gist.)
+
+**Bottom line.** Continuous control works visually and the token spectrum is genuinely
+structured (low=gist, mid/high=binding, phase=content), but spectral *blending* still offers
+nothing over just writing the prompt. The structure is descriptive, not a better control knob.
+
 ## Status
-Code complete and offline-verified (ops + builders). Cluster run pending. **Results: TBD.**
+Complete. Full sweep ran on runai (`e30-text-freq`, Succeeded). Results above;
+artifacts in `experiments/results/e30/` (`report.json` + self-contained `index.html`).
+Optional follow-up: VQAScore over the saved PNGs from an isolated env to corroborate B-VQA.
