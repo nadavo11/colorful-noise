@@ -40,11 +40,42 @@ image. The output is a "what does each knob do, and to which kinds of prompts" m
 
 ## Findings
 
-**Run pending** (driver + preflight validated: 1001 conditions, all per-object spans resolve
-on SD1.5's CLIP tokenizer; ops unit-tested). The deliverable is `results/e35/index.html`:
-read the per-operator curves to see, e.g., how low-pass `cut` trades adherence for "gist",
-where band/phase gain helps vs hurts fidelity, and whether any of this is prompt-type
-dependent (short vs long vs style vs object).
+Ran on runai (SD1.5, 1001 conditions, 5005 images). Operator means (CLIP adherence /
+LAION aesthetic / baseline-drift), sorted by adherence; baseline = 0.283 / 5.83:
+
+| operator | CLIP | aesthetic | drift |
+|---|---|---|---|
+| baseline | 0.283 | 5.83 | — |
+| lerp | 0.275 | 5.96 | 0.13 |
+| **per-object band gain** | 0.274 | 5.63 | **0.09** |
+| high-pass | 0.224 | 5.07 | 0.22 |
+| band-blend | 0.213 | 4.68 | 0.36 |
+| band gain | 0.212 | 4.86 | 0.26 |
+| band-swap | 0.204 | 4.52 | 0.37 |
+| **phase-only** | **0.187** | **4.47** | 0.36 |
+| low-pass | 0.174 | 4.49 | 0.38 |
+| notch | 0.171 | 4.40 | 0.39 |
+| phase band-keep | 0.165 | 4.09 | 0.36 |
+| phase gain | 0.165 | 4.24 | 0.37 |
+| **mag-only** | **0.145** | **3.85** | **0.43** |
+
+1. **Phase ≫ magnitude carries the content — replicated on SD1.5/CLIP-77.** phase-only
+   (0.187 / 4.47) beats mag-only (0.145 / 3.85) on both adherence and fidelity, and mag-only
+   has the **largest drift** (0.43, moves furthest from baseline). This reproduces E30's
+   Flux/T5 result on a different architecture. The phase>mag gap is **largest for long /
+   compositional prompts** (mag-only CLIP drops to 0.13 on long/object/twoobj vs phase-only
+   ~0.17–0.23).
+2. **Localized / interpolation edits are the gentlest.** per-object band gain (drift 0.09,
+   CLIP 0.274 ≈ baseline) and lerp (drift 0.13) barely perturb — per-object stays near baseline
+   (object 0.281 vs 0.284), consistent with E32's small-but-real effect.
+3. **High-pass > low-pass for adherence** (0.224 vs 0.174): keeping high-frequency token
+   detail + DC preserves more prompt content (esp. object identity) than the low "gist" alone.
+4. **Aggressive band surgery degrades both axes.** low-pass / notch / phase band-keep / phase
+   gain / mag-only all fall to CLIP ~0.15–0.17 and aesthetic ~3.9–4.5 with large drift — most
+   single-band surgery costs adherence *and* fidelity on SD1.5.
+
+Per-parameter curves (faceted by prompt category) and contact sheets are in
+`results/e35/index.html`.
 
 ## Caveats & next
 

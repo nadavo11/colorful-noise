@@ -496,17 +496,19 @@ EXPERIMENTS = [
      "nxt": "Implement after E32; complements the frequency knob with a channel knob.",
      "script": None, "doc": "EXPERIMENT_32.md", "results": None, "image": None},
     {"id": "E35", "title": "Token-frequency operator sweep on SD1.5 (scenarios x operators x params)",
-     "thread": "text-freq", "models": "SD1.5", "status": "pending",
+     "thread": "text-freq", "models": "SD1.5", "status": "mapped",
      "motivation": "Systematically characterise the WHOLE token-freq operator toolkit: per operator x "
                    "parameter x prompt-type, what happens to adherence and fidelity?",
-     "method": "All 13 ops (low/high-pass, band gain, notch, phase-only/mag-only, phase band-keep, phase "
-               "gain, per-object, two-prompt swap/blend/lerp) on SD1.5; 25 prompts across 5 categories "
-               "(short/long/style/object/two-object), 5 seeds, dense param grids (~1001 conditions, ~5005 "
-               "imgs, ~2h). Metrics: CLIP-T adherence, LAION aesthetic + image-stats (fidelity), "
-               "baseline-drift (CLIP image-image).",
-     "result": "Run pending (driver + preflight validated: 1001 conditions, per-object spans resolve on "
-               "SD1.5 CLIP-77; ops unit-tested).",
-     "verdict": "TBD: a map of what each operator/level does, by prompt type.",
-     "nxt": "Lift the strongest operator x regime findings back to Flux; feeds E33/E34.",
+     "method": "All 13 ops on SD1.5; 25 prompts across 5 categories (short/long/style/object/two-object), "
+               "5 seeds, dense param grids (1001 conditions, 5005 imgs). Metrics: CLIP-T adherence, LAION "
+               "aesthetic + image-stats (fidelity), baseline-drift (CLIP image-image).",
+     "result": "Ran on runai. PHASE >> MAGNITUDE replicates on SD1.5/CLIP-77: phase-only 0.187 CLIP / 4.47 "
+               "aesthetic beats mag-only 0.145 / 3.85 (mag-only also drifts most, 0.43); gap largest on "
+               "long/compositional prompts. Localized/interp edits gentlest (per-object drift 0.09 ~baseline, "
+               "lerp 0.13). High-pass > low-pass on adherence (0.224 vs 0.174). Aggressive single-band "
+               "surgery (lowpass/notch/phasekeep/phasegain/magonly) costs BOTH adherence and fidelity.",
+     "verdict": "Toolkit mapped on SD1.5: phase carries content (cross-arch confirm of E30); per-object/lerp "
+                "are do-little-harm, most band surgery degrades.",
+     "nxt": "Lift the phase>mag + high-vs-low findings back to Flux; feeds E33/E34.",
      "script": "experiments/e35_op_sweep.py", "doc": "EXPERIMENT_35.md", "results": "e35", "image": None},
 ]
