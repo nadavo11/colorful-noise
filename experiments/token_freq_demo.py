@@ -94,19 +94,79 @@ NEEDS_BAND = {"band gain", "notch", "per-object band gain"}
 NEEDS_GAIN = {"band gain", "per-object band gain"}
 
 HELP = {
-    "baseline": "The unmodified prompt — your reference.",
-    "low-pass": "Keep only low token-frequencies (DC..cut): coarse 'gist' of the prompt.",
-    "high-pass": "Keep high token-frequencies (cut..1) + DC: sharp token-to-token detail.",
-    "band gain": "Amplify (gain>1) or attenuate (gain<1) the chosen band. DC left at unity.",
-    "notch": "Zero one band entirely (knockout) — what does removing it cost?",
-    "phase-only": "Keep token-axis phase, set magnitude=1. E30: phase carries the content.",
-    "mag-only": "Keep magnitude, set phase=0. E30: this collapses — phase is the carrier.",
-    "two-prompt band-swap": "low band from A + high band from B (hard cut). E24/E30 merge.",
-    "two-prompt band-blend": "Soft cosine crossover between A (low) and B (high).",
-    "two-prompt lerp": "Plain (1-a)*A + a*B in token space — the merge baseline.",
-    "per-object band gain": "E32: windowed band gain on ONE object's token span only "
-                            f"(median split {OBJ_CUT}); rest of the prompt untouched.",
+    "baseline":
+        "**Baseline.** Prompt A, unmodified — the reference image (shown on the left).",
+    "low-pass":
+        "**Low-pass** *(uses `cut`)*. Keep token-frequencies in `[0, cut]` (incl. DC), zero "
+        "the rest. Keeps the slow, global **gist** of the prompt and drops token-to-token "
+        "detail. `cut→0` collapses toward a generic average prompt; `cut→1` ≈ the full prompt.",
+    "high-pass":
+        "**High-pass** *(uses `cut`)*. Keep `[cut, 1]` **plus DC**, zero the low band. Keeps "
+        "sharp token-to-token **detail** and the overall level, drops the coarse structure. "
+        "(DC is kept so the result isn't degenerate.)",
+    "band gain":
+        "**Band gain** *(uses `cut`, `band`, `gain`)*. Multiply **one** side of the `cut` by "
+        "`gain` (>1 amplify, <1 attenuate); **DC is always left at unity**. `cut` sets *where* "
+        "the split is; `band` picks *which* side is scaled — `high` boosts detail/texture/style, "
+        "`low` boosts the coarse 'gist'. E30's continuous knob.",
+    "notch":
+        "**Notch** *(uses `cut`, `band`)*. Zero out *exactly* the chosen band (knockout), keep "
+        "everything else incl. DC. A diagnostic: what does removing this band cost?",
+    "phase-only":
+        "**Phase-only.** Keep the token-axis **phase**, set every magnitude to 1. E30 found "
+        "phase-only ≈ full → phase carries the content.",
+    "mag-only":
+        "**Mag-only.** Keep **magnitude**, set phase to 0. The complement of phase-only; E30 "
+        "found this collapses → phase, not magnitude, is the semantic carrier. Expect a "
+        "degenerate image.",
+    "two-prompt band-swap":
+        "**Band-swap** *(needs Prompt B; uses `cut`)*. Low band `[0,cut]` (incl. DC) from **A** "
+        "+ high band `(cut,1]` from **B**, recombined: 'A's subject/gist + B's detail'. "
+        "(E24/E30 merge.)",
+    "two-prompt band-blend":
+        "**Band-blend** *(needs Prompt B; uses `cut`, `width`)*. A *soft* cosine crossover at "
+        "`cut` of half-width `width`: below → A, above → B, smoothly ramped. Gentler than the "
+        "hard swap. A flat blend = lerp, so the real knob is *where* the crossover sits (`cut`).",
+    "two-prompt lerp":
+        "**Lerp** *(needs Prompt B; uses `alpha`)*. Plain `(1-alpha)·A + alpha·B` in token space "
+        "(no FFT) — the non-spectral **baseline** the spectral merges aim to beat.",
+    "per-object band gain":
+        "**Per-object band gain** *(needs Object phrase; uses `band`, `gain`)*. E32: find the "
+        "object phrase's token span in Prompt A, FFT **only those tokens**, scale the chosen "
+        f"half by `gain` (median split {OBJ_CUT}; DC untouched), stitch back. Edits **one "
+        "object's** frequencies in isolation — boost raises its prominence, cut lowers it. "
+        "The phrase must appear verbatim in Prompt A; the caption shows its span + bins.",
 }
+
+INTRO_MD = """\
+### How it works
+A prompt is encoded into a **token-sequence embedding** `E` of shape `(1, L, 4096)`
+(`L` real tokens × 4096 dims). Every operator takes the FFT **along the token axis**
+(one 1-D transform per channel), edits the spectrum, inverts it, and feeds the result to
+Flux. Normalised frequency runs `0 → 1`:
+- **DC (0)** = the average across tokens — the prompt's overall meaning / level.
+- **low** = slow variation across tokens → coarse, global structure ("gist").
+- **high** = fast token-to-token variation → sharp local detail / style.
+
+Left image = **baseline** (unmodified), right image = your **edit**, at the same seed, so
+any difference is purely the operation. Pick an operation to see what it does and which
+knobs it uses.
+"""
+
+KNOBS_MD = """\
+- **cut** — normalised frequency `0..1` (`1` = Nyquist, the fastest token-to-token
+  alternation) that splits the spectrum into a low side `[0,cut]` and a high side `[cut,1]`.
+  It sets *where* the boundary is, not which side is acted on.
+- **band (low / high)** — *which* side of `cut` an operator scales/zeroes. Needed because
+  one `cut` makes two bands and `gain`/notch only touch one of them.
+- **gain** — multiplier for the selected band: `>1` amplify, `1` identity, `<1` attenuate,
+  `0` = remove. DC is never scaled, so the prompt's global level is preserved.
+- **blend width** — half-width of the soft A↔B crossover (band-blend only).
+- **lerp alpha** — interpolation weight toward Prompt B (lerp only).
+- **seed** — fix it to compare edits fairly (baseline is cached per seed).
+- **steps / guidance / size** — generation quality vs speed; smaller `size` is faster and
+  uses less VRAM.
+"""
 
 # ---------------------------------------------------------------------------
 # model (loaded once at startup)
@@ -288,26 +348,46 @@ def build_ui():
         gr.Markdown("# Token-axis text-frequency editing (E24 / E30 / E32)\n"
                     "Edit Flux's T5 token-sequence embedding, then compare to the baseline. "
                     "Same seed left vs right.")
+        with gr.Accordion("How it works  ·  what the knobs mean", open=False):
+            gr.Markdown(INTRO_MD)
+            gr.Markdown("**Controls**\n" + KNOBS_MD)
         with gr.Row():
             with gr.Column(scale=1):
                 promptA = gr.Textbox(label="Prompt A", value="a fluffy orange tabby cat and a sleeping golden retriever dog")
                 promptB = gr.Textbox(label="Prompt B (two-prompt ops)", visible=False,
+                                     info="Second prompt; its band is mixed into A.",
                                      value="a red sports car on a mountain road")
                 object_phrase = gr.Textbox(label="Object phrase (must appear verbatim in Prompt A)",
-                                           visible=False, value="a fluffy orange tabby cat")
+                                           visible=False,
+                                           info="Edits only this object's token span.",
+                                           value="a fluffy orange tabby cat")
                 op = gr.Dropdown(OPS, value="baseline", label="Operation")
                 helpbox = gr.Markdown(HELP["baseline"])
-                cut = gr.Slider(0.0, 1.0, value=0.25, step=0.01, label="cut (low/high split)", visible=False)
-                band = gr.Radio(["low", "high"], value="high", label="band", visible=False)
-                gain = gr.Slider(0.0, 3.0, value=2.0, step=0.05, label="gain (x)", visible=False)
-                width = gr.Slider(0.0, 0.5, value=0.15, step=0.01, label="blend width", visible=False)
-                alpha = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="lerp alpha (A->B)", visible=False)
+                cut = gr.Slider(0.0, 1.0, value=0.25, step=0.01, label="cut (low/high split)",
+                                info="0=DC … 1=Nyquist. WHERE the spectrum splits (not which side).",
+                                visible=False)
+                band = gr.Radio(["low", "high"], value="high", label="band",
+                                info="WHICH side of cut to act on: high=detail/style, low=coarse gist.",
+                                visible=False)
+                gain = gr.Slider(0.0, 3.0, value=2.0, step=0.05, label="gain (x)",
+                                 info=">1 amplify, 1 identity, <1 attenuate, 0 remove. DC kept at 1.",
+                                 visible=False)
+                width = gr.Slider(0.0, 0.5, value=0.15, step=0.01, label="blend width",
+                                  info="Half-width of the soft A↔B crossover around cut.",
+                                  visible=False)
+                alpha = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="lerp alpha (A->B)",
+                                  info="0 = all A, 1 = all B (plain token-space mix).",
+                                  visible=False)
                 with gr.Row():
-                    seed = gr.Number(value=0, precision=0, label="seed")
-                    steps = gr.Slider(4, 28, value=16, step=1, label="steps")
+                    seed = gr.Number(value=0, precision=0, label="seed",
+                                     info="Fix to compare fairly; baseline cached per seed.")
+                    steps = gr.Slider(4, 28, value=16, step=1, label="steps",
+                                      info="Denoising steps: more = better, slower.")
                 with gr.Row():
-                    guidance = gr.Slider(1.0, 7.0, value=3.5, step=0.1, label="guidance")
-                    size = gr.Dropdown([512, 768, 1024], value=768, label="size")
+                    guidance = gr.Slider(1.0, 7.0, value=3.5, step=0.1, label="guidance",
+                                         info="Flux distilled guidance (~3.5).")
+                    size = gr.Dropdown([512, 768, 1024], value=768, label="size",
+                                       info="Pixels; smaller = faster, less VRAM.")
                 go = gr.Button("Generate", variant="primary")
             with gr.Column(scale=2):
                 with gr.Row():
