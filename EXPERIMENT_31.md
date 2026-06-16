@@ -18,6 +18,28 @@ flowchart LR
   FE --> DEC["x0 + δ → unpack → VAE decode"] --> OUT["edited image"]
 ```
 
+## Background (plain language)
+*The HTML report (`results/e31/index.html`) carries the same glossary inline and leads each
+scene with its before/after strip.*
+
+- **Flow model & velocity** — Flux generates by following a learned **velocity field**
+  `v(x, σ, C)` from noise (σ=1) to a clean latent (σ=0), conditioned on the text embedding `C`.
+  `x0` is the clean source latent (from the source prompt, or VAE-encoded from a real image).
+- **FlowEdit (inversion-free)** — no inversion back to noise; set `δ=0` and, stepping σ high→low,
+  accumulate `δ += (σ_next−σ)·[v(x_tar, C_tar) − v(x_src, C_src)]`; the edit is `x0 + δ`. Only the
+  **difference** between the two conditionings drives the change.
+- **C_src vs C_tar** — `C_src` = source-prompt embedding; `C_tar` = target. If `C_tar = C_src` the
+  difference is exactly zero → output is the source unchanged (the safety gate).
+- **`--skip`** — fraction of the top (noisiest) steps to skip; higher = weaker edit / more source
+  preserved (here 0.33).
+- **Conditions** — `recon` = `C_tar=C_src` (the identity gate, must reproduce the source);
+  `full` = `C_tar` is the **whole style prompt** (ordinary prompt-swap FlowEdit, the edit
+  baseline); `swap_c0.25` / `swap_c0.4` = **frequency surgery** — token-axis spectrum with the
+  **low band (0–0.25 / 0–0.4) from the source** and the **high band from the style**.
+- **Metrics** — **CLIP→style** (↑ stronger edit), **CLIP→source** (↑ content kept),
+  **px-dist→source** (↓ content kept; ≈0 for `recon`), **aesthetic** (↑ sanity). A good edit
+  *raises* CLIP→style while *keeping* CLIP→source.
+
 ## Method (`experiments/e31_flowedit_freq.py`, Flux)
 
 - **Flux velocity accessor** `flux_velocity(pipe, packed_x, sigma, pe, ppe, gids)` — a
@@ -41,29 +63,6 @@ condition reproduces the source **exactly by construction** — independent of t
 The reconstruction gate (recon pixel-distance to source < 0.05) therefore validates the
 VAE/packing path before any GPU is spent on the full run. A model-free `--part preflight`
 checks the FlowEdit accumulation math on a synthetic linear field.
-
-## Metrics
-- **Edit adherence:** CLIP-to-style (and optionally VQAScore).
-- **Content preservation:** CLIP-to-source + pixel-distance to the source image.
-- Aesthetic. `recon` should show ~0 pixel distance.
-
-## Run
-
-```bash
-# self-gating cluster job (preflight -> smoke 1 scene -> recon gate -> full)
-runai submit --name e31-flowedit -g 1 -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
-  --pvc=storage:/storage --large-shm --command -- \
-  bash /storage/malnick/colorful-noise/experiments/cluster_e31_job.sh
-
-# local
-python experiments/e31_flowedit_freq.py --part preflight                 # math only
-python experiments/e31_flowedit_freq.py --part gen,analyze --num 1 --steps 8   # smoke
-python experiments/e31_flowedit_freq.py   # full -> results/e31/{<key>/strip.png, index.html}
-# real images: place <key>.png files and pass --real_dir <dir>
-```
-
-> Cluster note: ship code with `kubectl cp` (the `/storage` checkout is not git; the image
-> has no git).
 
 ## Results (runai `e31-flowedit`, Flux, 3 scenes, 28 steps, skip=0.33, guidance 3.5)
 Preflight (model-free) and the reconstruction gate both passed, then the full run completed.
@@ -92,6 +91,27 @@ prompts collapse the two cuts onto the same integer frequency index (`swap_c0.25
 editing — it can't out-edit a plain prompt swap, and usually does nothing. This unifies the
 text-freq thread (E24→E30→E31): the low band owns the result, and high-band injection is a
 weak style knob, never a compositional or editing lever.
+
+## Reproduce
+
+```bash
+# self-gating cluster job (preflight -> smoke 1 scene -> recon gate -> full)
+runai submit --name e31-flowedit -g 1 -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
+  --pvc=storage:/storage --large-shm --command -- \
+  bash /storage/malnick/colorful-noise/experiments/cluster_e31_job.sh
+
+# local
+python experiments/e31_flowedit_freq.py --part preflight                 # math only
+python experiments/e31_flowedit_freq.py --part gen,analyze --num 1 --steps 8   # smoke
+python experiments/e31_flowedit_freq.py   # full -> results/e31/{<key>/strip.png, index.html}
+# real images: place <key>.png files and pass --real_dir <dir>
+
+# rebuild the HTML explainer offline (no GPU) from report.json + cached strips
+python experiments/e31_flowedit_freq.py --part site
+```
+
+> Cluster note: ship code with `kubectl cp` (the `/storage` checkout is not git; the image
+> has no git).
 
 ## Status
 Complete. Preflight + recon gate + full run all passed on runai (`e31-flowedit`, Succeeded).

@@ -280,7 +280,30 @@ _SCHEMATIC_SVG = '''
 '''
 
 
+_CSS = """
+body{font:15px/1.65 -apple-system,Segoe UI,Roboto,sans-serif;margin:24px auto;max-width:1000px;color:#1a1a1a;padding:0 16px}
+h1{font-size:25px;line-height:1.25} h2{font-size:20px;margin-top:38px;border-bottom:1px solid #ddd;padding-bottom:5px}
+h3{font-size:16px;margin:22px 0 4px}
+.tldr{background:#eef4ff;border:1px solid #c7d9ff;border-radius:6px;padding:14px 16px;margin:14px 0}
+.look{background:#f6f8fa;border-left:4px solid #0969da;padding:8px 13px;border-radius:4px;margin:8px 0;font-size:14px}
+.read{margin:8px 0 4px} .win{background:#eafaf0;border-left:4px solid #2da44e;padding:8px 13px;border-radius:4px;margin:8px 0}
+.cav{background:#fff8f0;border-left:4px solid #d4a017;padding:10px 14px;border-radius:4px;margin:12px 0}
+dl{margin:10px 0} dt{font-weight:700;margin-top:11px} dd{margin:2px 0 2px 18px;color:#333}
+table{border-collapse:collapse;margin:10px 0;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{border:1px solid #d0d7de;padding:4px 9px;text-align:right}
+th{background:#f6f8fa;text-align:center} td.v{text-align:left;font-weight:600;white-space:nowrap}
+td.pos{background:#dafbe1;font-weight:600}
+.cap{color:#555;font-size:13px;margin:2px 0 14px}
+img{width:100%;border:1px solid #d0d7de;border-radius:4px;margin:6px 0}
+code{background:#eff1f3;padding:1px 5px;border-radius:3px;font-size:13px}
+"""
+
+
 def _site(report):
+    """Self-contained explainer: TL;DR -> glossary -> method -> per-scene visuals+numbers.
+
+    Pure templating from `report` (= results/e31/report.json) + the saved strips; loads no
+    model, so the page rebuilds anywhere (`--part site`)."""
     try:
         from e27_site import data_uri
     except Exception:
@@ -288,38 +311,120 @@ def _site(report):
 
     def emb(rel):
         p = os.path.join(OUT, rel)
-        if data_uri and os.path.exists(p):
-            return f"<img src='{data_uri(p)}' style='max-width:100%'>"
-        return f"<img src='{rel}' style='max-width:100%'>"
+        if not os.path.exists(p):
+            return f"<p class=cap>(missing <code>{rel}</code>)</p>"
+        return f"<img src='{data_uri(p) if data_uri else rel}' alt='{rel}'>"
 
-    def f(a):
-        return f"{a['mean']:.3f}" if a else "—"
+    def gv(sc, k):
+        v = sc.get(k)
+        return v.get("mean") if isinstance(v, dict) else v
 
-    h = ["<!doctype html><meta charset=utf-8><title>E31 FlowEdit + freq</title>",
-         "<style>body{font:14px/1.5 system-ui;max-width:1100px;margin:2rem auto;"
-         "padding:0 1rem;color:#222}code{background:#f0f0f0;padding:1px 4px;border-radius:3px}"
-         "table{border-collapse:collapse;margin:.5em 0}td,th{border:1px solid #ccc;"
-         "padding:3px 8px;text-align:right}td:first-child,th:first-child{text-align:left}"
-         "img{border:1px solid #ddd;margin:.4em 0}</style>",
-         "<h1>E31 — Real-image editing via FlowEdit + frequency-surgery conditioning</h1>",
-         "<p>FlowEdit edits a flow model's output without inversion by integrating the "
-         "difference between target- and source-conditioned velocities. Here the <b>target "
-         "conditioning is a token-frequency surgery</b> of the source conditioning "
-         "(low band from the source prompt, high band from the edit/style prompt). "
-         "<code>recon</code> (target = source) reproduces the source exactly, validating "
-         "the pipeline.</p>",
-         _SCHEMATIC_SVG]
+    h = ["<!doctype html><meta charset=utf-8><title>E31 — FlowEdit + frequency surgery</title>",
+         f"<style>{_CSS}</style>",
+         "<h1>E31 — Real-image editing via FlowEdit + frequency-surgery conditioning</h1>"]
+
+    # ---- TL;DR ----
+    h.append(
+        "<div class=tldr><b>In one paragraph.</b> <b>FlowEdit</b> edits an image with a flow model "
+        "<b>without inverting it</b>: it walks the denoising schedule and accumulates the "
+        "<i>difference</i> between the velocity the model wants under the <b>target</b> prompt and "
+        "under the <b>source</b> prompt, then adds that accumulated nudge to the source latent. "
+        "E31's twist: the target conditioning is a <b>token-frequency surgery</b> of the source "
+        "conditioning (E24/E30 ops) — keep the source prompt's <b>low band</b>, graft the style "
+        "prompt's <b>high band</b>. <b>Headline:</b> the pipeline is sound (the identity check "
+        "reproduces the source to ~0.003 pixel distance) and a <b>plain prompt swap</b> edits "
+        "scene-dependently, but the <b>frequency-surgery target barely edits at all</b> — keeping "
+        "the source's low band anchors the result to the source, so the velocity difference is ≈0 "
+        "and nothing moves. Token-frequency surgery is <b>not</b> a usable editing handle.</div>")
+    h.append(_SCHEMATIC_SVG)
+
+    # ---- glossary ----
+    h.append("<h2>0 · Background (plain language)</h2><dl>"
+             "<dt>Flow model &amp; velocity</dt><dd>Flux generates by following a learned "
+             "<b>velocity field</b> <code>v(x, σ, C)</code> from noise (σ=1) to a clean latent (σ=0), "
+             "conditioned on the text embedding <code>C</code>. <code>x0</code> is the clean source "
+             "latent (generated from the source prompt, or VAE-encoded from a real image).</dd>"
+             "<dt>FlowEdit (inversion-free)</dt><dd>Instead of inverting the image back to noise, it "
+             "sets <code>δ=0</code> and, stepping σ high→low, accumulates "
+             "<code>δ += (σ_next−σ)·[ v(x_tar, C_tar) − v(x_src, C_src) ]</code>; the edited latent is "
+             "<code>x0 + δ</code>. Only the <b>difference</b> between the two conditionings drives the "
+             "edit.</dd>"
+             "<dt>C_src vs C_tar</dt><dd><code>C_src</code> = the source prompt's embedding. "
+             "<code>C_tar</code> = the target. If <code>C_tar = C_src</code> the difference is exactly "
+             "zero, so the output is the source unchanged (this is the safety gate).</dd>"
+             "<dt>--skip (edit strength)</dt><dd>Fraction of the top (noisiest) steps to skip. Higher "
+             "= weaker edit / more source preserved (here 0.33).</dd>"
+             "<dt>The conditions</dt><dd>"
+             "<code>recon</code> = <code>C_tar = C_src</code>: the <b>identity gate</b> — must "
+             "reproduce the source (pixel distance ≈ 0), validating the VAE/packing path. "
+             "<code>full</code> = <code>C_tar</code> is the <b>whole style prompt</b> — ordinary "
+             "prompt-swap FlowEdit (the edit baseline). "
+             "<code>swap_c0.25</code> / <code>swap_c0.4</code> = <b>frequency surgery</b>: token-axis "
+             "spectrum with the <b>low band (0–0.25 / 0–0.4) from the source</b> and the <b>high band "
+             "from the style</b>.</dd>"
+             "<dt>The metrics</dt><dd>"
+             "<b>CLIP→style</b> (↑ = stronger edit): image–style-prompt similarity. "
+             "<b>CLIP→source</b> (↑ = content kept): image–source-prompt similarity. "
+             "<b>px-dist→source</b> (↓ = content kept; ≈0 for <code>recon</code>): raw pixel distance "
+             "to the source image. <b>aesthetic</b> (↑): LAION aesthetic score (sanity). A good edit "
+             "<i>raises</i> CLIP→style while <i>keeping</i> CLIP→source reasonable.</dd>"
+             "</dl>")
+
+    # ---- method ----
+    h.append("<h2>1 · Method</h2><p>Three scenes, each a source prompt + a style/edit prompt. We run "
+             "FlowEdit under each condition (<code>recon</code>, <code>full</code>, "
+             "<code>swap_c0.25</code>, <code>swap_c0.4</code>), all from the same <code>x0</code> and "
+             "schedule, and score edit adherence vs. content preservation. The <code>recon</code> gate "
+             "runs first: if it does not reproduce the source, the plumbing is wrong and nothing else "
+             "is trustworthy.</p>")
+
+    h.append("<h2>2 · Results (per scene)</h2>")
+    h.append("<div class=look><b>What to look for.</b> Each strip is "
+             "<code>source · recon · full · swap_c0.25 · swap_c0.4</code>. <code>recon</code> should be "
+             "indistinguishable from <code>source</code>. <code>full</code> is the real edit. The two "
+             "<code>swap_*</code> panels should look like the strongest test of the idea — but they "
+             "barely differ from the source.</div>")
     for key, e in report["sources"].items():
-        h.append(f"<h2>{key}</h2><p>source=<code>{e['src']}</code> · "
-                 f"style=<code>{e['style']}</code></p>")
+        h.append(f"<h3>{key}: <code>{e['src']}</code> → <code>{e['style']}</code></h3>")
         h.append(emb(f"{key}/strip.png"))
-        h.append("<table><tr><th>condition</th><th>CLIP→style↑</th><th>CLIP→source</th>"
-                 "<th>px-dist→source</th><th>aesthetic↑</th></tr>")
-        for cond, sc in e["conds"].items():
-            h.append(f"<tr><td>{cond}</td><td>{f(sc['clip_style'])}</td>"
-                     f"<td>{f(sc['clip_src'])}</td><td>{sc['px_dist_to_src']:.3f}</td>"
-                     f"<td>{f(sc['aesthetic'])}</td></tr>")
-        h.append("</table>")
+        h.append("<p class=cap>columns: source · recon · full · swap_c0.25 · swap_c0.4</p>")
+        rows = [(c, {"clip_style": gv(sc, "clip_style"), "clip_src": gv(sc, "clip_src"),
+                     "px": sc.get("px_dist_to_src"), "aes": gv(sc, "aesthetic")})
+                for c, sc in e["conds"].items()]
+        # highlight strongest edit (max CLIP→style among the non-recon edits)
+        edit_styles = [r[1]["clip_style"] for r in rows
+                       if r[0] != "recon" and r[1]["clip_style"] is not None]
+        best_style = max(edit_styles) if edit_styles else None
+        out = ["<table><tr><th>condition</th><th>CLIP→style ↑</th><th>CLIP→source ↑</th>"
+               "<th>px-dist→source ↓</th><th>aesthetic ↑</th></tr>"]
+        for c, v in rows:
+            cs = v["clip_style"]
+            hot = (cs is not None and best_style is not None and abs(cs - best_style) < 1e-9
+                   and c != "recon")
+            csc = f"<td class=pos>{cs:.3f}</td>" if hot else (f"<td>{cs:.3f}</td>" if cs is not None else "<td>—</td>")
+            src = f"{v['clip_src']:.3f}" if v["clip_src"] is not None else "—"
+            aes = f"{v['aes']:.3f}" if v["aes"] is not None else "—"
+            out.append(f"<tr><td class=v>{c}</td>{csc}<td>{src}</td>"
+                       f"<td>{v['px']:.3f}</td><td>{aes}</td></tr>")
+        out.append("</table>")
+        h.append("".join(out))
+
+    h.append("<h2>3 · Reading</h2><div class=read>"
+             "<b>1. The gate holds.</b> <code>recon</code> px-distance is ~0.003 across scenes — the "
+             "FlowEdit/VAE/packing path is correct by construction.<br>"
+             "<b>2. Plain swap edits, scene-dependently.</b> <code>full</code> moves the image (e.g. "
+             "street_snow CLIP→style 0.093→0.208), but weakly on harder semantic jumps.<br>"
+             "<b>3. Frequency surgery barely edits.</b> <code>swap_c0.25/0.4</code> sit at "
+             "<code>recon</code>'s CLIP→style level: keeping the source's low band anchors the "
+             "conditioning to the source, so <code>v(C_tar)−v(C_src)≈0</code> and δ≈0. The style's high "
+             "band is too weak to redirect the flow.</div>")
+    h.append("<h2>4 · Caveats &amp; next</h2><div class=cav>"
+             "Single seed per cell; sources are generated from the caption (clean eval) — real images "
+             "via <code>--real_dir</code> are untested. Short prompts make cuts 0.25 and 0.4 collapse "
+             "to the same frequency index (swap_c0.25 == swap_c0.4 for street_snow). Conclusion: "
+             "token-frequency surgery is a dead-end editing handle; latent-band editing (E22) remains "
+             "the usable route.</div>")
+
     with open(os.path.join(OUT, "index.html"), "w") as fh:
         fh.write("\n".join(h))
 
@@ -364,6 +469,13 @@ def main(args):
         run_gen(args)
     if "analyze" in parts:
         run_analyze(args)
+    if "site" in parts:   # model-free: rebuild index.html from report.json + cached strips
+        rp = os.path.join(OUT, "report.json")
+        if not os.path.exists(rp):
+            raise SystemExit(f"[e31] --part site needs {rp} (run analyze first / fetch it)")
+        with open(rp) as f:
+            _site(json.load(f))
+        print(f"[e31] rebuilt {os.path.join(OUT, 'index.html')} (no model loaded)", flush=True)
 
 
 if __name__ == "__main__":
