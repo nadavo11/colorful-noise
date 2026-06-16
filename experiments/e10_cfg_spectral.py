@@ -89,6 +89,67 @@ def run_download(args):
 
 
 # ---------------------------------------------------------------------------
+# Part: grow the real pool with MS-COCO val2017 (photographic, ~5k images)
+# ---------------------------------------------------------------------------
+
+COCO_ZIP_URLS = ("http://images.cocodataset.org/zips/val2017.zip",
+                 "https://images.cocodataset.org/zips/val2017.zip")
+
+
+def _download_to(path, urls, chunk=1 << 20):
+    """Chunked download to path (via a .part temp) trying each url in turn."""
+    if os.path.exists(path):
+        return path
+    tmp = path + ".part"
+    last = None
+    for url in urls:
+        try:
+            print(f"[e10] downloading {url} -> {path}", flush=True)
+            req = urllib.request.Request(url, headers={"User-Agent": "e10/1.0"})
+            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+                while True:
+                    buf = r.read(chunk)
+                    if not buf:
+                        break
+                    f.write(buf)
+            os.replace(tmp, path)
+            return path
+        except Exception as e:
+            last = e
+            print(f"[e10] FAILED {url}: {e}", flush=True)
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    raise RuntimeError(f"could not fetch COCO zip: {last}")
+
+
+def run_coco(args):
+    """Fetch the first --n_coco MS-COCO val2017 photos into real_photos/ as
+    coco_*.jpg. The zip is cached once under results/_cache; only the requested
+    images are extracted. Re-run `--part real` afterwards to rebuild
+    real_latents.pt from the (now larger) pool."""
+    import zipfile
+    rdir = os.path.join(OUT, "real_photos")
+    os.makedirs(rdir, exist_ok=True)
+    cache = os.path.join(RESULTS, "_cache")
+    os.makedirs(cache, exist_ok=True)
+    zpath = _download_to(os.path.join(cache, "coco_val2017.zip"), COCO_ZIP_URLS)
+
+    got = 0
+    with zipfile.ZipFile(zpath) as zf:
+        names = sorted(n for n in zf.namelist() if n.lower().endswith(".jpg"))
+        for n in names[: args.n_coco]:
+            out_p = os.path.join(rdir, f"coco_{os.path.basename(n)}")
+            if os.path.exists(out_p):
+                continue
+            with zf.open(n) as src, open(out_p, "wb") as dst:
+                dst.write(src.read())
+            got += 1
+    total = len([p for p in os.listdir(rdir) if p.endswith(".jpg")])
+    print(f"[e10] COCO: {got} new images extracted; {total} total in {rdir}",
+          flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Part: true-CFG sweep generation
 # ---------------------------------------------------------------------------
 
@@ -189,15 +250,25 @@ def run_gen(args):
 # Part: encode real photos into the generation latent space
 # ---------------------------------------------------------------------------
 
+def _square(img, size):
+    """Center-crop to the shorter side, then resize to size x size -- avoids the
+    aspect-ratio distortion (which warps the radial PSD) that a plain resize of a
+    non-square photo would introduce. Square inputs (e.g. picsum) are unchanged."""
+    w, h = img.size
+    s = min(w, h)
+    left, top = (w - s) // 2, (h - s) // 2
+    return img.crop((left, top, left + s, top + s)).resize((size, size))
+
+
 def run_real(args):
     rdir = os.path.join(OUT, "real_photos")
     photos = sorted(p for p in os.listdir(rdir) if p.endswith(".jpg"))
-    assert photos, f"no photos in {rdir} -- run --part download first"
+    assert photos, f"no photos in {rdir} -- run --part download/coco first"
     vae = load_flux_vae()
     sf, shift = vae.config.scaling_factor, vae.config.shift_factor
     lats = []
     for p in photos:
-        img = Image.open(os.path.join(rdir, p)).convert("RGB").resize((SIZE, SIZE))
+        img = _square(Image.open(os.path.join(rdir, p)).convert("RGB"), SIZE)
         x = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
         x = (x.permute(2, 0, 1)[None] * 2 - 1).to(vae.dtype).cuda()  # [-1,1]
         with torch.no_grad():
@@ -357,7 +428,7 @@ def make_plots(report):
 
 def main(args):
     os.makedirs(OUT, exist_ok=True)
-    runners = {"download": run_download, "gen": run_gen,
+    runners = {"download": run_download, "coco": run_coco, "gen": run_gen,
                "real": run_real, "analyze": run_analyze}
     for part in filter(None, (p.strip() for p in args.part.split(","))):
         runners[part](args)
@@ -374,5 +445,7 @@ if __name__ == "__main__":
     ap.add_argument("--num_classes", type=int, default=len(CLASSES))
     ap.add_argument("--steps", type=int, default=28)
     ap.add_argument("--n_real", type=int, default=20)
+    ap.add_argument("--n_coco", type=int, default=500,
+                    help="MS-COCO val2017 photos to add to the real pool")
     ap.add_argument("--mem", default="bnb4", choices=["bnb4", "seq_offload"])
     main(ap.parse_args())
