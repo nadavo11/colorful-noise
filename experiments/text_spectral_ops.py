@@ -109,6 +109,38 @@ def band_notch_1d(E_span, lo, hi):
     return E_span - band_filter_1d(E_span, lo, hi, keep_dc=False)
 
 
+def band_phase_filter_1d(E_span, lo, hi, keep_dc=True, randomize=False):
+    """PHASE band-pass: keep the token-axis phase only inside the normalised band
+    [lo, hi]; outside it flatten the phase to 0 (the 'no-phase' baseline used by the
+    mag_only probe) while KEEPING the magnitude at every frequency. Isolates which
+    frequency bands' PHASE carries the content -- the band-limited version of phase_only,
+    motivated by E30 (phase carries the meaning, magnitude does not).
+
+    randomize=True instead replaces the stopband phase with uniform noise in (-pi, pi]
+    -- a stronger ablation that destroys phase info rather than aligning it to 0."""
+    L = E_span.shape[SEQ]
+    F = torch.fft.rfft(E_span.float(), dim=SEQ)            # (1, n_freq, D)
+    f = _norm_freqs(L, E_span.device)
+    keep = (f >= lo) & (f <= hi)
+    if keep_dc:
+        keep = keep | (f == 0)
+    # DC (and, for even L, Nyquist) must stay real for irfft to be magnitude-preserving,
+    # so always keep their original phase regardless of the band.
+    real_bin = torch.zeros_like(keep)
+    real_bin[0] = True
+    if L % 2 == 0:
+        real_bin[-1] = True
+    keep = (keep | real_bin)[None, :, None]
+    ph = torch.angle(F)
+    if randomize:
+        noise = (torch.rand_like(ph) * 2 - 1) * torch.pi
+        new_ph = torch.where(keep, ph, noise)
+    else:
+        new_ph = torch.where(keep, ph, torch.zeros_like(ph))   # stopband phase -> 0
+    out = torch.fft.irfft(torch.polar(F.abs(), new_ph), n=L, dim=SEQ)
+    return out.to(E_span.dtype)
+
+
 # ---------------------------------------------------------------------------
 # two-prompt recombination (the 'merge' / 'edit')
 # ---------------------------------------------------------------------------

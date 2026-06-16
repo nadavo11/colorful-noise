@@ -83,14 +83,14 @@ def phrase_span(tokenizer, prompt, phrase, L):
 
 OPS = [
     "baseline", "low-pass", "high-pass", "band gain", "notch",
-    "phase-only", "mag-only",
+    "phase-only", "mag-only", "phase band-keep",
     "two-prompt band-swap", "two-prompt band-blend", "two-prompt lerp",
     "per-object band gain",
 ]
 TWO_PROMPT = {"two-prompt band-swap", "two-prompt band-blend", "two-prompt lerp"}
-NEEDS_CUT = {"low-pass", "high-pass", "band gain", "notch",
+NEEDS_CUT = {"low-pass", "high-pass", "band gain", "notch", "phase band-keep",
              "two-prompt band-swap", "two-prompt band-blend"}
-NEEDS_BAND = {"band gain", "notch", "per-object band gain"}
+NEEDS_BAND = {"band gain", "notch", "phase band-keep", "per-object band gain"}
 NEEDS_GAIN = {"band gain", "per-object band gain"}
 
 HELP = {
@@ -119,6 +119,12 @@ HELP = {
         "**Mag-only.** Keep **magnitude**, set phase to 0. The complement of phase-only; E30 "
         "found this collapses → phase, not magnitude, is the semantic carrier. Expect a "
         "degenerate image.",
+    "phase band-keep":
+        "**Phase band-keep** *(uses `cut`, `band`)*. Band-limited phase-only: keep the original "
+        "**phase** only on the chosen side of `cut` and flatten it to 0 elsewhere, while keeping "
+        "**magnitude everywhere**. `band=low` = phase low-pass (phase kept in `[0,cut]`); "
+        "`band=high` = phase high-pass. Since E30 showed phase carries the content, this asks "
+        "*which frequency bands' phase* carries it.",
     "two-prompt band-swap":
         "**Band-swap** *(needs Prompt B; uses `cut`)*. Low band `[0,cut]` (incl. DC) from **A** "
         "+ high band `(cut,1]` from **B**, recombined: 'A's subject/gist + B's detail'. "
@@ -256,6 +262,10 @@ def apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p):
         return on_span(_phase_only), ppeA, "phase-only (magnitude=1)"
     if op == "mag-only":
         return on_span(_mag_only), ppeA, "mag-only (phase=0)"
+    if op == "phase band-keep":
+        c = p["cut"]; lo, hi = (0.0, c) if p["band"] == "low" else (c, 1.0)
+        return on_span(lambda x: TS.band_phase_filter_1d(x, lo, hi)), ppeA, \
+            f"phase {p['band']}-pass: phase kept in [{lo:.2f},{hi:.2f}], =0 elsewhere (mag kept)"
     if op in TWO_PROMPT:
         if peB is None:
             raise ValueError("enter prompt B for a two-prompt op")
