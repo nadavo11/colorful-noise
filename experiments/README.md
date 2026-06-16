@@ -3,6 +3,11 @@
 Extends [Colorful-Noise](https://github.com/Nadavc220/colorful_noise) (Cohen et al.,
 SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified.
 
+> **Start here:** open [`../docs/roadmap/index.html`](../docs/roadmap/index.html) — an
+> interactive map of the research threads (E0–E31), what each found, which directions are
+> alive vs dead ends, and how to proceed. Regenerate with `python make_roadmap.py`.
+> Deep writeups: root `EXPERIMENT_*.md`; chronological log: [`EXPERIMENTS.md`](EXPERIMENTS.md).
+
 ## Files
 - `spectral_ops.py` — colored noise (PSD ∝ f^β), generalized low-band conditioning
   (decouples **phase / magnitude / DC**), radial PSD + whiteness metric.
