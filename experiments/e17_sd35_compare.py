@@ -229,12 +229,25 @@ def run_analyze(args, report):
     print(f"[e17] wrote {OUT}/summary.md + grids", flush=True)
 
 
+def run_site(args, report):
+    """Model-free: rebuild results/e17/index.html from report.json + cached grids
+    (re-templates only; loads no model and re-scores nothing)."""
+    import e17_site
+    e17_site.build_site()
+
+
 def main(args):
     os.makedirs(OUT, exist_ok=True)
     report = {"params": vars(args)}
-    runners = {"gen": run_gen, "score": run_score, "analyze": run_analyze}
-    for part in filter(None, (p.strip() for p in args.part.split(","))):
+    runners = {"gen": run_gen, "score": run_score, "analyze": run_analyze,
+               "site": run_site}
+    parts = [p.strip() for p in args.part.split(",") if p.strip()]
+    for part in parts:
         runners[part](args, report)
+    # A site-only rebuild must NOT touch report.json (it would overwrite the real
+    # run's params with default args); it only re-templates index.html.
+    if parts == ["site"]:
+        return
     path = f"{OUT}/report.json"
     if os.path.exists(path):
         merged = json.load(open(path))
