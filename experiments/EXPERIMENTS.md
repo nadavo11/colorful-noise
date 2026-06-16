@@ -576,3 +576,415 @@ seed/class-independent clusters.**
 **Artifacts.** `results/e15/` (`report.json` purity/silhouette/NN-consistency +
 per-family centroid-distance-to-orig; `plots/proj_by_manipulation.png`,
 `proj_by_class.png`; `embeddings.pt` cached CLIP+metrics).
+
+---
+
+## E16 — SBN fidelity vs training-free guidance baselines (Flux)
+
+**Motivation.** cfg=1 Flux is realistic+on-prompt on simple prompts, but practice uses
+high CFG (~3.5) for *detailed* prompts, where guidance buys composition at the cost of
+realism (E10: CFG inflates spectral power → over-saturation/contrast). Does SBN (band-norm)
++ the E11 saturation postprocess yield **higher fidelity** than recent training-free
+guidance methods *without* losing adherence? Fidelity is the contest; adherence a guardrail.
+
+**Setup.** Flux-dev, 8 detailed prompts, shared seeded init latent per seed. Conditions:
+`cfg1.0` (realism anchor), `cfg3.5` (degraded baseline), `bandnorm` (SBN clamp to cfg=1
+per-step reference), `bandnorm_pp` (SBN + sat×, our full method), and the training-free
+baselines — `cfgzero` (CFG-Zero*: optimal-scale + zero-init true-CFG), `negprompt`
+(true-CFG + fidelity negative prompt, NAG proxy at 28 steps), `seg` (Smoothed Energy
+Guidance, blurred-query self-attention, best-effort). Metrics: aesthetic / ImageReward /
+spectral-dist-to-real (fidelity) + CLIP-T / VQAScore (adherence guard). Baseline wrappers
+in `e16_baselines.py`; driver `e16_prompt_adherence.py` (gen/score/analyze).
+
+**Status.** Code complete; partial sweep run (`results/e16/e16_sweep.log`), scored
+results not yet committed. Numbers TBD.
+
+**Artifacts.** `experiments/e16_baselines.py`, `e16_prompt_adherence.py`, `e16_site.py`;
+`results/e16/`.
+
+---
+
+## E17 — SD3.5 port (true CFG): SBN vs CFG-Zero* + CompBench harness
+
+**Motivation.** E16 found Flux's *distilled* guidance makes the high-CFG regime odd. SD3.5
+uses **real** classifier-free guidance (guidance=1 = pure conditional field = the SBN
+reference), so it's the cleaner testbed. Is SBN better than CFG-Zero* in the high-CFG
+regime, and do they **complement**? This port also adds the SD3.5 VAE encode/decode +
+`gen_sd3`/`ClampPSD3`/CFG-Zero* helpers in `e17_sd35.py` that **E18–E22 reuse**.
+
+**Setup.** SD3.5-medium (unpacked 16×128×128 latents — simplest clamp path), shared seeded
+init. Conditions: `cfg1`, `cfg_hi` (4.5), `bandnorm`, `bandnorm_pp`, `cfgzero`,
+`cfgzero_sbn` (compose), plus CFG++ variants. Two harnesses: `e17_sd35_compare.py`
+(detailed prompts, aesthetic/ImageReward/CLIP-T) and `e17_compbench.py` (T2I-CompBench
+color/shape/texture, B-VQA attribute binding — does SBN's clamp preserve or harm binding,
+alone and combined with CFG-Zero*/CFG++). Spectral-dist-to-real deferred until an
+SD3.5-VAE real reference exists (E23/E10 ref is Flux-VAE).
+
+**Status.** Code complete; SD3.5 generation runs pending on the cluster. Numbers TBD. The
+reused VAE/gen helpers are the load-bearing deliverable already exercised by E18–E22.
+
+**Artifacts.** `experiments/e17_sd35.py` (backend), `e17_sd35_compare.py`,
+`e17_compbench.py`; `results/e17/`, `results/e17cb/`.
+
+---
+
+## E18 — Offline two-image spectral recombination ("AdaIN-in-Fourier")
+
+**Motivation.** SBN clamps a latent's per-band power to one reference; the new direction
+drives generation with the spectrum of **two** sources. Premise check first, no diffusion:
+in the SD3.5/Flux latent does **phase (esp. low-band) = content** and **per-band magnitude
+= style** well enough to recombine two **real** images? Re-leveling per-band power is AdaIN
+on the radial power spectrum (`spectral_ops.psd_match`); connects to Gatys/AdaIN and hybrid
+images (Oliva 2006).
+
+**Setup.** VAE-encode pairs (A=content, B=style), recombine spectra, VAE-decode.
+`e18_spectral_recombine.py` variants: `styleA_s{p}` (= `restyle_latent`, phase A + within-band
+texture, power→B; the isotropic pure-style op), `phaseA_magB` (= `band_phase_swap`), `hybrid_c`
+(low from A + high from B), + `phaseonlyA`/`magonlyA` Oppenheim–Lim controls. Scored with
+CLIP-I→A/B + log-radial-PSD distance. Operators in `style_ops.py`.
+
+**Key results.** **Premise holds, and it's VAE-dependent.**
+- **Restyle preserves content while shifting palette:** photo-photo smoke (Flux VAE)
+  `styleA_s1` clip→A **0.926** with colorfulness moving A→B; the palette lives in DC/low
+  bands as predicted. `phaseA_magB` transfers more style but degrades content (clip→A 0.775).
+- **Cross-domain (photo→painting) is real on SD3.5, weak on Flux.** In the **SD3.5** latent
+  (the E19 model) restyling a photo toward a painting roughly **halves** the spectral distance
+  (psd→B 1.92→1.03) and moves colorfulness ~30% toward the painting at clip→A 0.90; in **Flux**
+  latent it's nearly inert (psd→B 1.92→1.80). **But it's tone/palette transfer, not strokes**
+  — clip→B barely moves (radial bands carry energy+palette, not oriented structure).
+- Numerics verified (restyle band-power rel-err 2e-6; hybrid/swap imag-residue ~1e-6).
+
+**Artifacts.** `results/e18/{report_flux.json, report_sd35.json, grids/, site/}`;
+`experiments/e18_spectral_recombine.py`, `style_ops.py`, `fetch_styles.py`. See EXPERIMENT_18.md.
+
+---
+
+## E19 — Generation-time spectral style transfer
+
+**Motivation.** The headline of the E18 thread: generate a *content prompt* while clamping
+its spectrum toward a *style image* during denoising — content provides phase + the per-step
+energy trajectory, the style image provides the radial power envelope.
+
+**Setup.** `e19_spectral_style.py`: `ref = build_style_reference(content_ref, style_band,
+strength, gmax)`; generate with `ClampPSD3(ref)` at cfg≈4.5. Strength sweep (0 = plain SBN,
+1 = full style envelope); `gmax` clamps per-band gains. Metrics: content_clip (CLIP-I to the
+unstyled image) vs style_clip / style_band_dist, with aesthetic / ImageReward / CLIP-T guards.
+Follow-on modes already fold in (operators unit-tested in `style_ops.py`): hybrid synthesis,
+spectral morph, two-prompt SBN (`blend_references` — "a cat" with a Van Gogh spectral
+signature, reference-image-free).
+
+**Status.** Code-complete; model-free preflight passes (strength=0 ≡ SBN, gmax clamp
+applied). The gen/score/analyze parts need the SD3.5 download — pending on the cluster.
+Numbers TBD.
+
+**Artifacts.** `experiments/e19_spectral_style.py`; `results/e19/`. See EXPERIMENT_18.md.
+
+---
+
+## E20 — Spectral warm-start ("skip the beginning" of generation)
+
+**Motivation.** Early denoising steps fix low-frequency **structure**, late steps fix
+power/detail. Hand the model the low-frequency content up front (a band-pre-set intermediate
+latent) and re-enter the trajectory partway to **skip early steps** — for conditioning/style
+transfer and for shaping plain generation.
+
+**Setup.** Profiling the cached E8 trajectory showed per-band **power locks in *late***
+(~25–27 of 28 steps), so a warm-start must commit low-band **phase**, not power (opposite of
+what SBN clamps — a genuinely new lever). Re-entry via rectified flow `x_t=(1-σ)x0+σε`;
+`gen_sd3_warmstart` noises the warm-start latent and feeds it via `latents=` (bypassing
+`prepare_latents`). Four parts in `e20_warmstart.py`: **A. profile** (per-band lock-in via
+cross-seed phase coherence → skippable prefix); **B. oracle** (commit a finished run's true
+low bands ≤ c, re-enter at strength, measure recovery — the method ceiling); **C. condition**
+(commit a reference image's low bands = band-controlled SDEdit, vs full SDEdit); **D.
+noiseshape** (color step-0 noise toward a natural-latent spectrum).
+
+**Status.** Built + offline-validated; preflight green (band-split endpoints, scale_noise,
+`color_noise` shape_err 0.000). The four generation parts need SD3.5 (cluster). Numbers TBD.
+
+**Artifacts.** `experiments/e20_warmstart.py`; helpers in `e17_sd35.py`
+(`gen_sd3_warmstart`, `RecordTraj`, `warmstart_sigma`), `style_ops.color_noise`;
+`results/e20/`. See EXPERIMENT_20.md.
+
+---
+
+## E21 — RF-inversion frequency-band editing on SD3.5 (reconstruction gate fails)
+
+**Motivation.** Invert a real image to noise (reverse flow ODE), then regenerate with a NEW
+prompt while **locking** chosen frequency content to the source — phase (esp. low-band)
+carries layout (E12–E14), so locking source low-band phase should preserve composition while
+the new prompt edits appearance.
+
+**Setup.** SD3.5 (rectified flow): inversion = integrate the velocity field from σ=0 (clean)
+to σ=1 (noise), reversing the Euler generation step over the same σ grid. Parts:
+preflight (reverse-Euler exactness on a toy field), **invert** (the gate — reconstruct with
+the same prompt; if reconstruction is poor, editing is moot), edit, analyze. Band-lock
+variants via `band_phase_swap` / `restyle_latent`.
+
+**Key result.** **Reconstruction gate FAILS** — naive RF inversion and fixed-point inversion
+both drift on SD3.5, so the source can't be recovered faithfully and editing is moot.
+Motivated the E22 pivot to an eps-prediction model where DDIM inversion is reliable.
+
+**Artifacts.** `experiments/e21_spectral_edit.py`; `results/e21/`.
+
+---
+
+## E22 — DDIM-inversion frequency-band editing (SDXL pivot)
+
+**Motivation.** E21's RF inversion failed to reconstruct on SD3.5. SDXL is an
+eps-prediction model where DDIM inversion is reliable, so pivot here: invert a real image
+with `DDIMInverseScheduler`, regenerate with a new prompt while locking chosen source
+frequencies. Same 128×128 grid as SD3.5, so `spectral_ops`/`style_ops` apply unchanged.
+
+**Setup.** SDXL 1024px (cached, runs locally). Parts: preflight / **invert** (the gate) /
+edit / analyze. Edits: photo → {oil painting, pencil sketch, watercolor}. Variants:
+`invert_only`, `lockphase_c{0.1,0.25}_u{0.6,1}` (lock source low-band phase), `lockpower`.
+Metrics: struct_clip (CLIP-I to source) vs edit_clip_t (CLIP-T to target prompt).
+
+**Key results.** **DDIM inversion reconstructs (gate passes):** recon CLIP-I **0.91–0.97**
+across the three photos. Band-locking is a clean **structure↔edit trade-off**: `invert_only`
+edits hardest (edit_clip_t 0.228) but barely preserves structure (struct_clip 0.626);
+locking the source's low-band phase pushes structure to **0.89–0.91** while softening the
+edit (edit_clip_t ~0.18–0.20). So low-band phase lock = a composition-preservation knob, as
+predicted by E12–E14.
+
+**Artifacts.** `experiments/e22_ddim_edit.py`; `results/e22/{invert.json, edit.json,
+invert/grid.png}`.
+
+---
+
+## E23 — Real-image spectral target ("real-SBN")
+
+**Motivation.** SBN re-leveled a generated latent's per-band power toward a **cfg=1**
+reference — but cfg=1 is just a softer model output, not reality. E23 **measures** the
+generated-vs-**real** spectral gap (vs 500 COCO photos) and corrects each generated image's
+spectrum toward the real-photo spectrum ("real-SBN").
+
+**Setup.** Flux cfg=3.5. Real target = mean per-(channel, band) power of 500 VAE-encoded COCO
+photos (kept per channel). Operator = `psd_match` (mag × √(target/cur), phase kept), with a
+strength exponent. Three application modes (offline final-latent / during-gen last-step /
+init-noise shaping); we do **not** correct every step (mid-denoising latents are mostly noise).
+Driver `e23_real_sbn.py`.
+
+**Key results.**
+- **The gap is bimodal:** low-band *excess* (CFG low-freq inflation) + a broad mid/high-band
+  **deficit** (ratio ≈ 1.2–1.3) — generated images are systematically under-textured vs real.
+- **Correcting toward real helps and beats the old cfg-1 SBN.** real-SBN (offline or
+  last-step) gives the **biggest aesthetic gain** of any condition (6.61→6.88/6.89) at ~zero
+  adherence (CLIP-T) cost, while the old cfg-1 SBN moves *away* from real (spec-dist 0.582).
+  Gain concentrates on photographic portraits (Δaesthetic +0.55…+0.64). **0.5+ over-amplifies
+  the empty high bands into grain ⇒ ≈0.25 is the recommended strength** (the LAION predictor
+  over-rewards sharpening past human preference).
+- **init-noise shaping fails** (the flow prior wants white noise — documented negative).
+- spec-dist→real is partly circular at full strength; the independent wins are aesthetic + the
+  near-zero adherence cost. Isotropic only.
+
+**Artifacts.** `experiments/e23_real_sbn.py`, `real_spectral.py`, `e23_site.py`;
+`results/e23/{report.json, scores.json, examples.json, adherence/}`. See EXPERIMENT_23.md.
+
+---
+
+## E24 — Token-axis FFT on the TEXT conditioning (FNet-motivated)
+
+**Motivation.** A prompt becomes a token-embedding sequence `E ∈ (1, L, 4096)` (Flux T5-XXL)
+fed to cross-attention. Can we treat that as a signal, FFT it **along the token axis** (1-D,
+per embedding channel, on the real-token span — not 2-D, not the pooled vector), and use the
+bands to merge or edit images? Plausible via **FNet** (Lee-Thorp 2021): a parameter-free
+token-axis DFT replaced self-attention at ~92–97% of BERT.
+
+**Setup.** Flux true-CFG=1, guidance 3.5, 28 steps, 4 seeds. Ops in `text_spectral_ops.py`
+act on `E[:, :L]`. Three parts: **probe** (keep one band — dc/low/high/full — regenerate),
+**merge** (A+B: `lowA_highB`, `phaseA_magB`, soft `blend`, vs the `lerp@0.5` bar-to-beat +
+`pooled_swap` + `fnet_swap`), **edit** (inject style's high band into base over a cut grid).
+Metrics: CLIP-T to each source prompt (attribution), aesthetic, ImageReward.
+
+**Key results.**
+- **Probe:** every band-filtered variant is coherent + on-prompt; the **high band alone
+  reconstructs ≈ as well as `full`** — the conditioning is robust to band filtering (FNet
+  intuition holds at the conditioning level).
+- **Merge — NEGATIVE.** No condition blends A and B; results **snap to whichever prompt owns
+  the low band + phase**, and the spectral merges **do not beat `lerp`** (which itself
+  collapses to A). The token spectrum is a near-**binary identity selector**, not a blender.
+- **Edit — PARTIAL POSITIVE.** High-band style injection is a usable **style-strength knob**
+  via `cut`; `pooled_inject` does about the same more cheaply.
+- **Mechanism:** identity is carried by the token-axis **phase** + low band
+  (`phaseA_magB→A`, `magA_phaseB→B`) — mirrors the image-domain "phase = structure".
+
+**Artifacts.** `experiments/e24_text_spectral.py`, `text_spectral_ops.py`;
+`results/e24/{probe,merge,edit}/`, `index.html`. See EXPERIMENT_24.md.
+
+---
+
+## E25 — Seed alignment pilot: bias the initial noise toward the prompt (SD1.5)
+
+**Motivation.** The seed `z~N(0,I)` leaves traces in the output (near-linear PF-ODE). Can a
+*tiny, cheap* optimization nudge the seed **toward the prompt** before generation, and have
+the bias survive? A deliberately gentle, do-no-harm lever — not a big adherence jump.
+
+**Setup.** SD1.5 512px. Objective is **purely latent-space, no UNet**:
+`loss = −cos(CLIP_img(VAE.decode(z)), CLIP_text(prompt))`, gradients through frozen VAE+CLIP
+only. **Constraint:** re-standardize `z←(z−μ)/σ` each step → zero mean/unit var pins
+`‖z‖=√d=128` exactly (stay on the Gaussian sphere). Compare against an `x̂₀` mode that runs
+one UNet step. 4 prompts × 2 seeds. `e25_seedalign.py`.
+
+**Key results.** **The seed's trace is a palette/global-appearance trace, not composition.**
+- Moments/norm held exactly every run. The **`x̂₀` mode over-optimizes and goes
+  CLIP-adversarial** (leopard-print for "cat") → net −0.022…−0.025 (slightly *hurts*).
+- The **latent mode is gentlest** (mean Δ CLIP-T **−0.010**, 4↑/4↓), a controlled palette
+  nudge that occasionally helps. The latent-space objective is the right do-no-harm form.
+
+**Artifacts.** `experiments/e25_seedalign.py`; `results/e25/`. See EXPERIMENT_26.md.
+
+---
+
+## E26 — Seed alignment on SDXL + DPG-Bench + #-steps sweep
+
+**Motivation.** Extend E25's latent-space seed nudge to a stronger model, long dense prompts,
+and characterize how many inner gradient steps are worth taking.
+
+**Setup.** SDXL 1024px (fp16-fix VAE; `√d=256`). Long prompts from DPG-Bench (`dpg_bench.py`,
+~55–109 words). **Caveat:** SDXL's CLIP text encoders *and* the CLIP scorer truncate at 77
+tokens, so a **long-aware CLIP-T** (per-clause encode → mean-pool + renorm) is the target and
+metric. Sweep N = inner latent-mode steps {1, 1-strong, 2, 3, 5}, snapshotting `z` at each N.
+`e26_seedalign_sdxl.py`.
+
+**Key results.** **Break-even, and the cheapest setting wins.** Mean Δ long-CLIP-T: N=1
+**+0.0015** (only clearly non-negative point); 2/3/5 drift slightly negative; strengthened
+single step ~0. Constraint `‖z‖=256=√d` held at every snapshot. Visually the aligned columns
+stay close to baseline (gentle palette/saturation shifts, **no structural damage**). A single
+cheap gradient step captures whatever benefit there is; the long-prompt 77-token bottleneck
+caps how much it can move adherence.
+
+**Artifacts.** `experiments/e26_seedalign_sdxl.py`, `dpg_bench.py`;
+`results/e26/{grid.png, deltaclip_vs_N.png, report.json}`. See EXPERIMENT_26.md.
+
+---
+
+## E27 — A single "concept direction" in the seed (CLIP→latent pullback, SDXL)
+
+**Motivation.** Instead of optimizing every seed (E25/E26), compute **one direction per
+prompt** in seed space ("more of this prompt") and just **add** it to any seed — a linear
+steering vector.
+
+**Setup.** SDXL 1024px. Two-stage construction that reduces to **one chain-rule backward
+pass**: Stage 1 CLIP-space cosine gradient `g`; Stage 2 decoder pullback `v=normalize(Jᵀg)`;
+composed = `normalize(∇_z cos(CLIP_img(decode(z)), text))`. The only real choice is the
+anchor (base image `e₀`) — swept {chain, noise, mean, fit, nofit}. Two uses:
+**Arm A** additive `z'=renorm(z₀+s·√d·v)` (s-sweep), **Arm B** heavy per-seed iteration
+(N-sweep), each re-standardized. `e27_seeddir.py`.
+
+**Key results.**
+- **Arm A additive direction is too blunt:** s≤0.25 break-even (no CLIP-T change), s=0.5
+  washes out (−0.083), s=1 collapses to noise (−0.144). No free-lunch additive s.
+- **Arm B on-manifold iteration is the well-behaved version:** progressively intensifies
+  palette/saturation toward the concept while preserving composition even at N=60; CLIP-T
+  stays ~flat (best +0.003 at N=5) — it enhances *appearance*, not object presence.
+  Per-step re-standardization is what keeps it safe.
+- **The anchor barely matters:** all directions 0.89–0.97 correlated; "the prompt direction
+  in seed space" is essentially anchor-independent (Arm A is the chain rule).
+
+**Artifacts.** `experiments/e27_seeddir.py`, `e27_site.py`;
+`results/e27/{grid_direction,grid_heavy,grid_anchors,deltaclip}.png, report.json, index.html`.
+See EXPERIMENT_27.md.
+
+---
+
+## E28 — Does seed-biasing RESCUE dropped elements on hard compositional prompts?
+
+**Motivation.** E25–E27 found seed-biasing is a do-no-harm palette lever with flat CLIP-T —
+but on easy prompts with a metric blind to dropped elements. Is there a regime where the seed
+*matters*? Candidate: hard compositional prompts where the baseline **drops** an element,
+scored with **B-VQA** (T2I-CompBench attribute binding — product of P(yes), so one
+dropped/mis-bound element tanks it).
+
+**Setup.** SDXL 1024px. Scan 30 CompBench prompts (color/shape/texture) × 4 seeds; FAIL =
+B-VQA < 0.5; per-prompt seed-dependence = fraction of seeds that pass. Intervene on the worst
+37 failures: arm A (bias toward full prompt), arm B (toward the single dropped phrase), via
+iterative latent-mode opt (‖z‖=√d). Controls: **re-roll** (fresh random seed) and
+**do-no-harm** (apply to passers). `e28_seedrescue.py`.
+
+**Key results.** **A clean negative — biasing the seed does NOT beat re-rolling it.** On the
+37 failures, recovery rate: arm A 0.189, arm B 0.243, **re-roll 0.324**; on the
+seed-dependent stratum (n=21) **0.571 (re-roll) vs 0.429 / 0.286**. **do-no-harm FAILED:**
+applying the bias to *passing* pairs dropped B-VQA by **−0.176** (it breaks working
+compositions). Always-fail prompts recover with nothing. The gradient moves palette within
+the *same compositional basin*; changing *which* mode renders needs a genuinely different seed.
+**Closes the seed-as-adherence line (E25→E28); best-of-N + a B-VQA picker wins.** The
+remaining positive use of seed-biasing is appearance/palette steering (E27 Arm B).
+
+**Artifacts.** `experiments/e28_seedrescue.py`, `compbench.py`;
+`results/e28/{grid_recovered.png, summary.png, report.json}`. See EXPERIMENT_28.md.
+
+---
+
+## E29 — Phase inheritance: does the seed's FFT phase determine the output's? (SD1.5/DDIM)
+
+**Motivation.** Phase carries structure (Oppenheim–Lim). So when DDIM turns seed `z_T` into
+output `z_0`, **how much of the output's phase is inherited from the seed's phase?** If
+structure lives in phase, the seed may pre-commit layout before any denoising step. Measured
+per band, then confirmed causally. (E28 number was taken, so this is E29.)
+
+**Setup.** SD1.5, deterministic DDIM, 64 seeds/condition, 24 radial bins. Metrics
+(`e29_phase_ops.py`): per-bin **circular correlation** (seed↔output phase) with a permutation
+null; log-magnitude Pearson; phase-difference resultant; spatial Pearson. Unconditional map +
+CFG sweep {1, 3, 7.5}. **Causal transplant:** swap a donor's phase into the base seed's lowest-c
+band (magnitude held → variance preserved, std=1.000), regenerate, measure follow-score.
+
+**Key results.**
+- **Strong, BROAD-spectrum inheritance — not phase-specific.** Unconditional phase corr
+  ≈ 0.40 (low) / 0.53 (high) vs null ≈ 0; **magnitude (log-power) is inherited at least as
+  strongly** (≈0.48/0.58) and raw pixel-space corr z_T↔z_0 ≈ **0.76**. So at low guidance the
+  seed broadly fixes the *whole* latent — "phase = structure" is what the latent encodes, not a
+  privileged inheritance channel (a correction to our prior).
+- **CFG erodes inheritance, preferentially in low-freq (composition) bands:** low-band phase
+  corr 0.40 (uncond) → 0.35 → 0.23 → 0.15 across CFG.
+- **Causal + propagating:** the low-band transplant gives follow-score ≈ **0.66** in the
+  swapped band and 0.60–0.63 in *higher* bands too (0.5 = no effect) — the seed's coarse phase
+  conditions the entire downstream structure.
+
+**Artifacts.** `experiments/e29_phase_inherit.py`, `e29_phase_ops.py`, `e29_site.py`;
+`results/e29/{report.json, transplant.json, index.html}`. See EXPERIMENT_29.md.
+
+---
+
+## E30 — Continuous text-frequency control & extraction (follow-up to E24)
+
+**Motivation.** E24 found token-axis bands of Flux's T5 sequence embedding are meaningful and
+on-manifold, that merging snaps to the low-band/phase owner (no win over `lerp`), and that
+high-band injection is a style-strength knob. E30 (a) characterizes the bands more finely,
+(b) turns the manipulation into a **continuous knob** with image-strip visualizations, and
+(c) asks what frequency filtering does to **long** and **compositional** prompts.
+
+**Setup.** Flux. New ops `band_gain_1d` / `band_notch_1d` in `text_spectral_ops.py` (same
+1-D token-axis transform as E24). Parts: **probe_deep** (per-band knockout, phase-only vs
+mag-only recon), **continuous** (image strips as one knob — low-pass cutoff / high-band gain /
+A↔B swap-cut morph), **concat** (spectral merge vs writing "A and B"), **longprompt**
+(DPG-Bench: does dropping high freq drop the tail objects?), **compositional** (CompBench
+B-VQA). Metrics: CLIP-T, image stats, aesthetic, B-VQA, VQAScore.
+
+**Status.** Code complete and offline-verified (ops + builders); cluster run pending.
+**Results: TBD.**
+
+**Artifacts.** `experiments/e30_text_freq_control.py`; `results/e30/`. See EXPERIMENT_30.md.
+
+---
+
+## E31 — Real-image editing via FlowEdit + frequency-surgery conditioning
+
+**Motivation.** FlowEdit (Kulikov 2024) edits a flow model without inversion by integrating
+the difference between target- and source-conditioned velocities and adding the delta to the
+source latent. E31's twist: the **target conditioning is a token-frequency surgery** of the
+source conditioning (E24/E30 ops) — e.g. low band from the source prompt + high band from the
+edit prompt — instead of a plain different prompt.
+
+**Setup.** Flux. Manual `flux_velocity` accessor + `flux_sigmas`; FlowEdit ODE
+`δ += (σ_next−σ)·(v(x_tar,C_tar) − v(x_src,C_src))`, edited = x0 + δ; `--skip` = edit
+strength. `C_tar = band_swap_1d(low: C_src, high: C_style)` at a couple of cuts, plus `full`
+(plain prompt-swap). Source `x0` from the source prompt (clean eval) or a real image via
+`--real_dir`. **Identity gate:** if `C_tar==C_src` the velocity difference is exactly 0, so
+`recon` reproduces the source by construction — validates the VAE/packing path before any GPU.
+Metrics: CLIP-to-style (edit) vs CLIP-to-source + pixel-distance (preservation), aesthetic.
+
+**Status.** Code complete; model-free preflight + wiring verified offline (FlowEdit identity
+holds by construction); cluster run pending. **Results: TBD.**
+
+**Artifacts.** `experiments/e31_flowedit_freq.py`; `results/e31/`. See EXPERIMENT_31.md.
