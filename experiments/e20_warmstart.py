@@ -61,6 +61,28 @@ def lockin_step(series, final, tol=0.1):
     return len(series) - 1
 
 
+def phase_convergence(lats, idx_map, n_bins):
+    """Within-trajectory per-band phase agreement with the FINAL latent -- THE
+    warm-start signal: at what step has band b's phase reached its final structure
+    (so we could have injected it and skipped earlier steps)?
+
+    lats: list[steps] of (1,C,H,W). Returns (steps, n_bins) in [-1,1] = mean
+    cos(angle(F_t) - angle(F_final)) over the bins of each radial band, averaged
+    over channels (1 = phase already final; ~0 = unrelated)."""
+    dev = "cuda"
+    fi = torch.fft.fft2(lats[-1].float().to(dev)[0]).angle()    # (C,H,W) final
+    C, flat = fi.shape[0], idx_map.flatten()
+    counts = torch.zeros(n_bins, device=dev).scatter_add_(
+        0, flat, torch.ones_like(flat, dtype=torch.float)).clamp(min=1)
+    out = torch.zeros(len(lats), n_bins)
+    for t in range(len(lats)):
+        cosd = torch.cos(torch.fft.fft2(lats[t].float().to(dev)[0]).angle() - fi)
+        acc = torch.stack([torch.zeros(n_bins, device=dev).scatter_add_(
+            0, flat, cosd[c].reshape(-1)) for c in range(C)])   # (C, nb)
+        out[t] = (acc / counts).mean(0).cpu()
+    return out
+
+
 def coherence_lockin(R_traj, frac=0.9):
     """Per-band lock-in step from a coherence trajectory R_traj (steps, n_bins):
     first t at/after which R stays >= frac * R_final."""
@@ -155,24 +177,28 @@ def part_profile(args):
             seed_lats.append(rec.lats)                       # list[steps] of (1,16,128,128)
             power += torch.stack(rec.band).mean(1)           # (steps, nb)
         power /= args.seeds
-        # per-step cross-seed phase coherence, averaged over channels
+        # (a) within-trajectory phase convergence to final == warm-start lock-in;
+        #     (b) cross-seed coherence (which bands are prompt- vs seed-determined)
+        conv = torch.stack([phase_convergence(seed_lats[s], idx, args.n_bins)
+                            for s in range(args.seeds)]).mean(0)   # (steps, nb)
         R_traj = torch.zeros(args.steps, args.n_bins)
         for t in range(args.steps):
             phis = torch.stack([torch.fft.fft2(seed_lats[s][t].float().cuda()[0]).angle()
-                                for s in range(args.seeds)])      # (S, C, H, W)
-            _, R, r_null = phase_coherence(phis, args.n_bins)     # R: (C, nb)
+                                for s in range(args.seeds)])       # (S, C, H, W)
+            _, R, r_null = phase_coherence(phis, args.n_bins)
             R_traj[t] = R.mean(0)
-        prof = {"R_traj": R_traj, "power_traj": power, "r_null": r_null,
-                "centers": band_centers(args.n_bins),
+        prof = {"conv_traj": conv, "R_traj": R_traj, "power_traj": power,
+                "r_null": r_null, "centers": band_centers(args.n_bins),
+                "conv_lockin": coherence_lockin(conv),             # the real one
                 "phase_lockin": coherence_lockin(R_traj),
                 "power_lockin": [lockin_step(power[:, b], power[-1, b])
                                  for b in range(args.n_bins)]}
         torch.save(prof, f"{OUT}/profile_{pid}.pt")
-        lo = sum(prof["phase_lockin"][: args.n_bins // 3]) / (args.n_bins // 3)
-        hi = sum(prof["phase_lockin"][2 * args.n_bins // 3:]) / (args.n_bins
-                                                                 - 2 * args.n_bins // 3)
-        print(f"[e20] {pid} PHASE lock-in (/{args.steps}): low={lo:.1f} high={hi:.1f}",
-              flush=True)
+        nb = args.n_bins
+        lo = sum(prof["conv_lockin"][: nb // 3]) / (nb // 3)
+        hi = sum(prof["conv_lockin"][2 * nb // 3:]) / (nb - 2 * nb // 3)
+        print(f"[e20] {pid} within-traj PHASE-CONVERGENCE lock-in (/{args.steps}): "
+              f"low={lo:.1f} high={hi:.1f}", flush=True)
 
 
 def _recover_metrics(model, proc, img, ref_img, lat, x0_star):
