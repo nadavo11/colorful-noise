@@ -233,6 +233,17 @@ def run_analyze(args):
             print(json.dumps(json.load(open(p)), indent=1)[:2000])
 
 
+def run_site(args):
+    """Model-free: rebuild results/e21/index.html from invert.json (+ edit.json if
+    present) + the cached reconstruction grid. No model load."""
+    import e21_site
+    if not os.path.exists(f"{OUT}/invert.json"):
+        raise SystemExit(f"[e21] --part site needs {OUT}/invert.json (run --part invert / fetch it)")
+    dest, html, invert, edit = e21_site.build()
+    print(f"[e21] rebuilt {dest} ({len(html) // 1024} KB; no model loaded; "
+          f"edit={'present' if edit else 'gated/absent'})", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", default="preflight")
@@ -247,7 +258,7 @@ def main():
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
     runners = {"preflight": preflight, "invert": run_invert, "edit": run_edit,
-               "analyze": run_analyze}
+               "analyze": run_analyze, "site": run_site}
     for part in filter(None, (p.strip() for p in args.part.split(","))):
         runners[part](args)
 

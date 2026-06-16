@@ -11,12 +11,15 @@ watercolor) while the layout of the original photo survives — a *frequency-dec
 control*. SD3.5 is a **rectified-flow** model, so "inversion" is integrating the velocity field
 backwards (clean → noise), not literal DDIM.
 
-> **Status / Verdict:** ⚠️ **Code complete; the run is GATED and pending — and the gate is the
-> finding.** The whole edit only makes sense if the inversion *reconstructs* the source. On SD3.5
-> the reverse-flow ODE **drifts**: naive forward-Euler inversion and the implicit fixed-point
-> variant both fail to round-trip a real image back to itself. That failure is exactly why
-> **E22** exists (pivot to SDXL + DDIM inversion, where the round-trip is reliable). E21 is the
-> documented negative that motivates E22.
+> **Status / Verdict:** ⚠️ **Code complete; the result is a GATED / pending negative — and the
+> gate is the finding.** The whole edit only makes sense if the inversion *reconstructs* the
+> source. On SD3.5 the reverse-flow ODE **drifts**: the implicit fixed-point inversion (and naive
+> forward-Euler) fail to round-trip a real image back to itself. The reconstruction CLIP-I to the
+> source is only **~0.63–0.74** (a closed round-trip is ~0.94) and the recovered "noise" has std
+> **~1.11** instead of the ~1.0 a valid Gaussian seed should have. With a broken gate the
+> band-locked **edit was not run** (there is no `edit.json`). That failure is exactly why **E22**
+> exists (pivot to SDXL + DDIM inversion, where the round-trip is reliable). E21 is the documented
+> negative that motivates E22.
 
 ## Background (plain language)
 
@@ -38,9 +41,16 @@ backwards (clean → noise), not literal DDIM.
 - **Radial band / cut `c`.** Frequencies are binned into `N_BINS=24` rings from DC outward; band
   0 = coarsest layout. A **cut `c`** selects the lowest `c` fraction of the spectrum — `c=0.1`
   locks only the coarsest layout, `c=0.25` a bit more.
-- **Reconstruction CLIP-I (the gate).** Invert a real image, regenerate from that noise with the
-  **same** prompt, and measure CLIP image-similarity between original and reconstruction. If this
-  is not high, the inverted noise is wrong and any *edit* built on top is meaningless.
+- **`recon_clip_i` ↑ (the gate metric).** Invert a real image, regenerate from that noise with
+  the **same** prompt, and measure CLIP image-similarity (CLIP-I) between original and
+  reconstruction. **~0.94 ≈ "round-trip closed"**; lower means the inverted noise is wrong and any
+  *edit* built on top is meaningless. Higher is better.
+- **`noise_std` (a drift symptom).** The std of the recovered "noise" latent. A valid Gaussian
+  seed has std **≈ 1.0**; an inflated value (~1.11 here) means the integration overshoots — the
+  recovered latent is off the manifold of true seeds.
+- **The gate logic.** Reconstruction is the prerequisite for *every* downstream edit cell. The
+  edit is **only valid if the round-trip closes**; a failed gate *invalidates* edit numbers rather
+  than merely weakening them, so the edit is gated and not run.
 
 ## Method
 
@@ -68,19 +78,48 @@ backwards (clean → noise), not literal DDIM.
 
 ## Findings
 
-- **Preflight passes; the model run is pending and gated.** `results/e21/` is empty — no
-  `invert.json` / `edit.json` were produced, so **there are no quantitative SD3.5 numbers to
-  report** for E21. (This is honest run-pending status, not a result.)
-- **The headline expectation is the GATE failure.** The model-free preflight proves reverse-Euler
-  is exact when the velocity field is state-independent. A trained RF velocity field is **strongly
-  state-dependent**, so on SD3.5 both the naive and the `fp_iters=4` fixed-point inversions are
-  expected to (and in this thread's working notes, do) **drift** — the regenerated image does not
-  return to the source. With a bad round-trip the edit conditions are uninterpretable.
-- **Why this matters.** Reconstruction is the prerequisite for *every* downstream edit cell. A
-  failed gate doesn't just weaken E21's edit numbers; it invalidates them. Rather than tune RF
-  inversion further (RF-Inversion-style controllers are finicky), the thread **pivots to an
-  eps-prediction model with reliable DDIM inversion → E22**, carrying the *identical* band-lock
-  editing operators over unchanged.
+### Reconstruction (the gate) — figure first
+
+The HTML report (`results/e21/index.html`) leads with `invert/grid.png`: left column = source
+photo, right column = reconstruction (invert to noise, regenerate with the *same* prompt at
+guidance 1), three photos top to bottom.
+
+> **What to look for.** A faithful inversion would make each reconstruction *match its source*
+> (same scene, layout, colors). Instead the reconstructions **drift** into different images — the
+> round-trip does not close, so the recovered "noise" is not the seed that made the photo.
+
+**Interpretation.** Both naive forward-Euler and the `fp_iters=4` fixed-point inversion fail to
+round-trip a real SD3.5 image. The preflight proves the integrator is *exact* on a
+state-independent field, so the drift comes from the trained velocity field being strongly
+state-dependent: per-step errors compound over 28 steps and the recovered latent lands off the
+manifold of valid seeds (hence the inflated std). A broken gate makes every downstream edit cell
+uninterpretable — so we report the gate, not edits.
+
+**The numbers** (`results/e21/invert.json`; ↑ better; every cell misses its target, so all are
+marked as failures rather than highlighting a "best"):
+
+| photo | `recon_clip_i` ↑ (~0.94 = closed) | `noise_std` (target ~1.0) |
+|---|---|---|
+| photo_000.jpg | 0.744 | 1.109 |
+| photo_001.jpg | 0.663 | 1.119 |
+| photo_002.jpg | 0.633 | 1.113 |
+| **mean** | **0.680** | **1.114** |
+
+Every `recon_clip_i` sits well below the ~0.94 "round-trip closed" bar, and every `noise_std` is
+inflated above ~1.0 — both confirm the gate fails.
+
+### Edit (gated — not run)
+
+There is **no `edit.json`**: the band-locked edit only makes sense once the inversion round-trips,
+and on SD3.5 it does not. Running the edit on top of a broken reconstruction would produce numbers
+that *look* like a structure-vs-edit frontier but actually measure agreement with a *drifted*
+image, not the source — so the edit **awaits a working inversion**. (The HTML report renders this
+edit subsection gracefully whether or not `edit.json` exists.)
+
+**Why this matters.** A failed gate doesn't just weaken E21's edit numbers; it invalidates them.
+Rather than tune RF inversion further (RF-Inversion-style controllers are finicky), the thread
+**pivots to an eps-prediction model with reliable DDIM inversion → E22**, carrying the *identical*
+band-lock editing operators over unchanged.
 
 ## Caveats & next
 
@@ -108,6 +147,10 @@ python e21_spectral_edit.py --part edit \
     --num 3 --steps 28 --cfg 4.5 --cuts 0.1,0.25 --untils 0.6,1.0
 # 4) dump the JSON tables
 python e21_spectral_edit.py --part analyze
+
+# 5) rebuild the self-contained HTML explainer offline (NO model load) from
+#    invert.json (+ edit.json if present) + invert/grid.png
+python e21_spectral_edit.py --part site        # or: python e21_site.py
 ```
 
 Code: `experiments/e21_spectral_edit.py` (driver: `invert_sd3` RF inversion, `BandLock`
