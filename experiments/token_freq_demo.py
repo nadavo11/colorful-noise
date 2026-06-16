@@ -83,15 +83,15 @@ def phrase_span(tokenizer, prompt, phrase, L):
 
 OPS = [
     "baseline", "low-pass", "high-pass", "band gain", "notch",
-    "phase-only", "mag-only", "phase band-keep",
+    "phase-only", "mag-only", "phase band-keep", "phase gain",
     "two-prompt band-swap", "two-prompt band-blend", "two-prompt lerp",
     "per-object band gain",
 ]
 TWO_PROMPT = {"two-prompt band-swap", "two-prompt band-blend", "two-prompt lerp"}
-NEEDS_CUT = {"low-pass", "high-pass", "band gain", "notch", "phase band-keep",
+NEEDS_CUT = {"low-pass", "high-pass", "band gain", "notch", "phase band-keep", "phase gain",
              "two-prompt band-swap", "two-prompt band-blend"}
-NEEDS_BAND = {"band gain", "notch", "phase band-keep", "per-object band gain"}
-NEEDS_GAIN = {"band gain", "per-object band gain"}
+NEEDS_BAND = {"band gain", "notch", "phase band-keep", "phase gain", "per-object band gain"}
+NEEDS_GAIN = {"band gain", "phase gain", "per-object band gain"}
 
 HELP = {
     "baseline":
@@ -125,6 +125,12 @@ HELP = {
         "**magnitude everywhere**. `band=low` = phase low-pass (phase kept in `[0,cut]`); "
         "`band=high` = phase high-pass. Since E30 showed phase carries the content, this asks "
         "*which frequency bands' phase* carries it.",
+    "phase gain":
+        "**Phase gain** *(uses `cut`, `band`, `gain`)*. Scale the **phase angle** by `gain` in the "
+        "chosen band (magnitude kept): `gain=0` removes phase there (→ mag-only in that band), "
+        "`1` = identity, `>1` amplifies the rotation. The phase analogue of band-gain. Note phase "
+        "is circular, so `gain` near ±π wraps around (branch-cut effect); DC/Nyquist are left "
+        "unscaled to keep magnitude valid.",
     "two-prompt band-swap":
         "**Band-swap** *(needs Prompt B; uses `cut`)*. Low band `[0,cut]` (incl. DC) from **A** "
         "+ high band `(cut,1]` from **B**, recombined: 'A's subject/gist + B's detail'. "
@@ -266,6 +272,10 @@ def apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p):
         c = p["cut"]; lo, hi = (0.0, c) if p["band"] == "low" else (c, 1.0)
         return on_span(lambda x: TS.band_phase_filter_1d(x, lo, hi)), ppeA, \
             f"phase {p['band']}-pass: phase kept in [{lo:.2f},{hi:.2f}], =0 elsewhere (mag kept)"
+    if op == "phase gain":
+        c = p["cut"]; lo, hi = (0.0, c) if p["band"] == "low" else (c, 1.0); g = p["gain"]
+        return on_span(lambda x: TS.band_phase_gain_1d(x, lo, hi, g)), ppeA, \
+            f"phase angle x{g:.2f} in {p['band']} band [{lo:.2f},{hi:.2f}] (mag kept)"
     if op in TWO_PROMPT:
         if peB is None:
             raise ValueError("enter prompt B for a two-prompt op")

@@ -141,6 +141,30 @@ def band_phase_filter_1d(E_span, lo, hi, keep_dc=True, randomize=False):
     return out.to(E_span.dtype)
 
 
+def band_phase_gain_1d(E_span, lo, hi, gain, keep_dc=True):
+    """PHASE gain: scale the token-axis phase angle by `gain` inside band [lo, hi], keeping
+    the magnitude everywhere. The phase analogue of band_gain_1d (which scales magnitude):
+      gain<1 shrinks the phase toward 0 (gain=0 removes phase in the band -> mag-only there),
+      gain=1 identity, gain>1 amplifies the per-bin rotation.
+    NOTE phase is circular -- angles live in (-pi, pi], so scaling near +/-pi wraps around
+    (a branch-cut effect, not a bug). DC and (for even L) Nyquist are never scaled so their
+    bins stay real and irfft remains magnitude-preserving."""
+    L = E_span.shape[SEQ]
+    F = torch.fft.rfft(E_span.float(), dim=SEQ)
+    f = _norm_freqs(L, E_span.device)
+    sel = (f >= lo) & (f <= hi)
+    if keep_dc:
+        sel = sel & (f != 0)
+    sel[0] = False                       # DC stays real
+    if L % 2 == 0:
+        sel[-1] = False                  # even-L Nyquist stays real
+    sel = sel[None, :, None]
+    ph = torch.angle(F)
+    new_ph = torch.where(sel, ph * float(gain), ph)
+    out = torch.fft.irfft(torch.polar(F.abs(), new_ph), n=L, dim=SEQ)
+    return out.to(E_span.dtype)
+
+
 # ---------------------------------------------------------------------------
 # two-prompt recombination (the 'merge' / 'edit')
 # ---------------------------------------------------------------------------
