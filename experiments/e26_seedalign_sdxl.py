@@ -23,7 +23,8 @@ Three extensions over E25:
      solution N=1, a "strengthened" single step (larger lr), then a few more N=2,3,5.
 
 Run:  python experiments/e26_seedalign_sdxl.py [quick]
-Out:  experiments/results/e26/{grid.png, deltaclip_vs_N.png, report.json, pairs/}
+      python experiments/e26_seedalign_sdxl.py --part site   # model-free HTML rebuild
+Out:  experiments/results/e26/{grid.png, deltaclip_vs_N.png, report.json, pairs/, index.html}
 """
 import json
 import os
@@ -132,8 +133,27 @@ def moments(z):
     return {"mean": float(z.mean()), "std": float(z.std()), "norm": float(z.norm())}
 
 
+# ---- model-free site rebuild -------------------------------------------------
+def build_site():
+    """Rebuild results/e26/index.html from report.json + cached figures, NO model load.
+    Mirrors E30's `--part site`. Graceful message if there is no run yet."""
+    from e26_site import build_site as _bs
+    return _bs()
+
+
 # ---- main --------------------------------------------------------------------
 def main():
+    # Model-free explainer rebuild: `python experiments/e26_seedalign_sdxl.py --part site`
+    # (also accepts `site` as a positional, like `quick`). Loads no SDXL/CLIP.
+    if any(a in ("--part", "site") for a in sys.argv[1:]):
+        argv = sys.argv[1:]
+        is_site = "site" in argv or (
+            "--part" in argv and argv.index("--part") + 1 < len(argv)
+            and argv[argv.index("--part") + 1] == "site")
+        if is_site:
+            build_site()
+            return
+
     quick = len(sys.argv) > 1 and sys.argv[1] == "quick"
     n_prompts = 2 if quick else N_PROMPTS
     seeds = SEEDS[:1]
