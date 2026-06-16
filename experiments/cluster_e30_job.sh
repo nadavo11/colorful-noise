@@ -23,14 +23,17 @@ python -c "import torch; print('[job] torch',torch.__version__,'cuda',torch.cuda
 python -c "from diffusers import FluxPipeline; print('[job] FluxPipeline import OK')"
 
 echo "[job] installing optional scoring deps (graceful) ..."
-( apt-get update -qq && apt-get install -y -qq git ) >/dev/null 2>&1 || echo "[job] WARN: git install failed"
+# libgl1/libglib: BLIP / transformers image processors can pull OpenCV (needs libGL.so.1)
+( apt-get update -qq && apt-get install -y -qq git libgl1 libglib2.0-0 ) >/dev/null 2>&1 || echo "[job] WARN: apt deps failed"
 pip install --quiet --no-input image-reward ftfy regex \
     "git+https://github.com/openai/CLIP.git" 2>&1 | tail -1 || echo "[job] WARN: imagereward/clip deps failed (degrade)"
 # B-VQA: spaCy noun-phrase extraction + BLIP-VQA (transformers auto-downloads model)
 pip install --quiet --no-input spacy 2>&1 | tail -1 && \
     python -m spacy download en_core_web_sm 2>&1 | tail -1 || echo "[job] WARN: spaCy failed; B-VQA degrades"
-# VQAScore (heavy; optional). If install fails, run with --no_vqa effect via graceful load.
-pip install --quiet --no-input t2v-metrics 2>&1 | tail -1 || echo "[job] WARN: t2v-metrics failed; VQAScore degrades"
+# NOTE: VQAScore (t2v-metrics) is deliberately NOT installed -- it pins transformers==4.49
+# and pulls OpenCV, conflicting with the diffusers-0.38/transformers-4.57 Flux stack (the
+# same issue documented for E16). We run with --no_vqa and score VQAScore later from an
+# isolated env over the saved results/e30/**/*.png.
 
 # --- 1) SMOKE: probe_deep + analyze, cheap ---
 echo "[job] ===== SMOKE: probe_deep (1 prompt, 8 steps) ====="
@@ -60,5 +63,5 @@ echo "[gate] PASS"
 # --- 3) FULL sweep ---
 echo "[job] ===== FULL: probe_deep,continuous,concat,longprompt,compositional,analyze ====="
 python e30_text_freq_control.py \
-    --part probe_deep,continuous,concat,longprompt,compositional,analyze
+    --part probe_deep,continuous,concat,longprompt,compositional,analyze --no_vqa
 echo "[job] done -- results in experiments/results/e30/ (index.html)"
