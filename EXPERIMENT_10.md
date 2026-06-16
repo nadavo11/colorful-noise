@@ -34,9 +34,16 @@ natural level").
   coarse structure, high = fine texture). Binning frequencies into radial rings and taking
   power-per-ring gives the **radial PSD** — the curve of how much coarse vs fine content the
   latent carries. `LOW_CUT = 0.25` of the radial frequency splits "low band" from "high".
-- **Spectral metrics.** `power` = mean |X|² (Parseval: equals mean squared latent value);
-  `lat_std` = latent standard deviation; `spec_norm` = the literal top singular value σ_max
-  of each channel (matrix 2-norm), averaged; `low_power` = mean power in the low radial band.
+- **Spectral metrics (intensity axis).** `power` = mean |X|² (Parseval: equals mean squared
+  latent value), the headline; `lat_std` = latent standard deviation; `spec_norm` = the literal
+  top singular value σ_max of each channel (matrix 2-norm), averaged; `low_power` = mean power in
+  the low radial band (the steepest riser — inflation is low-frequency-heavy); `low_frac` =
+  fraction of total power in the low band (CFG tilts the spectrum toward coarse structure). No
+  single "good" direction — the point is that *all* rise above the real level once `w` is large.
+- **Image metrics (decoded-pixel correlate).** From the saved PNGs: `rms_contrast` = grayscale
+  std (↑ = more contrasty); `saturation` = mean per-pixel (max−min)/max over channels (↑ = more
+  saturated); `hf_frac` = fraction of image FFT power above the 0.25 spatial-frequency ring (↑ =
+  more fine detail). These show the "over-cooked high-CFG look" in pixel space.
 - **Real reference.** Natural photographs encoded through the *same* Flux VAE into the
   generation latent space, so generated and real latents live in one comparable space.
 
@@ -55,6 +62,10 @@ natural level").
 - **Analyze (`--part analyze`).** Per-latent spectral metrics + per-image metrics from the
   PNGs, aggregated per cfg and for the real set; writes `cfg_spectral.json` and the
   `cfg_power.png` / `cfg_psd.png` plots.
+- **Site (`--part site`).** Model-free: re-templates `results/e10/index.html` from
+  `cfg_spectral.json` + the cached plots, loading no model and re-scoring nothing. If
+  `cfg_spectral.json` is absent it prints `run --part analyze first` and exits — the page is
+  rebuildable anywhere the JSON + plots are present.
 
 ## Findings
 
@@ -124,10 +135,14 @@ python e10_cfg_spectral.py --part gen,real,analyze \
     --cfgs 1,1.5,2,3,4,5 --num_classes 6 --seeds 3 --steps 28 --guidance 1.0
 # or all parts at once
 python e10_cfg_spectral.py --part download,gen,real,analyze
+# rebuild the HTML report anywhere (model-free; needs cfg_spectral.json + plots)
+python e10_cfg_spectral.py --part site      # or: python e10_site.py
 ```
 
 Code: `experiments/e10_cfg_spectral.py` (driver: `run_download`/`run_coco`/`run_gen`/
-`run_real`/`run_analyze`), reusing `experiments/spectral_ops.py` (`radial_psd`),
-`experiments/e7_flux_phase.py` (`load_flux_vae`), `experiments/e9_bandnorm_classes.py`
-(`CLASSES`, `image_metrics`, `agg`). Artifacts: `results/e10/cfg_spectral.json`,
-`results/e10/real_latents.pt`, `results/e10/plots/{cfg_power,cfg_psd}.png`.
+`run_real`/`run_analyze`/`run_site`) + `experiments/e10_site.py` (the HTML builder), reusing
+`experiments/spectral_ops.py` (`radial_psd`), `experiments/e7_flux_phase.py` (`load_flux_vae`),
+`experiments/e9_bandnorm_classes.py` (`CLASSES`, `image_metrics`, `agg`), and
+`experiments/e27_site.py` (`data_uri`). Artifacts: `results/e10/cfg_spectral.json`,
+`results/e10/real_latents.pt`, `results/e10/index.html`,
+`results/e10/plots/{cfg_power,cfg_psd}.png`.
