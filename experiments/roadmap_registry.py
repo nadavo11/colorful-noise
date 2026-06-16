@@ -495,4 +495,18 @@ EXPERIMENTS = [
      "result": "—", "verdict": "—",
      "nxt": "Implement after E32; complements the frequency knob with a channel knob.",
      "script": None, "doc": "EXPERIMENT_32.md", "results": None, "image": None},
+    {"id": "E35", "title": "Token-frequency operator sweep on SD1.5 (scenarios x operators x params)",
+     "thread": "text-freq", "models": "SD1.5", "status": "pending",
+     "motivation": "Systematically characterise the WHOLE token-freq operator toolkit: per operator x "
+                   "parameter x prompt-type, what happens to adherence and fidelity?",
+     "method": "All 13 ops (low/high-pass, band gain, notch, phase-only/mag-only, phase band-keep, phase "
+               "gain, per-object, two-prompt swap/blend/lerp) on SD1.5; 25 prompts across 5 categories "
+               "(short/long/style/object/two-object), 5 seeds, dense param grids (~1001 conditions, ~5005 "
+               "imgs, ~2h). Metrics: CLIP-T adherence, LAION aesthetic + image-stats (fidelity), "
+               "baseline-drift (CLIP image-image).",
+     "result": "Run pending (driver + preflight validated: 1001 conditions, per-object spans resolve on "
+               "SD1.5 CLIP-77; ops unit-tested).",
+     "verdict": "TBD: a map of what each operator/level does, by prompt type.",
+     "nxt": "Lift the strongest operator x regime findings back to Flux; feeds E33/E34.",
+     "script": "experiments/e35_op_sweep.py", "doc": "EXPERIMENT_35.md", "results": "e35", "image": None},
 ]
