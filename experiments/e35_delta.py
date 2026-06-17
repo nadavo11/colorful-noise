@@ -123,8 +123,21 @@ def main(out):
         h.append(f"<tr><td>{cond}</td><td>{da:+.3f}</td><td>{db:+.3f}</td><td>{n}</td></tr>")
     h.append("</table><p>All pull in B; <b>lerp</b> adds B (+0.018) at near-zero cost to A "
              "(−0.001) — the best A/B tradeoff, beating the spectral swaps (which cost A more).</p>")
+    h.append("<p style='margin-top:2em'><a href='index.html'>&larr; back to the full report</a></p>")
     with open(os.path.join(out, "delta.html"), "w") as f:
         f.write("\n".join(h))
+
+    # cross-link: add a banner to index.html pointing at delta.html (idempotent)
+    idx = os.path.join(out, "index.html")
+    if os.path.exists(idx):
+        html = open(idx).read()
+        banner = ("<p style='padding:.6em;background:#eef6ff;border:1px solid #9fb6d6;"
+                  "border-radius:6px'><b>See also:</b> <a href='delta.html'>advantage-over-baseline "
+                  "view</a> — Δ-vs-baseline heatmaps (op × category) + goal-aligned tables.</p>")
+        if "delta.html" not in html:
+            html = html.replace("</h1>", "</h1>\n" + banner, 1)
+            open(idx, "w").write(html)
+            print("[e35-delta] linked delta.html from index.html", flush=True)
     print(f"[e35-delta] wrote {os.path.join(out, 'delta.html')} + delta heatmaps", flush=True)
 
 
