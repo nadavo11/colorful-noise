@@ -19,7 +19,8 @@ echo "[job] installing deps ..."
 # SD1.5 is not quantized -> no bitsandbytes. ftfy/regex for the CLIP tokenizer; matplotlib for plots.
 pip install --quiet --no-input \
     diffusers==0.38.0 transformers==4.57.6 accelerate \
-    ftfy regex matplotlib protobuf
+    ftfy regex matplotlib protobuf \
+    lpips scikit-image image-reward   # e35_vs_baseline: perceptual/structural + ImageReward
 python -c "import torch; assert torch.cuda.is_available(); print('[job] gpu', torch.cuda.get_device_name(0))"
 python -c "from diffusers import StableDiffusionPipeline; print('[job] SD pipeline import OK')"
 
@@ -56,4 +57,12 @@ echo "[gate] PASS"
 # --- 3) FULL thorough sweep ---
 echo "[job] ===== FULL (thorough) ====="
 python e35_op_sweep.py --part gen,analyze --coverage thorough
-echo "[job] done -- results in experiments/results/e35/ (index.html)"
+
+# --- 4) VS-BASELINE views: re-reference everything to the baseline GENERATION ---
+# The delta view is red by construction (baseline == the prompt). These views ask the right
+# question -- does the operator IMPROVE on the unedited image (ImageReward/aesthetic, green
+# achievable) and how far did it move (LPIPS/SSIM/image-PSD). Reuses the saved PNGs, no re-gen.
+echo "[job] ===== VS-BASELINE (advantage over baseline generation) ====="
+python e35_delta.py                          # vs-prompt delta heatmaps (kept for contrast)
+python e35_vs_baseline.py --with_images       # vs-baseline-generation: directional + distance
+echo "[job] done -- results in experiments/results/e35/ (index.html, vs_baseline.html)"
