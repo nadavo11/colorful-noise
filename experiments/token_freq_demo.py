@@ -103,6 +103,10 @@ TWO_PROMPT = {"two-prompt band-swap", "two-prompt band-blend", "two-prompt lerp"
 NEEDS_CUT = {"low-pass", "high-pass", "two-prompt band-swap", "two-prompt band-blend"}
 NEEDS_RANGE = {"band gain", "notch", "phase band-keep", "phase gain", "per-object band gain"}
 NEEDS_GAIN = {"band gain", "phase gain", "per-object band gain"}
+# ops whose token-axis transform can ALSO be applied to CLIP's pre-pool sequence (then
+# re-pooled at EOS) to push the same change into the global pooled vector (ppe).
+CLIP_POOLABLE = {"low-pass", "high-pass", "band gain", "notch",
+                 "phase-only", "mag-only", "phase band-keep", "phase gain"}
 
 HELP = {
     "baseline":
@@ -256,6 +260,21 @@ def _mag_only(E):
 # op dispatch -> (edited prompt_embeds, edited pooled, description)
 # ---------------------------------------------------------------------------
 
+def clip_pooled_op(prompt, fn):
+    """Apply a token-axis op `fn` to CLIP's last hidden state (the layer feeding the pool),
+    then re-pool at the EOS token -> a globally-modified pooled embedding. Reproduces Flux's
+    pooler_output exactly when fn is identity. `fn` takes/returns a (1, L, 768) tensor."""
+    te, tok = PIPE.text_encoder, PIPE.tokenizer
+    ids = tok(prompt, padding="max_length", max_length=PIPE.tokenizer_max_length,
+              truncation=True, return_tensors="pt").input_ids.to(te.device)
+    with torch.no_grad():
+        lhs = te(ids, output_hidden_states=False).last_hidden_state    # (1,77,768) post-final-LN
+        eos = int(ids.to(torch.int).argmax(dim=-1)[0])                 # EOS = highest token id
+        mod = TS.apply_on_span(fn, lhs.float(), eos + 1).to(lhs.dtype)  # op over real tokens only
+        pooled = mod[torch.arange(mod.shape[0], device=mod.device), eos]
+    return pooled.cpu()
+
+
 def _range(p):
     """Read the [lo,hi] band-edge sliders, ordered so lo<=hi even if dragged past."""
     lo, hi = float(p["lo"]), float(p["hi"])
@@ -264,34 +283,35 @@ def _range(p):
 
 def apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p):
     on_span = lambda fn, L=LA: TS.apply_on_span(fn, peA, L)
+    def _ppe(fn):
+        # CLIP-pooled toggle: run the SAME token-axis op on CLIP's pre-pool sequence and
+        # re-pool at EOS, so the global pooled vector gets a matching change (else unchanged).
+        return clip_pooled_op(promptA, fn) if p.get("clip_pool") else ppeA
     if op == "baseline":
         return peA, ppeA, "baseline (unmodified)"
     if op == "low-pass":
-        c = p["cut"]
-        return on_span(lambda x: TS.band_filter_1d(x, 0.0, c)), ppeA, f"low-pass keep [0,{c:.2f}]"
+        c = p["cut"]; fn = lambda x: TS.band_filter_1d(x, 0.0, c)
+        return on_span(fn), _ppe(fn), f"low-pass keep [0,{c:.2f}]"
     if op == "high-pass":
-        c = p["cut"]
-        return on_span(lambda x: TS.band_filter_1d(x, c, 1.0, keep_dc=True)), ppeA, \
-            f"high-pass keep [{c:.2f},1]+DC"
+        c = p["cut"]; fn = lambda x: TS.band_filter_1d(x, c, 1.0, keep_dc=True)
+        return on_span(fn), _ppe(fn), f"high-pass keep [{c:.2f},1]+DC"
     if op == "band gain":
-        lo, hi = _range(p); g = p["gain"]
-        return on_span(lambda x: TS.band_gain_1d(x, lo, hi, g)), ppeA, \
-            f"band [{lo:.2f},{hi:.2f}] x{g:.2f}"
+        lo, hi = _range(p); g = p["gain"]; fn = lambda x: TS.band_gain_1d(x, lo, hi, g)
+        return on_span(fn), _ppe(fn), f"band [{lo:.2f},{hi:.2f}] x{g:.2f}"
     if op == "notch":
-        lo, hi = _range(p)
-        return on_span(lambda x: TS.band_notch_1d(x, lo, hi)), ppeA, \
-            f"notch band [{lo:.2f},{hi:.2f}]"
+        lo, hi = _range(p); fn = lambda x: TS.band_notch_1d(x, lo, hi)
+        return on_span(fn), _ppe(fn), f"notch band [{lo:.2f},{hi:.2f}]"
     if op == "phase-only":
-        return on_span(_phase_only), ppeA, "phase-only (magnitude=1)"
+        return on_span(_phase_only), _ppe(_phase_only), "phase-only (magnitude=1)"
     if op == "mag-only":
-        return on_span(_mag_only), ppeA, "mag-only (phase=0)"
+        return on_span(_mag_only), _ppe(_mag_only), "mag-only (phase=0)"
     if op == "phase band-keep":
-        lo, hi = _range(p)
-        return on_span(lambda x: TS.band_phase_filter_1d(x, lo, hi)), ppeA, \
+        lo, hi = _range(p); fn = lambda x: TS.band_phase_filter_1d(x, lo, hi)
+        return on_span(fn), _ppe(fn), \
             f"phase kept in [{lo:.2f},{hi:.2f}], =0 elsewhere (mag kept)"
     if op == "phase gain":
-        lo, hi = _range(p); g = p["gain"]
-        return on_span(lambda x: TS.band_phase_gain_1d(x, lo, hi, g)), ppeA, \
+        lo, hi = _range(p); g = p["gain"]; fn = lambda x: TS.band_phase_gain_1d(x, lo, hi, g)
+        return on_span(fn), _ppe(fn), \
             f"phase angle x{g:.2f} in band [{lo:.2f},{hi:.2f}] (mag kept)"
     if op in TWO_PROMPT:
         if peB is None:
@@ -634,7 +654,7 @@ def _encode_cached(prompt):
     return _ENC_CACHE[prompt]
 
 
-def run(promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha,
+def run(promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha, clip_pool,
         seed, steps, guidance, size):
     if not (promptA or "").strip():
         return None, None, "enter prompt A"
@@ -653,7 +673,7 @@ def run(promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha,
         peB, ppeB, LB = _encode_cached(promptB)
 
     p = dict(cut=cut, gain=gain, lo=lo, hi=hi, width=width, alpha=alpha,
-             object_phrase=object_phrase)
+             object_phrase=object_phrase, clip_pool=clip_pool)
     try:
         peN, ppeN, desc = apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p)
     except Exception as e:
@@ -661,6 +681,8 @@ def run(promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha,
 
     if op == "baseline":
         return base, base, "baseline (same as left)"
+    if clip_pool and op in CLIP_POOLABLE:
+        desc += " · +CLIP-pooled (global)"
     edited = generate(peN, ppeN, seed, steps, guidance, size)
     return base, edited, desc
 
@@ -676,6 +698,7 @@ def _visibility(op):
         gr.update(visible=op in NEEDS_GAIN),                 # gain
         gr.update(visible=op == "two-prompt band-blend"),    # width
         gr.update(visible=op == "two-prompt lerp"),          # alpha
+        gr.update(visible=op in CLIP_POOLABLE),              # clip-pooled toggle
         gr.update(value=HELP.get(op, "")),                   # help text
     ]
 
@@ -715,6 +738,10 @@ def _token_tab():
             alpha = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="lerp alpha (A->B)",
                               info="0 = all A, 1 = all B (plain token-space mix).",
                               visible=False)
+            clip_pool = gr.Checkbox(value=False, visible=False,
+                                    label="also apply to CLIP pooled (global)",
+                                    info="Run the same op on CLIP's pre-pool sequence and "
+                                         "re-pool at EOS → matching change to the global vector.")
             with gr.Row():
                 seed = gr.Number(value=0, precision=0, label="seed",
                                  info="Fix to compare fairly; baseline cached per seed.")
@@ -733,9 +760,9 @@ def _token_tab():
             desc = gr.Markdown()
 
     op.change(_visibility, op,
-              [promptB, object_phrase, cut, lo, hi, gain, width, alpha, helpbox])
+              [promptB, object_phrase, cut, lo, hi, gain, width, alpha, clip_pool, helpbox])
     go.click(run,
-             [promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha,
+             [promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha, clip_pool,
               seed, steps, guidance, size],
              [out_base, out_edit, desc])
 
