@@ -1048,3 +1048,36 @@ identity at strength 0, step-window gating). Demo **Velocity** tab on `token_fre
 `experiments/VELOCITY_SPECTRAL_MATH.md`, the Velocity tab in `token_freq_demo.py`. Deep writeup
 `EXPERIMENT_37.md`; example HTML via `e37_geneval.py --part site` (counting / color_attr).
 Results (gitignored) in `results/e37_geneval/`.
+
+---
+
+## E38 — the frequency direction of CFG (magnitude AND phase, along the trajectory)
+
+**Question.** Classifier-free-guidance strength (Flux-dev `guidance_scale`) changes the
+image; *where in the FFT spectrum* does that change live, in **magnitude** and in **phase**,
+and how does it build across denoising? E7 found cfg=1 vs cfg=3.5 differ mainly in **power**
+(low frequencies pumped, steeper slope) while the **marginal** per-coefficient phase histogram
+stays uniform. That is necessary but not sufficient: with the same prompt+seed the initial
+latent is identical (guidance is only an embedding input), so the two latents are *point-wise*
+comparable — and a coherent, band-specific **paired phase rotation** would be invisible to a
+histogram. E38 measures exactly that.
+
+**Method.** 10 fixed "random" prompts × cfg ∈ {1.0, 3.5 (default), 7.0}, identical seed per
+prompt across cfg, 28 steps, 1024px, FLUX.1-dev. The full per-step unpacked latent trajectory
+(steps×16×128×128) is stored and FFT'd offline. Per radial band: **magnitude direction**
+`d log-power / d cfg` (least-squares slope over the three cfg points; >0 ⇒ amplified), and
+**phase direction** = the magnitude-weighted resultant length of the per-coefficient rotations
+`F_high/F_low` ("**coherence**": 1 ⇒ every coefficient rotates by the same angle = a real phase
+direction; ≈ the printed **random null ~1/√N** ⇒ directionless, consistent with E7's uniform
+marginal) plus the dominant **mean rotation** angle. Reported for cfg pairs (1→3.5, 3.5→7,
+1→7) and binned early/mid/late to see when the direction emerges.
+
+**Status.** Harness complete and off-GPU-validated (synthetic trajectories with a planted
+low-band magnitude lift and a scrambled high band: low-band `d logP/dcfg` recovered >0,
+unchanged-phase bands give coherence 1 / rotation 0, scrambled bands collapse to the random
+null). Generation pending a GPU/cluster run.
+
+**Artifacts.** `experiments/e38_cfg_direction.py` (`--part gen,analyze`),
+`experiments/cluster_e38_job.sh`. Outputs to `results/e38/`: `summary.json` (per-band mean±std
+over prompts, band coeff counts, random-phase null), `mag_direction.png`, `phase_coherence.png`,
+self-contained `index.html`, plus `images/` and the `traj/` latent trajectories.
