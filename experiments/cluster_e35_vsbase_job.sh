@@ -19,8 +19,9 @@ echo "[vsbase-job] installing deps ..."
 pip install --quiet --no-input \
     transformers==4.57.6 accelerate ftfy regex tqdm matplotlib protobuf \
     lpips scikit-image image-reward
-# image-reward imports the OpenAI `clip` module but does NOT declare it as a dep
-pip install --quiet --no-input git+https://github.com/openai/CLIP.git
+# image-reward imports the OpenAI `clip` module but does NOT declare it as a dep;
+# clip-anytorch is the pip-installable build (the runtime image has no `git` for git+url)
+pip install --quiet --no-input clip-anytorch
 python -c "import torch; print('[vsbase-job] gpu', torch.cuda.is_available() and torch.cuda.get_device_name(0))"
 
 # sanity: the sweep must have produced a report to re-reference
