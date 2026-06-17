@@ -34,6 +34,7 @@ Run with uv (auto-builds/caches an env from the inline deps below, incl. a CUDA 
 #     "protobuf",
 #     "huggingface-hub==0.35.3",
 #     "gradio==5.9.1",
+#     "gradio_rangeslider==0.0.8",
 # ]
 #
 # [[tool.uv.index]]
@@ -563,7 +564,7 @@ def generate_latent(pe, ppe, seed, steps, guidance, size, op_fn=None, schedule="
     return img
 
 
-def run_latent(promptA, promptB, op, cut, gain, lo, hi, qk, schedule, strength, scale,
+def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, strength, scale,
                seed, steps, guidance, size):
     if not (promptA or "").strip():
         return None, None, "enter prompt A"
@@ -579,7 +580,7 @@ def run_latent(promptA, promptB, op, cut, gain, lo, hi, qk, schedule, strength, 
     need_B = op in LAT_TWO_PROMPT
     if need_B and not (promptB or "").strip():
         return base, None, "enter prompt B for a two-prompt op"
-    p = dict(cut=cut, gain=gain, lo=lo, hi=hi, qk=qk, strength=strength, scale=scale)
+    p = dict(cut=cut, gain=gain, lo=band[0], hi=band[1], qk=qk, strength=strength, scale=scale)
     try:
         if op in LAT_OFFLINE:
             peB, ppeB, LB = _encode_cached(promptB)
@@ -629,8 +630,7 @@ def _latent_visibility(op):
     return [
         gr.update(visible=op in LAT_TWO_PROMPT),              # prompt B
         gr.update(visible=op in LAT_NEEDS_CUT),               # cut
-        gr.update(visible=op in LAT_NEEDS_RANGE),             # band low edge
-        gr.update(visible=op in LAT_NEEDS_RANGE),             # band high edge
+        gr.update(visible=op in LAT_NEEDS_RANGE),             # band range [lo,hi]
         gr.update(visible=op in LAT_NEEDS_GAIN),              # gain
         gr.update(visible=op in LAT_NEEDS_QK),                # quant k
         gr.update(visible=op in LAT_PERSTEP),                 # schedule
@@ -654,7 +654,7 @@ def _encode_cached(prompt):
     return _ENC_CACHE[prompt]
 
 
-def run(promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha, clip_pool,
+def run(promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
         seed, steps, guidance, size):
     if not (promptA or "").strip():
         return None, None, "enter prompt A"
@@ -672,7 +672,7 @@ def run(promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha, cl
             return base, None, "enter prompt B for a two-prompt op"
         peB, ppeB, LB = _encode_cached(promptB)
 
-    p = dict(cut=cut, gain=gain, lo=lo, hi=hi, width=width, alpha=alpha,
+    p = dict(cut=cut, gain=gain, lo=band[0], hi=band[1], width=width, alpha=alpha,
              object_phrase=object_phrase, clip_pool=clip_pool)
     try:
         peN, ppeN, desc = apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p)
@@ -693,8 +693,7 @@ def _visibility(op):
         gr.update(visible=op in TWO_PROMPT),                 # prompt B
         gr.update(visible=op == "per-object band gain"),     # object phrase
         gr.update(visible=op in NEEDS_CUT),                  # cut
-        gr.update(visible=op in NEEDS_RANGE),                # band low edge
-        gr.update(visible=op in NEEDS_RANGE),                # band high edge
+        gr.update(visible=op in NEEDS_RANGE),                # band range [lo,hi]
         gr.update(visible=op in NEEDS_GAIN),                 # gain
         gr.update(visible=op == "two-prompt band-blend"),    # width
         gr.update(visible=op == "two-prompt lerp"),          # alpha
@@ -705,6 +704,7 @@ def _visibility(op):
 
 def _token_tab():
     import gradio as gr
+    from gradio_rangeslider import RangeSlider
     with gr.Accordion("How it works  ·  what the knobs mean", open=False):
         gr.Markdown(INTRO_MD)
         gr.Markdown("**Controls**\n" + KNOBS_MD)
@@ -723,12 +723,9 @@ def _token_tab():
             cut = gr.Slider(0.0, 1.0, value=0.25, step=0.01, label="cut (low/high split)",
                             info="0=DC … 1=Nyquist. WHERE the spectrum splits (not which side).",
                             visible=False)
-            lo = gr.Slider(0.0, 1.0, value=0.5, step=0.01, label="band low edge",
-                           info="Low edge of the [lo,hi] band to act on (0=DC … 1=Nyquist).",
-                           visible=False)
-            hi = gr.Slider(0.0, 1.0, value=1.0, step=0.01, label="band high edge",
-                           info="High edge of the band. Operator acts on frequencies in [lo,hi].",
-                           visible=False)
+            band = RangeSlider(minimum=0.0, maximum=1.0, value=(0.5, 1.0), step=0.01,
+                               label="band [low, high]", visible=False,
+                               info="Drag both handles: the [lo,hi] frequency range to act on (0=DC … 1=Nyquist).")
             gain = gr.Slider(0.0, 3.0, value=2.0, step=0.05, label="gain (x)",
                              info=">1 amplify, 1 identity, <1 attenuate, 0 remove. DC kept at 1.",
                              visible=False)
@@ -760,15 +757,16 @@ def _token_tab():
             desc = gr.Markdown()
 
     op.change(_visibility, op,
-              [promptB, object_phrase, cut, lo, hi, gain, width, alpha, clip_pool, helpbox])
+              [promptB, object_phrase, cut, band, gain, width, alpha, clip_pool, helpbox])
     go.click(run,
-             [promptA, promptB, object_phrase, op, cut, gain, lo, hi, width, alpha, clip_pool,
+             [promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
               seed, steps, guidance, size],
              [out_base, out_edit, desc])
 
 
 def _latent_tab():
     import gradio as gr
+    from gradio_rangeslider import RangeSlider
     with gr.Accordion("How it works  ·  what the knobs mean", open=False):
         gr.Markdown(LAT_INTRO_MD)
     with gr.Row():
@@ -784,12 +782,9 @@ def _latent_tab():
             cut = gr.Slider(0.0, 1.0, value=0.3, step=0.01, label="cut (radial low/high split)",
                             info="0=DC (centre) … 1=corner. WHERE the radial spectrum splits.",
                             visible=False)
-            lo = gr.Slider(0.0, 1.0, value=0.5, step=0.01, label="band low edge",
-                           info="Low edge of the radial [lo,hi] band (0=DC/centre … 1=corner).",
-                           visible=False)
-            hi = gr.Slider(0.0, 1.0, value=1.0, step=0.01, label="band high edge",
-                           info="High edge of the radial band. Acts on radii in [lo,hi].",
-                           visible=False)
+            band = RangeSlider(minimum=0.0, maximum=1.0, value=(0.5, 1.0), step=0.01,
+                               label="radial band [low, high]", visible=False,
+                               info="Drag both handles: the radial [lo,hi] range (0=DC/centre … 1=corner).")
             gain = gr.Slider(0.0, 3.0, value=2.0, step=0.05, label="gain (x)",
                              info=">1 amplify, 1 identity, <1 attenuate. DC kept at 1.", visible=False)
             qk = gr.Slider(2, 16, value=8, step=1, label="phase levels k", visible=False,
@@ -817,9 +812,9 @@ def _latent_tab():
             desc = gr.Markdown()
 
     op.change(_latent_visibility, op,
-              [promptB, cut, lo, hi, gain, qk, schedule, strength, scale, helpbox])
+              [promptB, cut, band, gain, qk, schedule, strength, scale, helpbox])
     go.click(run_latent,
-             [promptA, promptB, op, cut, gain, lo, hi, qk, schedule, strength, scale,
+             [promptA, promptB, op, cut, gain, band, qk, schedule, strength, scale,
               seed, steps, guidance, size],
              [out_base, out_edit, desc])
 
