@@ -14,7 +14,7 @@ Velocity tab (true CFG); the Token/Latent tabs need a Flux model (--model flux-d
     generation via a step-end callback (E8-E23/E36). The extra knob here is the SCHEDULE —
     *when* the op fires (every step / early / late / last step). Operators: low/high-pass,
     band gain, notch, phase-only/mag-only, phase band-keep, quantize phase, SBN→cfg1 /
-    SBN→real / band-modulate / global-power, colored-noise init, restyle→B, SBN-blend A+B,
+    SBN→real / SBN→universal / band-modulate / global-power, colored-noise init, restyle→B, SBN-blend A+B,
     and the offline two-latent hybrid / phase-swap.
 
 The tabs are thin wrappers around the ops in `velocity_spectral_ops.py` (velocity axis),
@@ -66,6 +66,8 @@ from style_ops import restyle_latent, color_noise, blend_references
 
 REAL_LATENTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "results", "e10", "real_latents.pt")   # Flux-VAE real photos (E10)
+UNIVERSAL_REF = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "results", "e9", "universal_ref.pt")  # E9 universal cfg=1 band ref
 N_BINS = 24
 
 # Model registry -- only ONE entry is ever loaded (chosen by --model), so a single model
@@ -419,13 +421,13 @@ def apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p):
 LAT_OPS = [
     "baseline", "low-pass", "high-pass", "band gain", "notch",
     "phase-only", "mag-only", "phase band-keep", "quantize phase",
-    "SBN→cfg1", "SBN→real", "band modulate", "global power", "colored-noise init",
+    "SBN→cfg1", "SBN→real", "SBN→universal", "band modulate", "global power", "colored-noise init",
     "restyle→B", "SBN blend A+B", "hybrid (low A / high B)", "phase-swap (A phase / B mag)",
 ]
 LAT_SCHEDULES = ["every", "early", "late", "last", "interval"]
 LAT_PERSTEP = {"low-pass", "high-pass", "band gain", "notch", "phase-only", "mag-only",
-               "phase band-keep", "quantize phase", "SBN→cfg1", "SBN→real", "band modulate",
-               "global power", "restyle→B", "SBN blend A+B"}
+               "phase band-keep", "quantize phase", "SBN→cfg1", "SBN→real", "SBN→universal",
+               "band modulate", "global power", "restyle→B", "SBN blend A+B"}
 LAT_TWO_PROMPT = {"restyle→B", "SBN blend A+B", "hybrid (low A / high B)",
                   "phase-swap (A phase / B mag)"}
 LAT_OFFLINE = {"hybrid (low A / high B)", "phase-swap (A phase / B mag)"}
@@ -467,6 +469,7 @@ LAT_HELP = {
     "quantize phase": "**Quantize phase** *(k, schedule)*. Snap the spatial phase to `k` levels (magnitude kept).",
     "SBN→cfg1": "**SBN → cfg=1** *(schedule)*. Clamp each radial band's power toward a cfg=1 reference of the SAME prompt — the E8/E16 de-saturation lever. (Records the reference on first use.)",
     "SBN→real": "**SBN → real** *(schedule)*. Clamp band power toward REAL-photo statistics (E23, +aesthetic). Needs results/e10/real_latents.pt.",
+    "SBN→universal": "**SBN → universal** *(schedule)*. Clamp each band's power toward the E9 **universal** cfg=1 reference (one per-step profile averaged across prompt classes) — a precomputed magnitude target, so NO per-prompt cfg=1 pass is needed. Needs results/e9/universal_ref.pt.",
     "band modulate": "**Band modulate** *(cut, gain, schedule)*. Low/high-band power tilt (E9) split at **cut**: boosts the high band by **gain** and cuts the low band by 1/gain (gain<1 reverses it). gain=1 is a no-op.",
     "global power": "**Global power** *(scale, schedule)*. Scale the whole latent (Parseval) — changes contrast/total power, not spectral shape.",
     "colored-noise init": "**Colored-noise init**. Shape the INITIAL noise's radial spectrum toward natural/real statistics, then denoise normally (E20).",
@@ -530,6 +533,7 @@ VEL_HELP = {
 
 _REF_CACHE = {}            # (prompt, steps, size) -> {"band": (steps,16,nb)}
 _REAL_BAND = {}            # nb -> (16,nb) real-photo band power (or None)
+_UNI_BAND = {}             # nb -> (steps,16,nb) E9 universal cfg=1 band ref (or None)
 
 
 def _flux_unpack(size):
@@ -616,6 +620,24 @@ def flux_real_band(nb=N_BINS):
     return rb
 
 
+def flux_universal_band(nb=N_BINS):
+    """E9 universal (prompt-agnostic) per-step cfg=1 band ref (steps,16,nb), or None.
+
+    Averaged across prompt classes by e9_universal_ref.py -> universal_ref.pt. Clamping
+    toward it skips the per-prompt cfg=1 reference pass entirely (the whole point of the
+    universal ref). None if the file is missing or its bin count != nb."""
+    if nb in _UNI_BAND:
+        return _UNI_BAND[nb]
+    band = None
+    if os.path.exists(UNIVERSAL_REF):
+        uni = torch.load(UNIVERSAL_REF, weights_only=True)
+        b = uni["band"] if isinstance(uni, dict) else uni
+        if b.shape[-1] == nb:
+            band = b.float().cpu()
+    _UNI_BAND[nb] = band
+    return band
+
+
 def _latent_op_fn(op, p, ctx):
     """op_fn(lat (B,16,Hl,Wl), step_i) -> lat for the per-step / init ops. idx_map is built
     from the latent shape (Flux size varies)."""
@@ -655,6 +677,9 @@ def _latent_op_fn(op, p, ctx):
     if op == "SBN→real":
         rb = ctx["real_band"]
         return lambda lat, i: L.sbn_clamp(lat, rb.to(lat.device), idx_of(lat), nb)
+    if op == "SBN→universal":
+        ub = ctx["uni_band"]
+        return lambda lat, i: L.sbn_clamp(lat, ub[min(i, ub.shape[0] - 1)].to(lat.device), idx_of(lat), nb)
     if op == "SBN blend A+B":
         bref = ctx["blend_band"]
         return lambda lat, i: L.sbn_clamp(lat, bref[min(i, bref.shape[0] - 1)].to(lat.device), idx_of(lat), nb)
@@ -731,6 +756,11 @@ def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, interval, st
             if rb is None:
                 return base, None, "no results/e10/real_latents.pt — SBN→real unavailable"
             ctx["real_band"] = rb
+        elif op == "SBN→universal":
+            ub = flux_universal_band()
+            if ub is None:
+                return base, None, "no results/e9/universal_ref.pt — SBN→universal unavailable"
+            ctx["uni_band"] = ub
         elif op == "restyle→B":
             ctx["style_band"] = flux_reference(promptB, steps, size)["band"][-1]
         elif op == "SBN blend A+B":
