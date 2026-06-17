@@ -202,6 +202,10 @@ KNOBS_MD = """\
   `0` = remove. DC is never scaled, so the prompt's global level is preserved.
 - **blend width** — half-width of the soft A↔B crossover (band-blend only).
 - **lerp alpha** — interpolation weight toward Prompt B (lerp only).
+- **timesteps to intervene** — fraction of the denoising schedule `[start, end]` on which
+  the token edit is active (`[0,1]` = the whole run, identical to editing once up front;
+  shrink it to apply the edit early-only or late-only). Implemented by swapping the edited
+  vs. unedited embedding mid-loop; the pooled/global vector stays edited throughout.
 - **seed** — fix it to compare edits fairly (baseline is cached per seed).
 - **steps / guidance / size** — generation quality vs speed; smaller `size` is faster and
   uses less VRAM.
@@ -289,13 +293,26 @@ def encode(prompt):
     return pe.cpu(), ppe.cpu(), L
 
 
-def generate(pe, ppe, seed, steps, guidance, size):
-    """One true-CFG=1 generation from (possibly edited) embeddings -> PIL."""
+def generate(pe, ppe, seed, steps, guidance, size, pe_base=None, interval=None):
+    """One true-CFG=1 generation from (possibly edited) embeddings -> PIL.
+
+    With `pe_base` + `interval=(i_lo,i_hi)` the token edit is TIMESTEP-GATED: a
+    TS.EmbedIntervalCallback swaps prompt_embeds between the edited `pe` (inside the
+    inclusive step window) and `pe_base` (outside it). Step 0 uses the edited embeds iff
+    i_lo == 0; the callback sets each subsequent step. pooled stays as passed (not gated)."""
+    cb = None
+    pe_step0 = pe
+    if pe_base is not None and interval is not None:
+        i_lo, i_hi = interval
+        pe_g, pb_g = pe.cuda(), pe_base.cuda()
+        cb = TS.EmbedIntervalCallback(pb_g, pe_g, i_lo, i_hi)
+        pe_step0 = pe_g if i_lo <= 0 <= i_hi else pb_g
     with torch.no_grad():
-        img = PIPE(prompt_embeds=pe.cuda(), pooled_prompt_embeds=ppe.cuda(),
+        img = PIPE(prompt_embeds=pe_step0.cuda(), pooled_prompt_embeds=ppe.cuda(),
                    height=size, width=size, guidance_scale=guidance,
                    true_cfg_scale=1.0, num_inference_steps=int(steps),
-                   generator=torch.Generator("cuda").manual_seed(int(seed))).images[0]
+                   generator=torch.Generator("cuda").manual_seed(int(seed)),
+                   callback_on_step_end=cb).images[0]
     return img
 
 
@@ -405,7 +422,7 @@ LAT_OPS = [
     "SBN→cfg1", "SBN→real", "band modulate", "global power", "colored-noise init",
     "restyle→B", "SBN blend A+B", "hybrid (low A / high B)", "phase-swap (A phase / B mag)",
 ]
-LAT_SCHEDULES = ["every", "early", "late", "last"]
+LAT_SCHEDULES = ["every", "early", "late", "last", "interval"]
 LAT_PERSTEP = {"low-pass", "high-pass", "band gain", "notch", "phase-only", "mag-only",
                "phase band-keep", "quantize phase", "SBN→cfg1", "SBN→real", "band modulate",
                "global power", "restyle→B", "SBN blend A+B"}
@@ -430,6 +447,8 @@ the loop — so the **schedule** matters:
 - **every** — clamp/edit at every step (strongest, e.g. classic SBN).
 - **early / late** — only the first / last third of steps.
 - **last** — only the final step (gentle; the E23 real-SBN regime).
+- **interval** — a custom inclusive step window via the *timesteps to intervene* slider
+  (the free-form version of early/late; mirrors the Velocity tab).
 
 Left = baseline, right = your edit, same seed. `SBN→…` clamps the latent's per-band power
 toward a target spectrum (a cfg=1 proxy, or real photos); `restyle/blend/hybrid/phase-swap`
@@ -649,9 +668,10 @@ def _latent_op_fn(op, p, ctx):
 
 
 def generate_latent(pe, ppe, seed, steps, guidance, size, op_fn=None, schedule="every",
-                    init_fn=None):
+                    init_fn=None, interval=None):
     """One Flux generation applying op_fn on the schedule (or init_fn to pre-set the
-    initial noise)."""
+    initial noise). `interval=(i_lo,i_hi)` is the inclusive step window used by
+    schedule='interval'."""
     unpack, pack = _flux_unpack(size), _flux_pack()
     cb = None
     latents = None
@@ -661,7 +681,8 @@ def generate_latent(pe, ppe, seed, steps, guidance, size, op_fn=None, schedule="
                             device="cuda", dtype=torch.float32)
         latents = pack(init_fn(noise, 0)).to(torch.bfloat16)
     elif op_fn is not None:
-        cb = L.LatentOpCallback(op_fn, schedule, int(steps), unpack=unpack, pack=pack)
+        cb = L.LatentOpCallback(op_fn, schedule, int(steps), unpack=unpack, pack=pack,
+                                interval=interval)
     with torch.no_grad():
         img = PIPE(prompt_embeds=pe.cuda(), pooled_prompt_embeds=ppe.cuda(), height=size, width=size,
                    guidance_scale=guidance, true_cfg_scale=1.0, num_inference_steps=int(steps),
@@ -670,7 +691,7 @@ def generate_latent(pe, ppe, seed, steps, guidance, size, op_fn=None, schedule="
     return img
 
 
-def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, strength, scale,
+def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, interval, strength, scale,
                seed, steps, guidance, size):
     if MODEL["kind"] != "flux":
         return None, None, _FLUX_ONLY_NOTE
@@ -725,9 +746,17 @@ def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, strength, sc
             edited = generate_latent(peA, ppeA, seed, steps, guidance, size, init_fn=op_fn)
             desc = "colored-noise init (" + ("real" if flux_real_band() is not None else "cfg=1") + " target)"
         else:
+            iv = None
+            sched_desc = f"schedule={schedule}"
+            if schedule == "interval":
+                t_lo, t_hi = _ordered(interval)
+                i_lo = int(round(t_lo * (steps - 1)))
+                i_hi = int(round(t_hi * (steps - 1)))
+                iv = (i_lo, i_hi)
+                sched_desc = f"steps {i_lo}–{i_hi}/{steps - 1}"
             edited = generate_latent(peA, ppeA, seed, steps, guidance, size, op_fn=op_fn,
-                                     schedule=schedule)
-            desc = f"{op} · schedule={schedule}"
+                                     schedule=schedule, interval=iv)
+            desc = f"{op} · {sched_desc}"
     except Exception as e:
         return base, None, f"error: {e}"
     return base, edited, desc
@@ -742,6 +771,7 @@ def _latent_visibility(op):
         gr.update(visible=op in LAT_NEEDS_GAIN),              # gain
         gr.update(visible=op in LAT_NEEDS_QK),                # quant k
         gr.update(visible=op in LAT_PERSTEP),                 # schedule
+        gr.update(visible=op in LAT_PERSTEP),                 # interval (timesteps)
         gr.update(visible=op in LAT_NEEDS_STRENGTH),          # strength
         gr.update(visible=op in LAT_NEEDS_SCALE),             # scale
         gr.update(value=LAT_HELP.get(op, "")),               # help
@@ -818,7 +848,7 @@ _FLUX_ONLY_NOTE = ("This tab needs a **Flux** model — relaunch with `--model f
 
 
 def run(promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
-        seed, steps, guidance, size):
+        interval, seed, steps, guidance, size):
     if MODEL["kind"] != "flux":
         return None, None, _FLUX_ONLY_NOTE
     if not (promptA or "").strip():
@@ -848,7 +878,17 @@ def run(promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip
         return base, base, "baseline (same as left)"
     if clip_pool and op in CLIP_POOLABLE:
         desc += " · +CLIP-pooled (global)"
-    edited = generate(peN, ppeN, seed, steps, guidance, size)
+    # timestep gate: apply the token edit only on the inclusive step window [i_lo,i_hi];
+    # the full range [0,1] degenerates to the plain "edit throughout" path (no callback).
+    t_lo, t_hi = _ordered(interval)
+    i_lo = int(round(t_lo * (steps - 1)))
+    i_hi = int(round(t_hi * (steps - 1)))
+    if (i_lo, i_hi) != (0, steps - 1):
+        edited = generate(peN, ppeN, seed, steps, guidance, size, pe_base=peA,
+                          interval=(i_lo, i_hi))
+        desc += f" · steps {i_lo}–{i_hi}/{steps - 1}"
+    else:
+        edited = generate(peN, ppeN, seed, steps, guidance, size)
     return base, edited, desc
 
 
@@ -863,6 +903,7 @@ def _visibility(op):
         gr.update(visible=op == "two-prompt band-blend"),    # width
         gr.update(visible=op == "two-prompt lerp"),          # alpha
         gr.update(visible=op in CLIP_POOLABLE),              # clip-pooled toggle
+        gr.update(visible=op != "baseline"),                 # interval (timesteps)
         gr.update(value=HELP.get(op, "")),                   # help text
     ]
 
@@ -904,6 +945,12 @@ def _token_tab():
                                     label="also apply to CLIP pooled (global)",
                                     info="Run the same op on CLIP's pre-pool sequence and "
                                          "re-pool at EOS → matching change to the global vector.")
+            interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
+                                   label="timesteps to intervene [start, end]", visible=False,
+                                   info="Fraction of the schedule (0=first step … 1=last). [0,1] = "
+                                        "edit throughout (= edit once up front); shrink to apply the "
+                                        "token edit only early / late. Pooled (CLIP) stays edited "
+                                        "throughout. Like the Velocity tab's interval.")
             with gr.Row():
                 seed = gr.Number(value=0, precision=0, label="seed",
                                  info="Fix to compare fairly; baseline cached per seed.")
@@ -922,10 +969,10 @@ def _token_tab():
             desc = gr.Markdown()
 
     op.change(_visibility, op,
-              [promptB, object_phrase, cut, band, gain, width, alpha, clip_pool, helpbox])
+              [promptB, object_phrase, cut, band, gain, width, alpha, clip_pool, interval, helpbox])
     go.click(run,
              [promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
-              seed, steps, guidance, size],
+              interval, seed, steps, guidance, size],
              [out_base, out_edit, desc])
 
 
@@ -943,7 +990,13 @@ def _latent_tab():
             op = gr.Dropdown(LAT_OPS, value="baseline", label="Operation")
             helpbox = gr.Markdown(LAT_HELP["baseline"])
             schedule = gr.Radio(LAT_SCHEDULES, value="every", label="schedule (when it fires)",
-                                info="every / early / late third / last step only.", visible=False)
+                                info="every / early / late third / last step / custom interval.",
+                                visible=False)
+            interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
+                                   label="timesteps to intervene [start, end]", visible=False,
+                                   info="Used when schedule = interval. Fraction of the schedule "
+                                        "(0=first step … 1=last); the free-form version of early/late. "
+                                        "Like the Velocity tab's interval.")
             cut = gr.Slider(0.0, 1.0, value=0.3, step=0.01, label="cut (radial low/high split)",
                             info="0=DC (centre) … 1=corner. WHERE the radial spectrum splits.",
                             visible=False)
@@ -977,9 +1030,9 @@ def _latent_tab():
             desc = gr.Markdown()
 
     op.change(_latent_visibility, op,
-              [promptB, cut, band, gain, qk, schedule, strength, scale, helpbox])
+              [promptB, cut, band, gain, qk, schedule, interval, strength, scale, helpbox])
     go.click(run_latent,
-             [promptA, promptB, op, cut, gain, band, qk, schedule, strength, scale,
+             [promptA, promptB, op, cut, gain, band, qk, schedule, interval, strength, scale,
               seed, steps, guidance, size],
              [out_base, out_edit, desc])
 

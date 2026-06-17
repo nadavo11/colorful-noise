@@ -287,3 +287,37 @@ def apply_on_subspan(fn, E_full, a, b):
     out = E_full.clone()
     out[:, a:b] = fn(E_full[:, a:b])
     return out
+
+
+# ---------------------------------------------------------------------------
+# timestep gating: apply a token edit only on a contiguous denoising-step window
+# ---------------------------------------------------------------------------
+
+class EmbedIntervalCallback:
+    """diffusers callback_on_step_end that swaps the pipeline's `prompt_embeds` between
+    an EDITED and a BASE (unedited) tensor by denoising-step index, so a token-axis edit
+    fires only on the inclusive step window [i_lo, i_hi].
+
+    The token tab normally edits the T5 sequence ONCE before generation, so the edit is
+    active for every step. This is its timestep gate -- the token analogue of the velocity
+    tab's `make_velocity_override` interval and the latent tab's schedule='interval'.
+
+    diffusers pops `prompt_embeds` from the callback's return dict after each step, and the
+    value set at step i is what the transformer uses at step i+1. So at step i we set the
+    embeds for the UPCOMING step i+1; the embeds used at step 0 must be set by the caller
+    when it builds the pipeline call (edited iff i_lo == 0). Both tensors are kept on the
+    pipeline's device/dtype so no per-step host->device copy happens.
+
+    NOTE: pooled_prompt_embeds is NOT gated -- Flux does not expose it to the callback, and
+    most token ops leave it untouched (only the CLIP-pooled toggle changes it). When pooled
+    IS edited it stays edited for the whole run; document that in the caller's description."""
+
+    def __init__(self, base_embeds, edited_embeds, i_lo, i_hi):
+        self.base = base_embeds
+        self.edited = edited_embeds
+        self.i_lo, self.i_hi = i_lo, i_hi
+
+    def __call__(self, pipe, i, t, kw):
+        nxt = i + 1                                   # embeds set now are used next step
+        want = self.edited if self.i_lo <= nxt <= self.i_hi else self.base
+        return {"prompt_embeds": want}

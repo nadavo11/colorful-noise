@@ -41,7 +41,7 @@ from spectral_ops import (radial_bins, band_index_map, band_power, psd_match,
                           _restore_self_conj)
 from style_ops import restyle_latent, color_noise, blend_references  # noqa: F401 (re-export)
 
-SCHEDULES = ["init", "every", "early", "late", "last"]
+SCHEDULES = ["init", "every", "early", "late", "last", "interval"]
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +230,12 @@ def phase_swap_2d(lat_a, lat_b, cut, mag_from="A"):
 # schedule + the loop callback
 # ---------------------------------------------------------------------------
 
-def fires_at(schedule, i, total):
+def fires_at(schedule, i, total, interval=None):
     """Whether a per-step op on `schedule` applies at step index i of `total`.
-    'init' fires at no in-loop step (it pre-sets the initial latent instead)."""
+    'init' fires at no in-loop step (it pre-sets the initial latent instead).
+    'interval' fires on the inclusive step window `interval=(i_lo, i_hi)` -- the
+    free-form analogue of the early/late presets and the latent twin of the velocity
+    tab's "timesteps to intervene" gate (velocity_spectral_ops.make_velocity_override)."""
     if schedule == "every":
         return True
     if schedule == "last":
@@ -241,6 +244,9 @@ def fires_at(schedule, i, total):
         return i < max(1, total // 3)
     if schedule == "late":
         return i >= (2 * total) // 3
+    if schedule == "interval":
+        i_lo, i_hi = interval if interval is not None else (0, total - 1)
+        return i_lo <= i <= i_hi
     return False  # 'init' handled outside the loop
 
 
@@ -250,20 +256,22 @@ class LatentOpCallback:
     op_fn(lat (B,C,H,W) tensor, step_i) -> lat. unpack/pack convert to/from the
     pipeline's latent layout: leave None for SD-style pipelines (latents already
     (B,C,H,W)); pass Flux's _unpack_latents / _pack_latents (already closed over
-    size / channels) for packed-latent models. Records the post-edit packed latent in
+    size / channels) for packed-latent models. `interval=(i_lo,i_hi)` is the inclusive
+    step window used only by schedule='interval'. Records the post-edit packed latent in
     `.last` (like e8's ClampPSD) so callers can grab exactly what the VAE decoded."""
 
-    def __init__(self, op_fn, schedule, total_steps, unpack=None, pack=None):
+    def __init__(self, op_fn, schedule, total_steps, unpack=None, pack=None, interval=None):
         self.op_fn = op_fn
         self.schedule = schedule
         self.total = total_steps
         self.unpack = unpack
         self.pack = pack
+        self.interval = interval
         self.last = None
 
     def __call__(self, pipe, i, t, kw):
         packed = kw["latents"]
-        if not fires_at(self.schedule, i, self.total):
+        if not fires_at(self.schedule, i, self.total, self.interval):
             self.last = packed
             return {}
         lat = self.unpack(packed) if self.unpack is not None else packed
