@@ -511,4 +511,23 @@ EXPERIMENTS = [
                 "are do-little-harm, most band surgery degrades.",
      "nxt": "Lift the phase>mag + high-vs-low findings back to Flux; feeds E33/E34.",
      "script": "experiments/e35_op_sweep.py", "doc": "EXPERIMENT_35.md", "results": "e35", "image": None},
+
+    {"id": "E37", "title": "Velocity spectral normalization (CFG velocity → cfg=1 amplitude, SD3.5)",
+     "thread": "spectral-power", "models": "SD3.5-medium", "status": "pending",
+     "motivation": "SBN pulls the spectrum toward the natural cfg=1 spectrum, but the demo's every-step "
+                   "SBN→real clamped a FIXED clean-image target — scale-correct only at the last step. "
+                   "Fix the object AND the reference: edit the flow-matching VELOCITY and clamp toward the "
+                   "SAME-STEP unconditional velocity v_∅, which CFG already computes (on-manifold, one pass).",
+     "method": "Real CFG (v_w = v_∅ + w(v_c−v_∅)). e17_sd35.gen_sd3-style interception: record batched "
+               "[v_∅,v_c], edit model_output (=v_w) before the Euler step. Ops on a radial band + step "
+               "window: per-bin magnitude transplant |V_w|←|V_∅| (keep phase), per-band power match "
+               "(psd_match), and band gain. Two FFTs/step, no extra forward.",
+     "result": "Operators implemented + validated off-GPU (realness ~1e-7, strength=0 identity, power-match "
+               "exactness, gating). Live as the demo's Velocity tab (default --model sd3.5-medium). "
+               "GenEval/DPG-Bench + RL param tuning (aesthetic+CLIP) deferred.",
+     "verdict": "Pending eval — the scale-correct, one-pass cousin of the latent SBN clamp; fixes the "
+                "SBN→real every-step bug by referencing the same-step v_∅.",
+     "nxt": "Run GenEval + DPG-Bench at chosen band/strength/interval; then RL-tune the params.",
+     "script": "experiments/velocity_spectral_ops.py", "doc": "experiments/VELOCITY_SPECTRAL_MATH.md",
+     "results": "e37", "image": None},
 ]

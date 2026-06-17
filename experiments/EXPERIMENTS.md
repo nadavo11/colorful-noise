@@ -998,3 +998,43 @@ style's high band is too weak to redirect the flow. Token-frequency surgery is *
 usable editing handle; it can't out-edit a plain prompt swap. **Status: complete (dead-end).**
 
 **Artifacts.** `experiments/e31_flowedit_freq.py`; `results/e31/`. See EXPERIMENT_31.md.
+
+---
+
+_(E32–E36 are recorded in their own `EXPERIMENT_3*.md` writeups; the next entry resumes the running log.)_
+
+---
+
+## E37 — Velocity spectral normalization (CFG velocity → cfg=1 amplitude, SD3.5)
+
+**Motivation.** The latent SBN clamp (E8/E16/E23) and its E36 latent-tab port pull a
+generation's spectrum toward the natural `cfg = 1` spectrum, but the demo's `SBN→real`
+applied a **fixed clean-image** target at *every* step — only scale-correct at the last step,
+so noisy early steps over-clamp (the bug that prompted this experiment). The fix changes both
+the *object* and the *reference*: edit the flow-matching **velocity** $v$ (the model output the
+Euler step integrates), and clamp toward the **same-step unconditional velocity** $v_\varnothing$,
+which classifier-free guidance already computes. Because $v_\varnothing$ is produced at the
+current noise level, its amplitude is the right scale at every step — on-manifold by
+construction, in **one pass** (no separate reference-logging run). Needs *true* CFG, which the
+guidance-distilled Flux lacks, so this moves to **SD3.5 medium**.
+
+**Setup.** SD3.5-medium (real CFG, $v_w = v_\varnothing + w(v_c-v_\varnothing)$). An
+`e17_sd35.gen_sd3`-style interception (`gen_sd3_demo`): patch `transformer.forward` to record
+the batched $[v_\varnothing, v_c]$ output and `scheduler.step` to edit `model_output` ($=v_w$)
+before the Euler update. Operators (`velocity_spectral_ops.py`), each on a normalised radial
+band $[\ell,h]$ and a step window: (1) **mag** — per-bin magnitude transplant
+$|V_w|\!\leftarrow\!|V_\varnothing|$ keeping $v_w$'s phase, blended by `strength`; (2) **band
+power** — per-band mean-power match toward $P(v_\varnothing)$ (the `psd_match`/SBN operator);
+(3) **band amplify/reduce** — band gain on $v_w$. Phase (layout/adherence) is preserved
+throughout; cost is two FFTs/step, no extra forward. Formalized in `VELOCITY_SPECTRAL_MATH.md`.
+
+**Key results.** *Pending evaluation.* Operators implemented and validated off-GPU (realness
+$\sim\!10^{-7}$, `strength=0` identity, power-match exactness, step-window gating). Exposed as
+the **Velocity modulation** tab of `token_freq_demo.py` (now default `--model sd3.5-medium`;
+the Flux Token/Latent tabs are gated to `--model flux-dev`). GenEval / DPG-Bench scoring and
+RL-style tuning of band/strength/interval against aesthetic + CLIP are deferred (user will
+specify scenarios + hyper-params).
+
+**Artifacts.** `experiments/velocity_spectral_ops.py`, `experiments/VELOCITY_SPECTRAL_MATH.md`,
+the Velocity tab in `experiments/token_freq_demo.py`. Results HTML (`results/e37/`) to be built
+once eval figures exist.

@@ -4,6 +4,10 @@ This note formalizes the *band-normalization* intervention used in E8/E9 — the
 clamp of a diffusion latent's radial power spectrum onto a `cfg = 1.0` reference. It is
 written to answer three concrete questions precisely:
 
+> **See also** [`VELOCITY_SPECTRAL_MATH.md`](VELOCITY_SPECTRAL_MATH.md) (E37): the same FFT /
+> radial-band machinery applied to the CFG *velocity* instead of the latent, clamping toward
+> the *same-step* unconditional velocity `v_∅` (scale-correct by construction, one pass).
+
 - **Is the reference a scalar, a scalar per band, or a scalar per band per channel?**
   It is a *per-step, per-channel, per-band* table of mean powers — a tensor of shape
   $(T, C, B) = (28, 16, 24)$. Not a scalar.

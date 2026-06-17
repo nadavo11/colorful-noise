@@ -1,7 +1,12 @@
-"""Interactive browser demo for spectral image editing — TWO modes (E24-E36 toolkit).
+"""Interactive browser demo for spectral image editing — THREE modes (E24-E37 toolkit).
 
-A Gradio app with two tabs that both run on one Flux model:
+A Gradio app; ONE model is loaded (chosen by --model). The default sd3.5-medium drives the
+Velocity tab (true CFG); the Token/Latent tabs need a Flux model (--model flux-dev).
 
+  • VELOCITY modulation — edit the CFG velocity `v_w = v_∅ + w(v_c − v_∅)` toward the
+    unconditional `v_∅` DURING generation, via an SD3.5 scheduler.step override (E37):
+    per-bin magnitude transplant / per-band power match (normalize→cfg1) or band amplify/
+    reduce, on a band [lo,hi] and a step interval. Needs real CFG → SD3.5 (not Flux).
   • TOKEN modulation  — FFT Flux's T5 token-sequence embedding and edit the spectrum ONCE
     before generation (E24/E30/E32/E35: low/high-pass, band gain, notch, phase/mag,
     two-prompt swap/blend/lerp, per-object band gain).
@@ -12,12 +17,13 @@ A Gradio app with two tabs that both run on one Flux model:
     SBN→real / band-modulate / global-power, colored-noise init, restyle→B, SBN-blend A+B,
     and the offline two-latent hybrid / phase-swap.
 
-Both tabs are thin wrappers around the ops in `text_spectral_ops.py` (token axis) and
-`latent_spectral_ops.py` / `spectral_ops.py` / `style_ops.py` (latent axis); the only new
-machinery is keeping the text encoders + VAE loaded so arbitrary prompts encode on the fly.
+The tabs are thin wrappers around the ops in `velocity_spectral_ops.py` (velocity axis),
+`text_spectral_ops.py` (token axis) and `latent_spectral_ops.py` / `spectral_ops.py` /
+`style_ops.py` (latent axis); the only new machinery is keeping the text encoders + VAE
+loaded so arbitrary prompts encode on the fly.
 
 Run:  python experiments/token_freq_demo.py   (then ssh -L 7860:localhost:7860 <host>)
-Model: FLUX.1-dev (bnb 4-bit transformer), single A5000 fits encoders + transformer + VAE.
+Model: SD3.5-medium (bf16, ~24GB) by default; --model flux-dev for the Flux tabs.
 
 Run with uv (auto-builds/caches an env from the inline deps below, incl. a CUDA torch):
     uv run experiments/token_freq_demo.py
@@ -54,6 +60,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import text_spectral_ops as TS          # token axis (light: torch only)
 import latent_spectral_ops as L         # latent axis (torch only; pulls spectral_ops/style_ops)
+import velocity_spectral_ops as VEL     # velocity axis (E37; SD3.5 real-CFG step override)
 from spectral_ops import band_index_map, band_power
 from style_ops import restyle_latent, color_noise, blend_references
 
@@ -62,13 +69,17 @@ REAL_LATENTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 N_BINS = 24
 
 # Model registry -- only ONE entry is ever loaded (chosen by --model), so a single model
-# sits on the GPU. flux-schnell is the lighter/faster option: same Flux architecture (so
-# every op works unchanged) but timestep-distilled to ~4 steps, and ungated (no HF token).
+# sits on the GPU. `kind` selects the backend: "flux" = guidance-distilled Flux (Token /
+# Latent tabs), "sd3" = Stable Diffusion 3.5 with TRUE classifier-free guidance (the
+# Velocity tab needs a real v_uncond, which Flux's distillation does not expose). flux-schnell
+# is the lighter/faster Flux (distilled to ~4 steps, ungated).
 MODELS = {
-    "flux-dev":     {"repo": "black-forest-labs/FLUX.1-dev",     "max_seq": 512, "steps": 16, "guidance": 3.5},
-    "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "max_seq": 256, "steps": 4,  "guidance": 3.5},
+    "sd3.5-medium": {"repo": "stabilityai/stable-diffusion-3.5-medium", "kind": "sd3",
+                     "max_seq": 256, "steps": 28, "guidance": 4.5},
+    "flux-dev":     {"repo": "black-forest-labs/FLUX.1-dev",     "kind": "flux", "max_seq": 512, "steps": 16, "guidance": 3.5},
+    "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "kind": "flux", "max_seq": 256, "steps": 4,  "guidance": 3.5},
 }
-MODEL = MODELS["flux-dev"]              # overridden in __main__ from --model (flux-dev == e7_flux_phase.REPO)
+MODEL = MODELS["sd3.5-medium"]         # overridden in __main__ from --model
 REPO = MODEL["repo"]
 
 OBJ_CUT = 0.51   # E32 per-object median split (short windows need >0.25; see e32_object_freq)
@@ -204,6 +215,15 @@ PIPE = None
 
 
 def load_pipe():
+    if MODEL["kind"] == "sd3":
+        # SD3.5-medium (2.5B) fits a 24GB GPU bf16 GPU-resident (transformer + T5-XXL +
+        # CLIPx2 + VAE); real CFG, so v_uncond is available for the Velocity tab. (e17_sd35.)
+        from diffusers import StableDiffusion3Pipeline
+        pipe = StableDiffusion3Pipeline.from_pretrained(REPO, torch_dtype=torch.bfloat16)
+        pipe.to("cuda")
+        pipe.set_progress_bar_config(disable=True)
+        print(f"[demo] {REPO} loaded (SD3.5, true CFG)", flush=True)
+        return pipe
     from diffusers import (FluxPipeline, FluxTransformer2DModel, BitsAndBytesConfig)
     qc = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                             bnb_4bit_compute_dtype=torch.bfloat16)
@@ -218,6 +238,40 @@ def load_pipe():
     pipe.vae.to("cuda")
     print(f"[demo] {REPO} loaded (encoders kept on GPU)", flush=True)
     return pipe
+
+
+def gen_sd3_demo(prompt, seed, steps, guidance, size, step_override=None):
+    """One SD3.5 generation (real CFG) -> PIL. With `step_override` the e17_sd35.gen_sd3
+    interception is installed: `transformer.forward` is patched to record the batched
+    [uncond, cond] output, and `scheduler.step` to run
+    step_override(records, model_output, sample) -> new velocity BEFORE the Euler step."""
+    orig_fwd = PIPE.transformer.forward
+    orig_step = PIPE.scheduler.step
+    if step_override is not None:
+        records = []
+
+        def fwd(*a, **k):
+            o = orig_fwd(*a, **k)
+            s = o[0] if isinstance(o, (tuple, list)) else o.sample
+            records.append(s.detach())
+            return o
+
+        def step(model_output, timestep, sample, *a, **k):
+            mo = step_override(records, model_output, sample)
+            return orig_step(mo, timestep, sample, *a, **k)
+
+        PIPE.transformer.forward = fwd
+        PIPE.scheduler.step = step
+    try:
+        with torch.no_grad():
+            img = PIPE(prompt=prompt, height=int(size), width=int(size),
+                       guidance_scale=float(guidance), num_inference_steps=int(steps),
+                       negative_prompt="",
+                       generator=torch.Generator("cuda").manual_seed(int(seed))).images[0]
+    finally:
+        PIPE.transformer.forward = orig_fwd
+        PIPE.scheduler.step = orig_step
+    return img
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +457,58 @@ LAT_HELP = {
     "phase-swap (A phase / B mag)": "**Phase-swap** *(cut; needs Prompt B)*. OFFLINE: A's phase (layout) with B's magnitude (style), swapped at `cut` (E18).",
 }
 
+
+# ===========================================================================
+# VELOCITY modulation (E37): edit the CFG velocity v_w toward v_uncond, SD3.5 real CFG
+# ===========================================================================
+
+VEL_OPS = ["baseline", "normalize→cfg1 (mag)", "normalize→cfg1 (band power)", "band amplify/reduce"]
+VEL_MODE = {"normalize→cfg1 (mag)": "mag", "normalize→cfg1 (band power)": "band power",
+            "band amplify/reduce": "gain"}
+VEL_NEEDS_RANGE = set(VEL_OPS) - {"baseline"}                       # all ops act on a band
+VEL_NEEDS_STRENGTH = {"normalize→cfg1 (mag)", "normalize→cfg1 (band power)"}
+VEL_NEEDS_GAIN = {"band amplify/reduce"}
+
+VEL_INTRO_MD = """\
+### How velocity modulation works
+Stable Diffusion 3.5 is a **flow-matching** model sampled by Euler: `z_{t+1} = z_t + Δt·v`,
+where the model output **`v`** is a *velocity* (the direction the latent moves this step).
+Classifier-free guidance combines two velocities into
+
+  **`v_w = v_∅ + w·(v_c − v_∅)`** — `v_∅` = *unconditional* (the natural, w=1 / "cfg=1"
+  flow field), `v_c` = *conditional* (prompt-driven), `w` = guidance scale.
+
+Higher `w` buys prompt adherence but over-amplifies certain frequency **magnitudes** (the
+oversaturated, over-contrasty CFG look). The **phase** of `v_w` carries layout/composition.
+So we keep `v_w`'s phase and pull its **amplitude** toward `v_∅`'s — surgically undoing CFG's
+magnitude over-shoot without losing adherence. Both velocities are already computed each step,
+so the only cost is a pair of FFTs (no extra model forward). This is the one-pass, *scale-correct*
+cousin of the latent-tab SBN (`v_∅` is the same-step field, so its amplitude is already at the
+right scale — unlike a fixed clean-image target).
+
+Two knobs beyond the operator:
+- **band [lo, hi]** — the normalised radial frequency range to act on (`0` = DC/global tone …
+  `1` = corner/fine texture).
+- **timesteps to intervene** — fire only on a contiguous window of steps (`[0,1]` = all steps;
+  shrink it to intervene early-only or late-only).
+
+Left = plain CFG baseline, right = your edit, same seed. Needs **real CFG** → run with
+`--model sd3.5-medium` (Flux is guidance-distilled and has no `v_∅`).
+"""
+
+VEL_HELP = {
+    "baseline": "**Baseline** — plain CFG generation (left image), no velocity edit.",
+    "normalize→cfg1 (mag)": "**Normalize → cfg1 (mag)** *(band, strength, interval)*. Per-frequency-bin "
+        "**magnitude transplant**: inside the band, replace `|v_w|` with the unconditional `|v_∅|` "
+        "(keeping `v_w`'s phase), blended by **strength** (1 = full, 0 = identity). The literal "
+        "\"force `v_w` to have `v_∅`'s amplitude\".",
+    "normalize→cfg1 (band power)": "**Normalize → cfg1 (band power)** *(band, strength, interval)*. "
+        "Gentler/coarser: match `v_w`'s **mean power per radial band** to `v_∅`'s (the E8/E16/E23 SBN "
+        "operator, `psd_match`), only for bands inside the range. **strength** blends the target.",
+    "band amplify/reduce": "**Band amplify/reduce** *(band, gain, interval)*. Scale `v_w`'s magnitude "
+        "inside the band by **gain** (>1 amplify, <1 attenuate, DC kept) — independent of `v_∅`.",
+}
+
 _REF_CACHE = {}            # (prompt, steps, size) -> {"band": (steps,16,nb)}
 _REAL_BAND = {}            # nb -> (16,nb) real-photo band power (or None)
 
@@ -566,6 +672,8 @@ def generate_latent(pe, ppe, seed, steps, guidance, size, op_fn=None, schedule="
 
 def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, strength, scale,
                seed, steps, guidance, size):
+    if MODEL["kind"] != "flux":
+        return None, None, _FLUX_ONLY_NOTE
     if not (promptA or "").strip():
         return None, None, "enter prompt A"
     size = int(size); seed = int(seed); steps = int(steps)
@@ -641,6 +749,57 @@ def _latent_visibility(op):
 
 
 # ---------------------------------------------------------------------------
+# VELOCITY modulation handler (E37; SD3.5 only)
+# ---------------------------------------------------------------------------
+
+def _ordered(pair):
+    """Read a RangeSlider (lo, hi), ordered so lo<=hi even if handles cross."""
+    a, b = float(pair[0]), float(pair[1])
+    return (b, a) if b < a else (a, b)
+
+
+def run_velocity(promptA, op, band, strength, gain, interval, seed, steps, guidance, size):
+    if MODEL["kind"] != "sd3":
+        return None, None, ("Velocity modulation needs a real-CFG model — relaunch with "
+                            "`--model sd3.5-medium`. (Flux is guidance-distilled: no `v_∅`.)")
+    if not (promptA or "").strip():
+        return None, None, "enter prompt A"
+    size = int(size); seed = int(seed); steps = int(steps); guidance = float(guidance)
+    bkey = (promptA, seed, steps, guidance, size, "vel")
+    if bkey not in _BASE_CACHE:
+        _BASE_CACHE[bkey] = gen_sd3_demo(promptA, seed, steps, guidance, size)
+    base = _BASE_CACHE[bkey]
+    if op == "baseline":
+        return base, base, "baseline (plain CFG, same as left)"
+
+    lo, hi = _ordered(band)
+    t_lo, t_hi = _ordered(interval)
+    i_lo = int(round(t_lo * (steps - 1)))
+    i_hi = int(round(t_hi * (steps - 1)))
+    mode = VEL_MODE[op]
+    try:
+        ov = VEL.make_velocity_override(mode, lo, hi, float(strength), float(gain),
+                                        i_lo, i_hi, n_bins=N_BINS)
+        edited = gen_sd3_demo(promptA, seed, steps, guidance, size, step_override=ov)
+    except Exception as e:
+        return base, None, f"error: {e}"
+    knob = f"gain {gain:g}" if mode == "gain" else f"strength {strength:g}"
+    desc = f"{op} · band [{lo:.2f},{hi:.2f}] · {knob} · steps {i_lo}–{i_hi}/{steps - 1} · w={guidance:g}"
+    return base, edited, desc
+
+
+def _velocity_visibility(op):
+    import gradio as gr
+    return [
+        gr.update(visible=op in VEL_NEEDS_RANGE),             # band [lo,hi]
+        gr.update(visible=op in VEL_NEEDS_STRENGTH),          # strength
+        gr.update(visible=op in VEL_NEEDS_GAIN),              # gain
+        gr.update(visible=op != "baseline"),                  # interval
+        gr.update(value=VEL_HELP.get(op, "")),                # help
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Gradio handler (with baseline caching)
 # ---------------------------------------------------------------------------
 
@@ -654,8 +813,14 @@ def _encode_cached(prompt):
     return _ENC_CACHE[prompt]
 
 
+_FLUX_ONLY_NOTE = ("This tab needs a **Flux** model — relaunch with `--model flux-dev`. "
+                   "(The current model is SD3.5, loaded for the Velocity tab.)")
+
+
 def run(promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
         seed, steps, guidance, size):
+    if MODEL["kind"] != "flux":
+        return None, None, _FLUX_ONLY_NOTE
     if not (promptA or "").strip():
         return None, None, "enter prompt A"
     size = int(size); seed = int(seed); steps = int(steps)
@@ -819,15 +984,62 @@ def _latent_tab():
              [out_base, out_edit, desc])
 
 
+def _velocity_tab():
+    import gradio as gr
+    from gradio_rangeslider import RangeSlider
+    with gr.Accordion("How it works  ·  what the knobs mean", open=False):
+        gr.Markdown(VEL_INTRO_MD)
+    with gr.Row():
+        with gr.Column(scale=1):
+            promptA = gr.Textbox(label="Prompt", value="a fluffy orange tabby cat sitting on a windowsill")
+            op = gr.Dropdown(VEL_OPS, value="baseline", label="Operation")
+            helpbox = gr.Markdown(VEL_HELP["baseline"])
+            band = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
+                               label="band [low, high]", visible=False,
+                               info="Radial freq range to act on (0=DC/global tone … 1=corner/fine texture).")
+            strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="strength (→ v∅)",
+                                 info="0 = keep v_w's amplitude, 1 = fully adopt v∅'s.", visible=False)
+            gain = gr.Slider(0.0, 3.0, value=1.5, step=0.05, label="gain (x)",
+                             info=">1 amplify, 1 identity, <1 attenuate. DC kept at 1.", visible=False)
+            interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
+                                   label="timesteps to intervene [start, end]", visible=False,
+                                   info="Fraction of the denoising schedule (0=first step … 1=last). "
+                                        "[0,1] = every step; shrink for early-only / late-only.")
+            with gr.Row():
+                seed = gr.Number(value=0, precision=0, label="seed",
+                                 info="Fix to compare fairly; baseline cached per seed.")
+                steps = gr.Slider(10, 50, value=MODEL["steps"], step=1, label="steps",
+                                  info="Denoising steps: more = better, slower.")
+            with gr.Row():
+                guidance = gr.Slider(1.0, 10.0, value=MODEL["guidance"], step=0.1, label="guidance (CFG w)",
+                                     info="SD3.5 real CFG; w=1 = no guidance (op becomes a no-op).")
+                size = gr.Dropdown([512, 768, 1024], value=768, label="size",
+                                   info="Pixels; smaller = faster, less VRAM.")
+            go = gr.Button("Generate", variant="primary")
+        with gr.Column(scale=2):
+            with gr.Row():
+                out_base = gr.Image(label="baseline (plain CFG)", type="pil")
+                out_edit = gr.Image(label="velocity-edited", type="pil")
+            desc = gr.Markdown()
+
+    op.change(_velocity_visibility, op, [band, strength, gain, interval, helpbox])
+    go.click(run_velocity,
+             [promptA, op, band, strength, gain, interval, seed, steps, guidance, size],
+             [out_base, out_edit, desc])
+
+
 def build_ui():
     import gradio as gr
-    with gr.Blocks(title="Spectral image editing — token & latent") as demo:
-        gr.Markdown("# Spectral image editing (E24–E36)\n"
-                    "Two ways to steer Flux in frequency space. **Token modulation** edits the "
-                    "text embedding's token-axis spectrum once up front; **Latent modulation** edits "
-                    "the image latent's 2D radial spectrum *during* generation. Left = baseline, "
-                    "right = edit, same seed.")
+    with gr.Blocks(title="Spectral image editing — velocity, token & latent") as demo:
+        gr.Markdown("# Spectral image editing (E24–E37)\n"
+                    "Three ways to steer a diffusion model in frequency space. **Velocity modulation** "
+                    "(SD3.5, real CFG) edits the CFG *velocity* `v_w` toward the unconditional `v_∅` "
+                    "*during* generation; **Token modulation** (Flux) edits the text embedding's token-axis "
+                    "spectrum once up front; **Latent modulation** (Flux) edits the image latent's 2D radial "
+                    "spectrum during generation. Left = baseline, right = edit, same seed.")
         with gr.Tabs():
+            with gr.TabItem("Velocity modulation"):
+                _velocity_tab()
             with gr.TabItem("Token modulation"):
                 _token_tab()
             with gr.TabItem("Latent modulation"):
@@ -852,10 +1064,11 @@ def _patch_gradio_schema_bug():
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Spectral image-editing demo (token + latent).")
-    ap.add_argument("--model", choices=list(MODELS), default="flux-dev",
-                    help="which model to load; only this one goes on the GPU "
-                         "(flux-schnell = lighter/faster, ~4 steps, ungated).")
+    ap = argparse.ArgumentParser(description="Spectral image-editing demo (velocity + token + latent).")
+    ap.add_argument("--model", choices=list(MODELS), default="sd3.5-medium",
+                    help="which model to load; only this one goes on the GPU. "
+                         "sd3.5-medium (default) = real CFG, for the Velocity tab; "
+                         "flux-dev / flux-schnell = the Token/Latent tabs.")
     ap.add_argument("--port", type=int, default=7860, help="Gradio server port.")
     ap.add_argument("--share", action="store_true", help="create a public Gradio link.")
     a = ap.parse_args()

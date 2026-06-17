@@ -34,6 +34,16 @@ SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified
 - `e9_bandnorm_classes.py` — band-norm as a generation technique across 6 prompt
   classes (paired vs plain cfg=3.5 + cat-reference transfer); image-detail
   metrics + grids.
+- `velocity_spectral_ops.py` — **E37** velocity-axis ops: edit the CFG velocity
+  `v_w` toward the unconditional `v_∅` during generation (per-bin magnitude
+  transplant / per-band power match / band gain), via an SD3.5 `scheduler.step`
+  override. Formalized in [`VELOCITY_SPECTRAL_MATH.md`](VELOCITY_SPECTRAL_MATH.md).
+- `token_freq_demo.py` — interactive Gradio demo, three tabs: **Velocity**
+  modulation (SD3.5, real CFG; E37), **Token** modulation (Flux text-embedding
+  spectrum; E24/E30/E32/E35) and **Latent** modulation (Flux latent radial
+  spectrum; E8–E23/E36). `--model sd3.5-medium` (default) / `flux-dev`.
+- `VELOCITY_SPECTRAL_MATH.md` — paper-style derivation of the E37 velocity
+  normalization (companion to [`BANDNORM_MATH.md`](BANDNORM_MATH.md)).
 
 ## E2 condition names (phase, magnitude, DC of the lowest-α frequency band)
 | name | phase | mag | DC | meaning |
