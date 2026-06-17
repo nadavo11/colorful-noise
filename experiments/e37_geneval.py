@@ -38,15 +38,21 @@ OUT = os.path.join(RESULTS, "e37_geneval")
 META_PATH = os.path.join(HERE, "geneval_data", "evaluation_metadata.jsonl")
 TAGS = ["single_object", "two_object", "counting", "colors", "position", "color_attr"]
 
-# (name, op, lo, hi)  -- op None = baseline (plain CFG); strength fixed at 1.0
+# (name, op, lo, hi, gain, t_lo, t_hi)  -- op None = baseline (plain CFG); strength fixed at 1.0.
+# gain only used by op="gain" (band amplify/reduce). [t_lo,t_hi] = fraction of the denoising
+# schedule to intervene on ([0,1] = every step).
 CONDITIONS = [
-    ("baseline",  None,         None, None),
-    ("mag_full",  "mag",        0.0,  1.0),
-    ("mag_top25", "mag",        0.75, 1.0),
-    ("mag_bot25", "mag",        0.0,  0.25),
-    ("bp_full",   "band power", 0.0,  1.0),
-    ("bp_top25",  "band power", 0.75, 1.0),
-    ("bp_bot25",  "band power", 0.0,  0.25),
+    ("baseline",            None,         None, None, 1.0, 0.0,  1.0),
+    ("mag_full",            "mag",        0.0,  1.0,  1.0, 0.0,  1.0),
+    ("mag_top25",           "mag",        0.75, 1.0,  1.0, 0.0,  1.0),
+    ("mag_bot25",           "mag",        0.0,  0.25, 1.0, 0.0,  1.0),
+    ("bp_full",             "band power", 0.0,  1.0,  1.0, 0.0,  1.0),
+    ("bp_top25",            "band power", 0.75, 1.0,  1.0, 0.0,  1.0),
+    ("bp_bot25",            "band power", 0.0,  0.25, 1.0, 0.0,  1.0),
+    # band amplify (gain 1.6) on the top-0.25 freq band [0.75,1], at 3 timestep intervals
+    ("amp1.6_top25_full",   "gain",       0.75, 1.0,  1.6, 0.0,  1.0),
+    ("amp1.6_top25_late50", "gain",       0.75, 1.0,  1.6, 0.5,  1.0),
+    ("amp1.6_top25_late25", "gain",       0.75, 1.0,  1.6, 0.75, 1.0),
 ]
 
 
@@ -71,11 +77,13 @@ def select_conditions(names):
 # generation
 # ---------------------------------------------------------------------------
 
-def _override(op, lo, hi, steps, n_bins):
+def _override(op, lo, hi, gain, t_lo, t_hi, steps, n_bins):
     import velocity_spectral_ops as VEL
     if op is None:
         return None
-    return VEL.make_velocity_override(op, lo, hi, 1.0, 1.0, 0, int(steps) - 1, n_bins=n_bins)
+    i_lo = int(round(float(t_lo) * (int(steps) - 1)))
+    i_hi = int(round(float(t_hi) * (int(steps) - 1)))
+    return VEL.make_velocity_override(op, lo, hi, 1.0, float(gain), i_lo, i_hi, n_bins=n_bins)
 
 
 def run_gen(args):
@@ -88,7 +96,7 @@ def run_gen(args):
     n_bins = args.n_bins
     t0 = time.time()
     done = skipped = 0
-    for name, op, lo, hi in conds:
+    for name, op, lo, hi, gain, t_lo, t_hi in conds:
         for idx, meta in enumerate(prompts):
             d = os.path.join(OUT, name, f"{idx:05d}")
             os.makedirs(os.path.join(d, "samples"), exist_ok=True)
@@ -97,7 +105,7 @@ def run_gen(args):
             if os.path.exists(png):
                 skipped += 1
                 continue
-            ov = _override(op, lo, hi, args.steps, n_bins)
+            ov = _override(op, lo, hi, gain, t_lo, t_hi, args.steps, n_bins)
             img, _ = SD.gen_sd3(pipe, meta["prompt"], seed=idx, guidance=args.guidance,
                                 steps=args.steps, step_override=ov)
             img.save(png)
@@ -180,6 +188,79 @@ def run_summary(args):
     print(f"\n[summary] wrote {os.path.join(OUT, 'report.json')}", flush=True)
 
 
+def _idx_of(path):
+    return os.path.basename(os.path.dirname(os.path.dirname(path)))   # .../<idx>/samples/x.png
+
+
+def _thumb_b64(path, px=320):
+    import base64, io
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    im.thumbnail((px, px))
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def run_site(args):
+    """Self-contained HTML comparing baseline vs a condition on one tag (default counting),
+    wins-first (baseline wrong & condition right). Images base64-embedded thumbnails."""
+    cmp = args.compare
+    tag = args.site_tag
+    def load(cond):
+        sp = os.path.join(OUT, "scores", f"{cond}.jsonl")
+        out = {}
+        for l in open(sp):
+            r = json.loads(l)
+            if r["tag"] == tag:
+                out[_idx_of(r["filename"])] = r
+        return out
+    base, alt = load("baseline"), load(cmp)
+    idxs = sorted(set(base) & set(alt))
+    def rank(i):                                   # wins first, then losses, then ties
+        b, a = base[i]["correct"], alt[i]["correct"]
+        return (0 if (a and not b) else 1 if (b and not a) else 2, i)
+    idxs.sort(key=rank)
+    n_win = sum(alt[i]["correct"] and not base[i]["correct"] for i in idxs)
+    n_loss = sum(base[i]["correct"] and not alt[i]["correct"] for i in idxs)
+    b_acc = sum(base[i]["correct"] for i in idxs) / max(1, len(idxs))
+    a_acc = sum(alt[i]["correct"] for i in idxs) / max(1, len(idxs))
+    shown = idxs[:args.site_max] if args.site_max else idxs   # wins-first; cap for file size
+
+    def cell(rec):
+        png = rec["filename"]
+        badge = "✓" if rec["correct"] else "✗"
+        cls = "ok" if rec["correct"] else "bad"
+        reason = (rec["reason"] or "all checks passed").replace("\n", "; ")
+        return (f"<td class='{cls}'><img src='data:image/jpeg;base64,{_thumb_b64(png)}'>"
+                f"<div class='badge'>{badge}</div><div class='why'>{reason}</div></td>")
+
+    rows = []
+    for i in shown:
+        prompt = base[i]["prompt"]
+        rows.append(f"<tr><td class='p'>{prompt}</td>{cell(base[i])}{cell(alt[i])}</tr>")
+    html = f"""<!doctype html><meta charset=utf8><title>E37 GenEval {tag}: baseline vs {cmp}</title>
+<style>body{{font:14px system-ui;margin:24px;max-width:1100px}}
+table{{border-collapse:collapse;width:100%}} td{{border:1px solid #ddd;padding:8px;vertical-align:top;text-align:center}}
+td.p{{text-align:left;width:200px;font-weight:600}} img{{width:300px;height:auto;border-radius:4px}}
+.badge{{font-size:20px;font-weight:700}} td.ok .badge{{color:#2da44e}} td.bad .badge{{color:#cf222e}}
+.why{{font-size:11px;color:#666;margin-top:4px}} th{{padding:8px;border-bottom:2px solid #333}}
+.hd{{background:#f6f8fa}}</style>
+<h1>E37 — GenEval <code>{tag}</code>: baseline vs <code>{cmp}</code></h1>
+<p>SD3.5-medium, n=1, 512px, w=4.5 · velocity spectral normalization (mag→cfg1) ·
+torchvision-detector GenEval variant. <b>{tag}</b> accuracy: baseline <b>{b_acc:.3f}</b> →
+{cmp} <b>{a_acc:.3f}</b>. Of {len(idxs)} prompts: <b>{n_win}</b> {cmp} fixes a baseline miss,
+{n_loss} regressions. Sorted wins-first. Each cell: image, ✓/✗, and the scorer's reason
+(e.g. "found 1" = detected count).</p>
+<table><tr class=hd><th>prompt (expected count)</th><th>baseline</th><th>{cmp}</th></tr>
+{''.join(rows)}</table>"""
+    out_path = args.html_out or os.path.join(OUT, f"examples_{tag}.html")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    open(out_path, "w").write(html)
+    print(f"[site] {tag}: baseline {b_acc:.3f} -> {cmp} {a_acc:.3f} "
+          f"({n_win} wins, {n_loss} losses) · wrote {out_path}", flush=True)
+
+
 def run_preflight(args):
     prompts = load_prompts(args.num_prompts, args.spread)
     conds = select_conditions(args.conditions)
@@ -206,11 +287,15 @@ def main():
     ap.add_argument("--n_bins", type=int, default=24)
     ap.add_argument("--mem", default="gpu_resident", choices=["gpu_resident", "offload"])
     ap.add_argument("--sec_per_img", type=float, default=4.0, help="ETA estimate only")
+    ap.add_argument("--compare", default="mag_top25", help="condition to compare vs baseline in --part site")
+    ap.add_argument("--site_tag", default="counting", help="GenEval tag to show in --part site")
+    ap.add_argument("--html_out", default="", help="output path for --part site HTML")
+    ap.add_argument("--site_max", type=int, default=40, help="max rows in --part site (0=all), wins-first")
     args = ap.parse_args()
     parts = [p.strip() for p in args.part.split(",") if p.strip()]
     for p in parts:
-        {"preflight": run_preflight, "gen": run_gen,
-         "score": run_score, "summary": run_summary}[p](args)
+        {"preflight": run_preflight, "gen": run_gen, "score": run_score,
+         "summary": run_summary, "site": run_site}[p](args)
 
 
 if __name__ == "__main__":

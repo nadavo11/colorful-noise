@@ -1028,13 +1028,23 @@ power** — per-band mean-power match toward $P(v_\varnothing)$ (the `psd_match`
 (3) **band amplify/reduce** — band gain on $v_w$. Phase (layout/adherence) is preserved
 throughout; cost is two FFTs/step, no extra forward. Formalized in `VELOCITY_SPECTRAL_MATH.md`.
 
-**Key results.** *Pending evaluation.* Operators implemented and validated off-GPU (realness
-$\sim\!10^{-7}$, `strength=0` identity, power-match exactness, step-window gating). Exposed as
-the **Velocity modulation** tab of `token_freq_demo.py` (now default `--model sd3.5-medium`;
-the Flux Token/Latent tabs are gated to `--model flux-dev`). GenEval / DPG-Bench scoring and
-RL-style tuning of band/strength/interval against aesthetic + CLIP are deferred (user will
-specify scenarios + hyper-params).
+**Key results (GenEval, mag-only).** Ran the magnitude-transplant variant on GenEval (553
+prompts, n=1, 512px, w=4.5; SD3.5-medium, local A5000). Scorer = GenEval protocol with a
+torchvision Mask R-CNN detector + CLIP colours (faithful ranking, not the Mask2Former
+leaderboard; baseline 0.644 vs published ~0.71). **The effect is entirely band-dependent**
+(macro Overall): baseline **0.644**, mag_top25 `[0.75,1]` **0.655**, mag_bot25 `[0,0.25]`
+0.561, mag_full `[0,1]` 0.524 — ranking top-25% > baseline > bottom-25% > full. Normalizing
+only the **high-freq band** slightly beats baseline (+0.011, driven by **color_attr 0.48→0.54**,
+7 wins/1 loss; counting ~wash 3w/2l); normalizing the **low/full** bands *hurts* (−0.08/−0.12),
+worst on compositional tags. Reading: low-freq velocity magnitude carries adherence/composition
+(don't touch); high-freq is CFG's correctable over-amplification. Caveat: n=1 → +0.011 within
+seed noise; pattern coherent. Operators also validated off-GPU (realness $\sim\!10^{-7}$,
+identity at strength 0, step-window gating). Demo **Velocity** tab on `token_freq_demo.py`
+(default `--model sd3.5-medium`; Flux tabs gated to `--model flux-dev`). DPG-Bench + multi-seed
++ official-scorer + band-amplify/late-window sweeps next.
 
-**Artifacts.** `experiments/velocity_spectral_ops.py`, `experiments/VELOCITY_SPECTRAL_MATH.md`,
-the Velocity tab in `experiments/token_freq_demo.py`. Results HTML (`results/e37/`) to be built
-once eval figures exist.
+**Artifacts.** `experiments/e37_geneval.py` (+ `geneval_score.py`, `geneval_data/`,
+`cluster_e37_geneval_job.sh`), `experiments/velocity_spectral_ops.py`,
+`experiments/VELOCITY_SPECTRAL_MATH.md`, the Velocity tab in `token_freq_demo.py`. Deep writeup
+`EXPERIMENT_37.md`; example HTML via `e37_geneval.py --part site` (counting / color_attr).
+Results (gitignored) in `results/e37_geneval/`.
