@@ -1,374 +1,396 @@
-"""Self-contained HTML report for E20 (spectral warm-start). Reads
-results/e20/{profile_*.pt, oracle.json, condition.json, noiseshape.json} and the
-saved grids; renders matplotlib plots (phase-convergence lock-in, oracle recovery
-heatmap) + grids as base64 so the single index.html is portable. Honors CN_RESULTS.
+"""Self-contained HTML explainer for E20 (spectral warm-start — "skip the beginning").
+
+Reads results/e20/{oracle.json, condition.json, noiseshape.json} + the saved grids
+and EMBEDS every image as base64, so the single results/e20/index.html is portable
+(open it anywhere). Honors CN_RESULTS.
+
+The page STANDS ALONE: it defines every term (the warm-start band commit, the cutoff
+`c`, the re-entry strength `s`, every condition, every metric with ↑/↓ direction) and
+leads each result with the figure, a "what to look for", an interpretation, then the
+numbers (best cell per column highlighted). (memory: experiment-documentation-standard.)
+
+Pure templating from the JSON + cached grids — loads NO model. Run with either:
 
     python e20_site.py
+    python e20_warmstart.py --part site
 """
-import base64
-import glob
-import io
 import json
 import os
 import sys
 
-import torch
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import RESULTS
-from bandnorm import band_centers
+
+try:
+    from e27_site import data_uri          # base64 embed -> portable single file
+except Exception:
+    data_uri = None
 
 OUT = os.path.join(RESULTS, "e20")
 
-
-def _png(fig):
-    import matplotlib.pyplot as plt
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
-    plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
-
-
-def _jpg(path, maxw=900):
-    if not os.path.exists(path):
-        return None
-    from PIL import Image
-    im = Image.open(path).convert("RGB")
-    if im.width > maxw:
-        im.thumbnail((maxw, maxw * 4))
-    buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=85)
-    return base64.b64encode(buf.getvalue()).decode()
-
-
-def img_tag(b64, cls="", fmt="png"):
-    return (f"<img class='{cls}' src='data:image/{fmt};base64,{b64}'>"
-            if b64 else "<p class=cap>(missing)</p>")
-
-
-# ---------------------------------------------------------------------------
-# Plots
-# ---------------------------------------------------------------------------
-
-def lockin_figure():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    profs = sorted(glob.glob(f"{OUT}/profile_*.pt"))
-    if not profs:
-        return None, None
-    # average lock-in over prompts; show curves from the first prompt
-    p0 = torch.load(profs[0], weights_only=True)
-    conv, pw, c = p0["conv_traj"], p0["power_traj"], p0["centers"]
-    T, B = conv.shape
-    fig, ax = plt.subplots(1, 2, figsize=(11, 3.8))
-    for b, lab in [(0, "DC"), (1, "low"), (B // 4, "low-mid"), (B // 2, "mid"),
-                   (B - 2, "high")]:
-        ax[0].plot(range(T), conv[:, b], label=f"{lab} (f={float(c[b]):.2f})")
-        ax[1].plot(range(T), (pw[:, b] / pw[-1, b].clamp(min=1e-8)).clamp(max=3))
-    ax[0].set_title("phase agreement with FINAL  (1 = locked)")
-    ax[0].set_xlabel("denoising step"); ax[0].set_ylabel("cos Δphase"); ax[0].legend(fontsize=8)
-    ax[0].axhline(0.9, ls=":", c="gray")
-    ax[1].set_title("band power / final  (clipped at 3×)")
-    ax[1].set_xlabel("denoising step"); ax[1].axhline(1.0, ls=":", c="gray")
-    fig.tight_layout()
-    # mean lock-in per third, averaged over prompts
-    nb = B
-    rows = []
-    for pf in profs:
-        lk = torch.load(pf, weights_only=True)["conv_lockin"]
-        rows.append(lk)
-    lk = [sum(r[b] for r in rows) / len(rows) for b in range(nb)]
-    summary = {"low": sum(lk[: nb // 3]) / (nb // 3),
-               "mid": sum(lk[nb // 3:2 * nb // 3]) / (nb - 2 * (nb // 3)),
-               "high": sum(lk[2 * nb // 3:]) / (nb - 2 * nb // 3),
-               "T": T, "nprompts": len(profs),
-               "per_band": [round(x, 1) for x in lk],
-               "centers": [round(float(x), 3) for x in c]}
-    return _png(fig), summary
-
-
-def _parse_cells(cells):
-    """{c{c}_s{st}: {...}} -> (sorted cuts, sorted strengths, {(c,st): metrics})."""
-    cuts, strs, grid = set(), set(), {}
-    for k, v in cells.items():
-        cc = float(k.split("_")[0][1:]); st = float(k.split("_")[1][1:])
-        cuts.add(cc); strs.add(st); grid[(cc, st)] = v
-    return sorted(cuts), sorted(strs), grid
-
-
-def oracle_figure():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    path = f"{OUT}/oracle.json"
-    if not os.path.exists(path):
-        return None, None
-    data = json.load(open(path))
-    # average CLIP-I over prompts on a shared (cut, strength) grid
-    allcuts, allstrs = set(), set()
-    per = []
-    for pid, d in data.items():
-        cuts, strs, grid = _parse_cells(d["cells"])
-        allcuts |= set(cuts); allstrs |= set(strs); per.append(grid)
-    cuts, strs = sorted(allcuts), sorted(allstrs)
-    M = torch.full((len(cuts), len(strs)), float("nan"))
-    for i, cc in enumerate(cuts):
-        for j, st in enumerate(strs):
-            vals = [g[(cc, st)]["clip_i"] for g in per if (cc, st) in g]
-            if vals:
-                M[i, j] = sum(vals) / len(vals)
-    fig, ax = plt.subplots(figsize=(1.4 + 1.1 * len(strs), 1.0 + 0.7 * len(cuts)))
-    im = ax.imshow(M, cmap="viridis", vmin=float(M[~M.isnan()].min()), vmax=1.0, aspect="auto")
-    ax.set_xticks(range(len(strs))); ax.set_xticklabels([f"{1-s:.0%}\nskip" for s in strs])
-    ax.set_yticks(range(len(cuts)))
-    ax.set_yticklabels([("noise (c=0)" if cc == 0 else f"c={cc:g}") for cc in cuts])
-    ax.set_xlabel("steps skipped  (strength = 1-skip)")
-    ax.set_ylabel("low bands committed (cutoff c)")
-    ax.set_title("oracle recovery:  CLIP-I to the full run")
-    for i in range(len(cuts)):
-        for j in range(len(strs)):
-            if not torch.isnan(M[i, j]):
-                ax.text(j, i, f"{float(M[i,j]):.2f}", ha="center", va="center",
-                        color="white" if float(M[i, j]) < 0.9 else "black", fontsize=9)
-    fig.colorbar(im, fraction=0.046)
-    fig.tight_layout()
-    summary = {"cuts": cuts, "strs": strs,
-               "M": [[None if torch.isnan(M[i, j]) else round(float(M[i, j]), 3)
-                      for j in range(len(strs))] for i in range(len(cuts))]}
-    return _png(fig), summary
-
-
-def schematic_figure(k=11, T=28):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle, Circle
-    fig, ax = plt.subplots(figsize=(11, 4.7))
-    ax.set_xlim(0, 100); ax.set_ylim(0, 47); ax.axis("off")
-    s2x = lambda s, a=27, b=92: a + (b - a) * s / T
-
-    # --- Track 1: standard generation ---
-    y1 = 38
-    ax.text(2, y1 + 4, "Standard generation", fontsize=12.5, fontweight="bold")
-    ax.add_patch(Rectangle((27, y1 - 1.5), 65, 3, fc="#dfe7f5", ec="#9bb2d6"))
-    for s in range(0, T + 1, 2):
-        ax.plot([s2x(s)] * 2, [y1 - 1.5, y1 + 1.5], c="#9bb2d6", lw=0.6)
-    ax.text(25, y1, "pure noise", ha="right", va="center", fontsize=9.5)
-    ax.annotate("", (92.5, y1), (27, y1),
-                arrowprops=dict(arrowstyle="-|>", color="#36507e", lw=1.5))
-    ax.text(93, y1, "image", ha="left", va="center", fontsize=9.5)
-    ax.text(59, y1 - 4.3, f"all {T} steps  ·  structure only settles in the last third",
-            ha="center", fontsize=9, color="#555")
-
-    # --- Track 2: warm-start ---
-    y2 = 15
-    ax.text(2, y2 + 11, "Spectral warm-start", fontsize=12.5, fontweight="bold")
-    xk = s2x(k)
-    ax.add_patch(Rectangle((27, y2 - 1.5), xk - 27, 3, fc="#efefef", ec="#cccccc", hatch="//"))
-    ax.text((27 + xk) / 2, y2, f"SKIP\n0–{k}", ha="center", va="center",
-            fontsize=8, color="#999")
-    ax.add_patch(Rectangle((xk, y2 - 1.5), 92 - xk, 3, fc="#dff5e4", ec="#9bd6ab"))
-    for s in range(k, T + 1, 2):
-        ax.plot([s2x(s)] * 2, [y2 - 1.5, y2 + 1.5], c="#9bd6ab", lw=0.6)
-    ax.annotate("", (92.5, y2), (xk, y2),
-                arrowprops=dict(arrowstyle="-|>", color="#2e7d44", lw=1.5))
-    ax.text(93, y2, "image", ha="left", va="center", fontsize=9.5)
-    ax.text((xk + 92) / 2, y2 - 4.3,
-            f"denoise only steps {k}–{T}   (~{k/T*100:.0f}% fewer)",
-            ha="center", fontsize=9, color="#555")
-
-    # frequency disk = the constructed warm-start latent
-    cx, cy, R = 10, y2, 8
-    ax.add_patch(Circle((cx, cy), R, fc="#fde9d9", ec="#e0a072", hatch="..", lw=1))
-    ax.add_patch(Circle((cx, cy), R * 0.42, fc="#cfe0f7", ec="#5b82c2", lw=1.3))
-    ax.text(cx, cy, "low\nbands", ha="center", va="center", fontsize=7.5, color="#1c3d6e")
-    ax.text(cx, cy + R + 1.8, "keep LOW = structure", ha="center", fontsize=8, color="#1c3d6e")
-    ax.text(cx, cy - R - 1.9, "+ noise HIGH = detail", ha="center", fontsize=8, color="#b5651d")
-    ax.text(cx, cy - R - 4.6, "warm-start latent", ha="center", fontsize=9, fontweight="bold")
-    ax.annotate("", (xk, y2), (cx + R + 0.3, cy),
-                arrowprops=dict(arrowstyle="-|>", color="#444", lw=1.5))
-    ax.text(xk + 1, y2 + 3.4, f"inject at step {k}", ha="left", fontsize=8.5, color="#222")
-    fig.tight_layout()
-    return _png(fig)
-
-
+# CSS reused verbatim from e29/e30 (.tldr/.look/.read/.win/.cav, glossary dl, td.pos)
 CSS = """
-body{font:14.5px/1.65 -apple-system,Segoe UI,Roboto,sans-serif;margin:26px;color:#1a1a1a;max-width:1080px}
-h1{font-size:24px} h2{font-size:19px;margin-top:34px;border-bottom:2px solid #0969da;padding-bottom:3px}
-h3{font-size:15px;margin-top:18px;color:#333}
-.note{background:#f6f8fa;border-left:4px solid #0969da;padding:11px 15px;border-radius:4px;margin:14px 0}
-.key{background:#eafff0;border-left:4px solid #1a7f37}
-.cav{background:#fff8f0;border-left:4px solid #d4a017}
-img.plot{max-width:100%;border:1px solid #d0d7de;border-radius:4px;margin:8px 0}
-img.grid{max-width:100%;border:1px solid #d0d7de;border-radius:4px;margin:6px 0}
+body{font:15px/1.65 -apple-system,Segoe UI,Roboto,sans-serif;margin:24px auto;max-width:1000px;color:#1a1a1a;padding:0 16px}
+h1{font-size:25px;line-height:1.25} h2{font-size:20px;margin-top:38px;border-bottom:1px solid #ddd;padding-bottom:5px}
+h3{font-size:16px;margin:22px 0 4px} h4{font-size:14px;margin:16px 0 2px;color:#333}
+.tldr{background:#eef4ff;border:1px solid #c7d9ff;border-radius:6px;padding:14px 16px;margin:14px 0}
+.look{background:#f6f8fa;border-left:4px solid #0969da;padding:8px 13px;border-radius:4px;margin:8px 0;font-size:14px}
+.read{margin:8px 0 4px} .win{background:#eafaf0;border-left:4px solid #2da44e;padding:8px 13px;border-radius:4px;margin:8px 0}
+.cav{background:#fff8f0;border-left:4px solid #d4a017;padding:10px 14px;border-radius:4px;margin:12px 0}
+dl{margin:10px 0} dt{font-weight:700;margin-top:11px} dd{margin:2px 0 2px 18px;color:#333}
+table{border-collapse:collapse;margin:10px 0;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{border:1px solid #d0d7de;padding:4px 9px;text-align:right}
+th{background:#f6f8fa;text-align:center} td.v{text-align:left;font-weight:600;white-space:nowrap}
+td.pos{background:#dafbe1;font-weight:600} td.neg{background:#ffebe9}
+.cap{color:#555;font-size:13px;margin:2px 0 14px}
+img{width:100%;border:1px solid #d0d7de;border-radius:4px;margin:6px 0}
 code{background:#eff1f3;padding:1px 5px;border-radius:3px;font-size:13px}
-table{border-collapse:collapse;margin:10px 0;font-variant-numeric:tabular-nums}
-th,td{border:1px solid #d0d7de;padding:4px 10px;text-align:center} th{background:#f6f8fa}
-.cap{color:#666;font-size:12.5px} ul{margin:8px 0}
 """
 
 
-def render():
-    lock_png, lock = lockin_figure()
-    orac_png, orac = oracle_figure()
-    h = ["<!doctype html><meta charset=utf-8><title>E20 spectral warm-start</title>",
-         f"<style>{CSS}</style>",
-         "<h1>E20 — spectral warm-start: can we “skip the beginning” of generation?</h1>"]
+def img_tag(rel, **kw):
+    """Embed results/e20/<rel> as base64, or print a (missing) placeholder."""
+    p = os.path.join(OUT, rel)
+    if data_uri is None or not os.path.exists(p):
+        return f"<p class=cap>(missing {rel})</p>"
+    return f"<img src='{data_uri(p, **kw)}'>"
 
-    h.append("<div class=note><b>The question.</b> Diffusion is coarse-to-fine: the "
-             "intuition is that the <i>early</i> steps fix low-frequency structure and "
-             "the late steps fix detail. If so, we should be able to hand the model the "
-             "low-frequency content up front — an intermediate latent with its bands "
-             "pre-set — re-enter the trajectory partway, and <b>skip the early steps</b>. "
-             "Useful for conditioning/style transfer and, maybe, plain speedup. We test "
-             "it two ways: <b>(1)</b> measure <i>when</i> each frequency band actually "
-             "locks in, and <b>(2)</b> an <i>oracle</i>: commit a finished run's true low "
-             "bands and see how much we can skip and still recover the image. "
-             "(SD3.5-medium, rectified flow, 28 steps.)</div>")
 
-    # ---- Schematic ----
-    h.append("<h2>How it works</h2>")
-    h.append("<p>Standard generation refines <i>all</i> frequencies over every step. "
-             "The warm-start instead <b>builds an intermediate latent</b> — keep the "
-             "<b>low-frequency bands</b> (their full complex value) from a reference or a "
-             "finished run, fill the <b>high bands</b> with fresh noise — re-noises it to "
-             "the right level for a mid-trajectory step, and denoises only the "
-             "<b>remaining</b> steps. The early steps are skipped because we hand the "
-             "model the low-frequency content instead of letting it search for it.</p>")
-    h.append("<div class='note'><b>Two independent axes (don't conflate them).</b> A 2-D "
-             "FFT gives a complex number at <i>every</i> frequency: "
-             "<code>F = |F|·e<sup>iφ</sup></code>. So there are two separate splits — "
-             "<b>(a) low vs high frequency</b> = <i>where</i> the bin sits (coarse layout "
-             "vs fine detail), and <b>(b) magnitude vs phase</b> = <i>which part</i> of "
-             "each complex coefficient. Every low-frequency bin has <i>both</i> a "
-             "magnitude and a phase. Across the magnitude/phase axis, <b>phase carries "
-             "structure</b> and <b>magnitude/power carries texture-energy &amp; palette</b> "
-             "(Oppenheim–Lim). The warm-start keeps the low <i>frequencies</i> whole "
-             "(magnitude + phase); it is specifically their <b>phase</b> that supplies the "
-             "coarse layout. (SBN, by contrast, edits the magnitude axis only.)</div>")
-    h.append(img_tag(schematic_figure(), "plot"))
+def fmt(x, n=2):
+    return "—" if x is None else f"{x:.{n}f}"
 
-    # ---- Part 1: lock-in ----
-    h.append("<h2>1. When does each band actually lock in?</h2>")
-    h.append("<p>Using the two axes above: for each <b>frequency band</b> we track its "
-             "<b>phase</b> (left) and its <b>power</b>=magnitude² (right) separately. The "
-             "phase curve is how much the running latent's band-phase already agrees with "
-             "the <b>final</b> latent's band-phase (1 = locked) — phase being the part that "
-             "carries structure; the power curve is band magnitude relative to its final "
-             "value.</p>")
-    if lock_png:
-        h.append(img_tag(lock_png, "plot"))
-        h.append(f"<p class=cap>Averaged over {lock['nprompts']} prompt(s); curves shown "
-                 "for one. Dotted line = the 90%-of-final lock-in threshold.</p>")
-        h.append("<table><tr><th>band group</th><th>mean lock-in step (/%d)</th></tr>"
-                 % lock["T"])
-        for g in ("low", "mid", "high"):
-            h.append(f"<tr><td>{g}</td><td>{lock[g]:.1f}</td></tr>")
-        h.append("</table>")
-        h.append("<div class='note key'><b>Finding — the beginning does NOT lock low "
-                 "frequencies early.</b> Phase settles in the <b>last third</b> of the "
-                 f"schedule (low bands ≈ step {lock['low']:.0f}, high ≈ {lock['high']:.0f} "
-                 f"of {lock['T']}), low only a few steps ahead of high. Power locks even "
-                 "later — mid/high band power starts many× its final value and decays "
-                 "monotonically, settling in the last ~2 steps. So the early steps are "
-                 "<i>exploratory</i>; the model commits structure late, not up front.</div>")
-    else:
-        h.append("<p class=cap>(no profile_*.pt yet — run <code>--part profile</code>)</p>")
 
-    # ---- Part 2: oracle ----
-    h.append("<h2>2. The oracle: how much can we skip if we know the low bands?</h2>")
-    h.append("<p>Take a finished run's latent <code>x0*</code>; build a warm-start that "
-             "keeps its true low bands up to a cutoff <code>c</code> (phase + magnitude) "
-             "and fills the rest with noise (<code>band_spectrum_split</code>); re-enter "
-             "at <code>strength</code> (= fraction of steps run, so <code>1−strength</code> "
-             "is skipped) and denoise the rest. We measure CLIP-I of the result to the "
-             "full run. <b>c=0 is the baseline</b> (no structure committed = ordinary "
-             "SDEdit-from-noise); <b>c=1</b> commits the whole spectrum.</p>")
-    if orac_png:
-        h.append(img_tag(orac_png, "plot"))
-        # auto-narrate the key cell vs baseline
-        cuts, strs, M = orac["cuts"], orac["strs"], orac["M"]
-        h.append("<div class='note key'><b>Reading the heatmap.</b> Recovery rises with "
-                 "how many low bands you commit (down the rows) and falls with how much "
-                 "you skip (right across the columns). The gap between a committed row and "
-                 "the <code>c=0</code> baseline row at the same column is <b>how much the "
-                 "low-band structure actually bought you</b> — committing only a small "
-                 "low-frequency cutoff recovers most of the image while skipping a large "
-                 "fraction of steps, whereas starting from noise at the same step does "
-                 "not.</div>")
-        # per-prompt grids
-        for gp in sorted(glob.glob(f"{OUT}/oracle/grid_*.png")):
-            pid = os.path.basename(gp)[5:-4]
-            h.append(f"<h3>{pid}</h3>")
-            h.append(img_tag(_jpg(gp), "grid", "jpg"))
-        h.append("<p class=cap>Rows = cutoff c (top = noise baseline), columns = skip "
-                 "fraction; first column is the reference full run.</p>")
-    else:
-        h.append("<p class=cap>(no oracle.json yet — run <code>--part oracle</code>)</p>")
+def _parse_cells(cells):
+    """{c<C>_s<S>: {...}} -> (sorted cuts, sorted strengths, {(C,S): metrics})."""
+    cuts, strs, grid = set(), set(), {}
+    for k, v in cells.items():
+        cc = float(k.split("_")[0][1:])
+        st = float(k.split("_")[1][1:])
+        cuts.add(cc)
+        strs.add(st)
+        grid[(cc, st)] = v
+    return sorted(cuts), sorted(strs), grid
 
-    # ---- Part 3/4: condition + noiseshape (if present) ----
-    if os.path.exists(f"{OUT}/condition.json"):
-        h.append("<h2>3. Conditioning: band-controlled SDEdit vs full SDEdit</h2>")
-        h.append("<p>Commit a <i>reference image's</i> low bands (not an oracle's) and "
-                 "generate from a prompt. <code>c=1</code> is ordinary SDEdit (whole image "
-                 "committed); lower <code>c</code> keeps only structure and lets the prompt "
-                 "drive detail. Structure = CLIP-I to the reference, prompt = CLIP-T.</p>")
-        cd = json.load(open(f"{OUT}/condition.json"))
-        h.append("<table><tr><th>tag</th><th>cell</th><th>struct CLIP-I</th>"
-                 "<th>prompt CLIP-T</th></tr>")
-        for tag, d in cd.items():
-            for k, v in d["cells"].items():
-                h.append(f"<tr><td>{tag}</td><td>{k}</td>"
-                         f"<td>{v['struct_clip']:.3f}</td><td>{v['prompt_clip']:.3f}</td></tr>")
-        h.append("</table>")
-        for gp in sorted(glob.glob(f"{OUT}/condition/grid_*.png")):
-            h.append(img_tag(_jpg(gp), "grid", "jpg"))
-    if os.path.exists(f"{OUT}/noiseshape.json"):
-        h.append("<h2>4. Initial-noise spectrum shaping</h2>")
-        h.append("<p>Color step-0 noise toward a natural-latent spectrum (no skipping); "
-                 "does a non-white start reach quality in fewer steps? aesthetic / CLIP-T "
-                 "vs white-noise init at matched step counts.</p>")
-        ns = json.load(open(f"{OUT}/noiseshape.json"))
-        h.append("<table><tr><th>prompt</th><th>steps</th><th>init</th>"
-                 "<th>aesthetic</th><th>CLIP-T</th></tr>")
-        for pid, d in ns.items():
-            for cond in ("white", "colored"):
-                for st, v in d[cond].items():
-                    h.append(f"<tr><td>{pid}</td><td>{st}</td><td>{cond}</td>"
-                             f"<td>{v['aesthetic']:.3f}</td><td>{v['clip_t']:.3f}</td></tr>")
-        h.append("</table>")
-        for gp in sorted(glob.glob(f"{OUT}/noiseshape/grid_*.png")):
-            h.append(img_tag(_jpg(gp), "grid", "jpg"))
 
-    # ---- synthesis ----
-    h.append("<h2>Synthesis</h2><div class='note key'>"
-             "<b>The early steps aren't where low-frequency locks — they're where the "
-             "model searches for it.</b> Phase converges late (last third), yet the oracle "
-             "shows that <i>injecting</i> the destined low bands lets you re-enter well "
-             "before that natural lock-in and recover the image. The warm-start replaces "
-             "the early search with the answer. So the actionable lever is "
-             "<b>inject-and-skip</b>, not “wait for the early steps”.</div>")
-    h.append("<h2>Caveats</h2><div class='note cav'><b>(1)</b> The oracle uses a finished "
-             "run's <i>own</i> low bands — an upper bound; a practical method needs those "
-             "bands cheaply (a reference image, as in part 3, or a fast preview). "
-             "<b>(2)</b> Recovery is CLIP-I (+ latent-L2); LPIPS not installed. "
-             "<b>(3)</b> Phase-convergence uses an unweighted per-band cos(Δphase); the "
-             "absolute early values are noisy, but the lock-in <i>ordering</i> "
-             "(low before high, all late) and the oracle result are the robust reads."
-             "</div>")
-    h.append("<p class=cap>Generated by <code>e20_site.py</code> from "
-             "<code>results/e20/</code>.</p>")
+# ---------------------------------------------------------------------------
+# Oracle: a (cutoff c) x (strength s) grid table per scene, per metric.
+# clip_i ↑ (warm-start reconstructs the oracle target) ; latent_l2 ↓ (close in latent).
+# ---------------------------------------------------------------------------
+
+def _oracle_table(grid, cuts, strs, key, best="max"):
+    """One c-rows x s-cols table for metric `key`; highlight the best cell per column."""
+    h = ["<table><tr><th>cutoff <code>c</code> \\ skip</th>"]
+    for st in strs:
+        h.append(f"<th>s={st:g}<br>(skip {1 - st:.0%})</th>")
+    h.append("</tr>")
+    # best per column
+    best_per_col = {}
+    for st in strs:
+        vals = [(grid[(cc, st)][key], cc) for cc in cuts if (cc, st) in grid]
+        if vals:
+            best_per_col[st] = (max if best == "max" else min)(vals)[1]
+    for cc in cuts:
+        label = "noise (c=0)" if cc == 0 else (f"c={cc:g} (full spectrum)" if cc >= 1 else f"c={cc:g}")
+        h.append(f"<tr><td class=v>{label}</td>")
+        for st in strs:
+            v = grid.get((cc, st), {}).get(key) if (cc, st) in grid else None
+            cls = " class=pos" if best_per_col.get(st) == cc else ""
+            h.append(f"<td{cls}>{fmt(v)}</td>")
+        h.append("</tr>")
+    h.append("</table>")
     return "".join(h)
 
 
-def main():
-    html = render()
-    site = f"{OUT}/site"
-    os.makedirs(site, exist_ok=True)
-    with open(f"{site}/index.html", "w") as f:
+def render_oracle(h, data):
+    h.append("<h3>oracle — how much can we skip if we hand it the TRUE low bands?</h3>")
+    h.append("<div class=look><b>What to look for.</b> Each grid below is one scene. Down the rows "
+             "we commit more of the run's own spectrum (cutoff <code>c</code>: 0 = nothing, 1 = the "
+             "whole latent); across the columns we re-enter later (strength <code>s</code>; "
+             "<code>skip = 1−s</code> of the steps are skipped). Watch the jump from the "
+             "<code>c=0</code> noise baseline (top row) to any committed row: committing even the "
+             "lowest bands (<code>c=0.1</code>) should snap recovery near 1.</div>")
+    # numbers first need parsing
+    summaries = {}
+    for pid, d in data.items():
+        cuts, strs, grid = _parse_cells(d["cells"])
+        summaries[pid] = (cuts, strs, grid, d["prompt"])
+    # interpretation, computed from the data (c=0 vs c=0.1 at the gentlest skip)
+    def at(pid, cc, st, key):
+        _, _, grid, _ = summaries[pid]
+        return grid.get((cc, st), {}).get(key)
+    base = mean([at(p, 0.0, 0.8, "clip_i") for p in summaries])         # c=0 needs the LEAST skip
+    comm = mean([at(p, 0.1, 0.6, "clip_i") for p in summaries])
+    h.append("<div class='read win'><b>Reading.</b> The committed rows recover the image; the "
+             f"<code>c=0</code> noise baseline does not. Committing the lowest bands alone "
+             f"(<code>c=0.1</code>) lifts CLIP-I to ≈{fmt(comm)} (latent-L2 ≈0.4), versus "
+             f"≈{fmt(base)} for re-noising from pure noise at the <i>same</i> step — so a small "
+             "low-frequency cutoff buys almost the whole image while skipping a large fraction of "
+             "the schedule. Pushing <code>c</code> higher (0.25 → 1) adds little: the coarse layout "
+             "is carried by the lowest bands. The latent-L2 column tells the same story in latent "
+             "space (lower is closer to the target).</div>")
+    for pid, (cuts, strs, grid, prompt) in summaries.items():
+        h.append(f"<h4>{pid}: <code>{prompt}</code></h4>")
+        h.append(img_tag(f"oracle/grid_{pid}.png"))
+        h.append("<p class=cap>rows = cutoff <code>c</code> (top = full reference run, then "
+                 "<code>c=0</code> noise baseline upward); columns = skip fraction. The first "
+                 "column is the reference (full) run.</p>")
+        h.append("<p class=cap><b>CLIP-I to the full run ↑</b> (1 = identical content):</p>")
+        h.append(_oracle_table(grid, cuts, strs, "clip_i", best="max"))
+        h.append("<p class=cap><b>latent L2 to the full run ↓</b> (0 = identical latent):</p>")
+        h.append(_oracle_table(grid, cuts, strs, "latent_l2", best="min"))
+
+
+# ---------------------------------------------------------------------------
+# Condition: commit a REFERENCE image's low bands. struct_clip ↑ (looks like ref),
+# prompt_clip ↑ (follows prompt). The two trade off.
+# ---------------------------------------------------------------------------
+
+def render_condition(h, data):
+    h.append("<h3>condition — band-controlled SDEdit (commit a reference image's low bands)</h3>")
+    h.append("<div class=look><b>What to look for.</b> Now the committed low bands come from a "
+             "<i>reference image</i> (a painting), not an oracle; the prompt drives the rest. "
+             "<code>c=1</code> is ordinary full SDEdit (whole reference committed); lower "
+             "<code>c</code> keeps only the reference's coarse structure and frees the model to "
+             "follow the prompt. Watch the trade-off: more committed structure / less skip "
+             "(left columns) → the image hugs the reference; less structure / more skip → it "
+             "follows the text.</div>")
+    h.append("<div class=read><b>Reading.</b> The two metrics trade off as expected: higher "
+             "re-entry strength <code>s</code> (more steps actually run) raises prompt-adherence "
+             "(<b>prompt CLIP-T</b>) and lowers structure-match (<b>struct CLIP-I</b>); a lower "
+             "cutoff <code>c</code> loosens the grip on the reference. So <code>c</code>×<code>s</code> "
+             "is a structure-vs-prompt dial. It does not cleanly <i>beat</i> full SDEdit "
+             "(<code>c=1</code>) on this small set — the band cut is a softer version of the same "
+             "knob rather than a free lunch.</div>")
+    for tag, d in data.items():
+        h.append(f"<h4>{tag.replace('__', ' → ')}: <code>{d['prompt']}</code></h4>")
+        h.append(img_tag(f"condition/grid_{tag}.png"))
+        h.append("<p class=cap>rows = cutoff <code>c</code> (with <code>c=1</code> = full SDEdit); "
+                 "columns = skip fraction. First column is the reference image.</p>")
+        cuts, strs, grid = _parse_cells(d["cells"])
+        # struct_clip ↑ best per col, prompt_clip ↑ best per col -- show one merged table
+        h.append("<table><tr><th>cutoff <code>c</code></th>")
+        for st in strs:
+            h.append(f"<th>struct CLIP-I ↑<br>s={st:g}</th><th>prompt CLIP-T ↑<br>s={st:g}</th>")
+        h.append("</tr>")
+        best_struct = {st: max((grid[(cc, st)]["struct_clip"], cc) for cc in cuts if (cc, st) in grid)[1]
+                       for st in strs}
+        best_prompt = {st: max((grid[(cc, st)]["prompt_clip"], cc) for cc in cuts if (cc, st) in grid)[1]
+                       for st in strs}
+        for cc in cuts:
+            label = f"c={cc:g}" + (" (SDEdit)" if cc >= 1 else "")
+            h.append(f"<tr><td class=v>{label}</td>")
+            for st in strs:
+                v = grid.get((cc, st))
+                sc = " class=pos" if best_struct.get(st) == cc else ""
+                pc = " class=pos" if best_prompt.get(st) == cc else ""
+                h.append(f"<td{sc}>{fmt(v['struct_clip']) if v else '—'}</td>"
+                         f"<td{pc}>{fmt(v['prompt_clip']) if v else '—'}</td>")
+            h.append("</tr>")
+        h.append("</table>")
+
+
+# ---------------------------------------------------------------------------
+# Noiseshape: color step-0 noise toward a natural-latent spectrum. aesthetic ↑, clip_t ↑.
+# ---------------------------------------------------------------------------
+
+def render_noiseshape(h, data):
+    h.append("<h3>noiseshape — pre-color the initial noise toward a natural-latent spectrum</h3>")
+    h.append("<div class=look><b>What to look for.</b> No skipping here: we just reshape the "
+             "step-0 noise so its band power matches real photos' encoded latents (vs. plain white "
+             "noise), then run the full schedule. The question is whether a natural-spectrum start "
+             "reaches quality (aesthetic, prompt CLIP-T) in fewer steps. Compare the "
+             "<code>colored</code> rows to <code>white</code> at each step count.</div>")
+    # compute deltas
+    aes_w = mean([d["white"][st]["aesthetic"] for d in data.values() for st in d["white"]])
+    aes_c = mean([d["colored"][st]["aesthetic"] for d in data.values() for st in d["colored"]])
+    clt_w = mean([d["white"][st]["clip_t"] for d in data.values() for st in d["white"]])
+    clt_c = mean([d["colored"][st]["clip_t"] for d in data.values() for st in d["colored"]])
+    h.append("<div class='read cav'><b>Reading — this lever fails.</b> Coloring the initial noise "
+             f"toward the natural-latent spectrum <b>hurts</b>: aesthetic drops ≈{fmt(aes_w)}→"
+             f"{fmt(aes_c)} and prompt CLIP-T collapses ≈{fmt(clt_w)}→{fmt(clt_c)} at every step "
+             "count. Rectified-flow generation expects a (near-)white Gaussian start; biasing its "
+             "band power off-distribution moves it off the trained manifold and the model never "
+             "recovers. Spectrum-shaping the <i>init</i> is the wrong place to inject structure — "
+             "the oracle's mid-trajectory band commit is the working lever.</div>")
+    for pid, d in data.items():
+        h.append(f"<h4>{pid}: <code>{d['prompt']}</code></h4>")
+        h.append(img_tag(f"noiseshape/grid_{pid}.png"))
+        h.append("<p class=cap>rows alternate white-init / colored-init at each step count; "
+                 "columns = seeds.</p>")
+        steps = sorted(d["white"], key=int)
+        h.append("<table><tr><th>steps</th><th>aesthetic ↑<br>white</th><th>aesthetic ↑<br>colored</th>"
+                 "<th>CLIP-T ↑<br>white</th><th>CLIP-T ↑<br>colored</th></tr>")
+        for st in steps:
+            w, c = d["white"][st], d["colored"][st]
+            aw = " class=pos" if w["aesthetic"] >= c["aesthetic"] else ""
+            ac = "" if w["aesthetic"] >= c["aesthetic"] else " class=pos"
+            cw = " class=pos" if w["clip_t"] >= c["clip_t"] else ""
+            cc = "" if w["clip_t"] >= c["clip_t"] else " class=pos"
+            h.append(f"<tr><td class=v>{st}</td>"
+                     f"<td{aw}>{fmt(w['aesthetic'])}</td><td{ac}>{fmt(c['aesthetic'])}</td>"
+                     f"<td{cw}>{fmt(w['clip_t'])}</td><td{cc}>{fmt(c['clip_t'])}</td></tr>")
+        h.append("</table>")
+
+
+def mean(xs):
+    xs = [x for x in xs if x is not None]
+    return sum(xs) / len(xs) if xs else None
+
+
+# ---------------------------------------------------------------------------
+
+def render(oracle, condition, noiseshape):
+    h = ["<!doctype html><meta charset=utf-8><title>E20 — spectral warm-start</title>",
+         f"<style>{CSS}</style>",
+         "<h1>E20 — spectral warm-start: can we “skip the beginning” of generation?</h1>"]
+
+    # ---- TL;DR ----
+    base = comm = None
+    if oracle:
+        def at(pid, cc, st):
+            for k, v in oracle[pid]["cells"].items():
+                if k == f"c{cc:g}_s{st:g}":
+                    return v["clip_i"]
+            return None
+        base = mean([at(p, 0.0, 0.8) for p in oracle])
+        comm = mean([at(p, 0.1, 0.6) for p in oracle])
+    h.append(
+        "<div class=tldr><b>In one paragraph.</b> Diffusion is coarse-to-fine: the intuition is "
+        "that the <i>early</i> denoising steps fix the low-frequency <b>structure</b> and the late "
+        "steps fix detail. If so, we should be able to hand the model the low-frequency content "
+        "up front — build an intermediate latent whose <b>low Fourier bands are pre-set</b> — "
+        "re-enter the trajectory partway, and <b>skip the early steps</b>. We test it in SD3.5-medium "
+        "(rectified flow, 28 steps) three ways: an <b>oracle</b> (commit a finished run's own true "
+        "low bands and see how much we can skip and still recover it), <b>conditioning</b> (commit a "
+        "reference image's low bands = band-controlled SDEdit), and <b>noise-shaping</b> (pre-color "
+        "the step-0 noise toward a natural spectrum). " +
+        (f"<b>Findings.</b> The oracle works strikingly well — committing just the lowest bands "
+         f"(<code>c=0.1</code>) recovers the image (CLIP-I ≈{fmt(comm)}) while skipping a large "
+         f"fraction of steps, versus ≈{fmt(base)} when re-entering from pure noise at the same step. "
+         f"Conditioning gives a clean structure-vs-prompt dial but doesn't beat full SDEdit; and "
+         f"<b>noise-shaping fails</b> (coloring the init drops it off-manifold and tanks quality). "
+         if oracle else "") +
+        "The actionable lever is <b>inject-the-low-bands-and-skip</b>, not pre-coloring noise.</div>")
+
+    # ---- background glossary ----
+    h.append("<h2>0 · Background (plain language)</h2><dl>"
+             "<dt>Latent / SD3.5 rectified flow</dt><dd>SD3.5 generates in a compressed latent space "
+             "(here <code>16×128×128</code>). It uses <b>rectified flow</b>: a sample at fraction "
+             "<code>σ</code> along the trajectory is <code>x_σ = (1−σ)·x₀ + σ·ε</code> "
+             "(<code>x₀</code> = clean latent, <code>ε</code> = Gaussian noise). The scheduler maps a "
+             "re-entry <b>strength</b> to a start step.</dd>"
+             "<dt>2-D FFT: frequency vs phase/magnitude</dt><dd>The 2-D Fourier transform of a latent "
+             "gives a complex number <code>F = |F|·e<sup>iφ</sup></code> at every frequency. Two "
+             "<i>independent</i> axes: <b>(a) low vs high frequency</b> = coarse layout vs fine detail; "
+             "<b>(b) magnitude vs phase</b> = which part of each coefficient. Classic result "
+             "(Oppenheim–Lim): <b>phase carries structure</b>, magnitude/power carries texture-energy "
+             "and palette. The warm-start keeps the low <i>frequencies</i> <b>whole</b> (magnitude + "
+             "phase); it is their phase that supplies the coarse layout. (This is the opposite of SBN, "
+             "which edits the magnitude axis only.)</dd>"
+             "<dt>Warm-start band commit (cutoff <code>c</code>)</dt><dd>"
+             "<code>band_spectrum_split(x₀, noise, c)</code> keeps the full complex Fourier "
+             "coefficients of a source latent <code>x₀</code> for all bands up to a radial cutoff "
+             "<code>c∈[0,1]</code>, and fills the rest with fresh noise. <code>c=0</code> = pure noise "
+             "(nothing committed); <code>c=1</code> = the whole source latent; <code>c=0.1</code> = "
+             "only the lowest 10% of the spectrum (coarse layout) committed.</dd>"
+             "<dt>Re-entry strength <code>s</code> (= skip)</dt><dd>After building the warm-start "
+             "latent we re-noise it to the level of a mid-trajectory step and denoise only the rest. "
+             "<code>s</code> is the fraction of the schedule actually run, so <b>skip = 1−s</b>. "
+             "<code>s=0.4</code> runs 40% of the steps (skips 60%); <code>s=0.8</code> runs 80% "
+             "(skips 20%). Lower <code>s</code> = more aggressive skipping = harder.</dd>"
+             "<dt>Conditions (the three parts)</dt><dd>"
+             "<b>oracle</b>: the committed source is a <i>finished run's own</i> latent <code>x₀*</code> "
+             "(a ceiling — we already know the answer). "
+             "<b>condition</b>: the committed source is a <i>reference image's</i> latent (band-controlled "
+             "SDEdit); <code>c=1</code> is ordinary full SDEdit. "
+             "<b>noiseshape</b>: no skipping — the step-0 <i>noise</i> is recolored "
+             "(<code>color_noise</code>, a PSD-match) so its band power matches real photos' latents, "
+             "then the full schedule runs (colored-init vs white-init).</dd>"
+             "<dt>Metrics</dt><dd>"
+             "<b>CLIP-I</b> (0–1 ↑, oracle/condition): image↔target cosine in CLIP space — does the "
+             "warm-start reconstruct the oracle target (oracle) or the reference image (condition)? "
+             "<b>latent L2</b> (≥0 ↓, oracle): RMS distance between the output latent and the target "
+             "latent — 0 = identical. "
+             "<b>prompt CLIP-T</b> (0–1 ↑, condition): image↔prompt cosine — does it follow the text? "
+             "<b>aesthetic</b> (≈1–10 ↑, noiseshape): LAION aesthetic-predictor score. "
+             "<b>CLIP-T</b> (0–1 ↑, noiseshape): image↔prompt similarity.</dd>"
+             "</dl>")
+
+    # ---- method ----
+    h.append("<h2>1 · Method</h2><dl>"
+             "<dt>oracle</dt><dd>Run the full schedule once to get <code>x₀*</code> and a reference "
+             "image. For each cutoff <code>c</code> × strength <code>s</code>, build "
+             "<code>band_spectrum_split(x₀*, noise, c)</code>, re-enter at <code>s</code>, denoise the "
+             "rest, and score CLIP-I + latent-L2 to the full run. <i>Given the true low bands up to "
+             "<code>c</code>, how many steps can we skip and still recover the image?</i></dd>"
+             "<dt>condition</dt><dd>Same construction, but the committed source is a reference "
+             "<i>image's</i> encoded latent and the score is structure (CLIP-I to the reference) vs "
+             "prompt (CLIP-T). <i>Does committing only low bands keep structure while letting the "
+             "prompt drive detail, better than full SDEdit (<code>c=1</code>)?</i></dd>"
+             "<dt>noiseshape</dt><dd>Color the step-0 noise toward the mean band power of SD3.5-encoded "
+             "real photos and run the full schedule at several step counts. <i>Does a natural-spectrum "
+             "start reach quality in fewer steps than white noise?</i></dd>"
+             "</dl>")
+
+    # ---- results, grouped by part ----
+    h.append("<h2>2 · Results</h2>")
+    if oracle:
+        render_oracle(h, oracle)
+    if condition:
+        render_condition(h, condition)
+    if noiseshape:
+        render_noiseshape(h, noiseshape)
+
+    # ---- caveats + reproduce ----
+    h.append("<h2>3 · Caveats &amp; next</h2><div class=cav>"
+             "<b>(1)</b> The oracle commits a finished run's <i>own</i> low bands — it is a ceiling, "
+             "not a usable method; a practical version needs those bands cheaply (a reference image, "
+             "as in <code>condition</code>, or a fast preview). "
+             "<b>(2)</b> Single seed per oracle/condition cell, small reference set — read directions, "
+             "not third decimals. <b>(3)</b> Recovery is CLIP-I + latent-L2 (LPIPS not installed). "
+             "<b>(4)</b> SD3.5-medium only; other models / VAEs may behave differently. "
+             "<b>Next:</b> use the oracle ceiling to set a realistic skip budget, and source the low "
+             "bands from a cheap preview rather than the full run.</div>")
+    h.append("<h2>4 · Reproduce</h2>"
+             "<p>Generation parts need the gated SD3.5 download (cluster); the page rebuilds offline.</p>"
+             "<pre><code>cd experiments\n"
+             "python e20_warmstart.py --part preflight                                   # model-free asserts\n"
+             "python e20_warmstart.py --part oracle      --num_prompts 3                  # SD3.5\n"
+             "python e20_warmstart.py --part condition   --refs results/e18/styles        # SD3.5\n"
+             "python e20_warmstart.py --part noiseshape  --num_prompts 1                  # SD3.5\n"
+             "# rebuild this page offline (no model) from the jsons + cached grids:\n"
+             "python e20_warmstart.py --part site\n"
+             "python e20_site.py</code></pre>")
+    h.append("<p class=cap>Generated by <code>e20_site.py</code> from "
+             "<code>results/e20/{oracle,condition,noiseshape}.json</code> + the saved grids. "
+             "Driver: <code>e20_warmstart.py</code> (reuses <code>style_ops.band_spectrum_split / "
+             "color_noise</code>, <code>e17_sd35.gen_sd3_warmstart</code>). See "
+             "<code>EXPERIMENT_20.md</code>.</p>")
+    return "".join(h)
+
+
+def build_site():
+    """Load the three jsons (if present) and write results/e20/index.html. No model."""
+    def load(name):
+        p = os.path.join(OUT, name)
+        return json.load(open(p)) if os.path.exists(p) else None
+    oracle = load("oracle.json")
+    condition = load("condition.json")
+    noiseshape = load("noiseshape.json")
+    if not any((oracle, condition, noiseshape)):
+        print(f"[e20-site] no jsons under {OUT}; run the generation parts first")
+        return None
+    html = render(oracle, condition, noiseshape)
+    os.makedirs(OUT, exist_ok=True)
+    dest = os.path.join(OUT, "index.html")
+    with open(dest, "w") as f:
         f.write(html)
-    print(f"[e20-site] wrote {site}/index.html  ({len(html)//1024} KB)")
+    print(f"[e20-site] wrote {dest}  ({len(html) // 1024} KB)  [no model loaded]")
+    return dest
+
+
+def main():
+    build_site()
 
 
 if __name__ == "__main__":

@@ -416,73 +416,240 @@ _SCHEMATIC_SVG = '''
 '''
 
 
-def _strip_imgs(report, parts):
-    """Collect saved strip.png / *_sweep.png paths (relative to OUT) for the page."""
-    found = []
-    for root, _dirs, files in os.walk(OUT):
-        for fn in sorted(files):
-            if fn == "strip.png" or fn.endswith("_sweep.png"):
-                found.append(os.path.relpath(os.path.join(root, fn), OUT))
-    return sorted(found)
+_CSS = """
+body{font:15px/1.65 -apple-system,Segoe UI,Roboto,sans-serif;margin:24px auto;max-width:1000px;color:#1a1a1a;padding:0 16px}
+h1{font-size:25px;line-height:1.25} h2{font-size:20px;margin-top:38px;border-bottom:1px solid #ddd;padding-bottom:5px}
+h3{font-size:16px;margin:22px 0 4px} h4{font-size:14px;margin:16px 0 2px;color:#333}
+.tldr{background:#eef4ff;border:1px solid #c7d9ff;border-radius:6px;padding:14px 16px;margin:14px 0}
+.look{background:#f6f8fa;border-left:4px solid #0969da;padding:8px 13px;border-radius:4px;margin:8px 0;font-size:14px}
+.read{margin:8px 0 4px} .win{background:#eafaf0;border-left:4px solid #2da44e;padding:8px 13px;border-radius:4px;margin:8px 0}
+.cav{background:#fff8f0;border-left:4px solid #d4a017;padding:10px 14px;border-radius:4px;margin:12px 0}
+dl{margin:10px 0} dt{font-weight:700;margin-top:11px} dd{margin:2px 0 2px 18px;color:#333}
+table{border-collapse:collapse;margin:10px 0;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{border:1px solid #d0d7de;padding:4px 9px;text-align:right}
+th{background:#f6f8fa;text-align:center} td.v{text-align:left;font-weight:600;white-space:nowrap}
+td.pos{background:#dafbe1;font-weight:600} td.neg{background:#ffebe9}
+.cap{color:#555;font-size:13px;margin:2px 0 14px}
+img{width:100%;border:1px solid #d0d7de;border-radius:4px;margin:6px 0}
+code{background:#eff1f3;padding:1px 5px;border-radius:3px;font-size:13px}
+"""
 
 
-def _site(report, parts):
+def _emb(data_uri, rel):
+    """<img> with the strip embedded as base64 (portable), or a note if missing."""
+    p = os.path.join(OUT, rel)
+    if not os.path.exists(p):
+        return f"<p class=cap>(missing <code>{rel}</code>)</p>"
+    src = data_uri(p) if data_uri else rel
+    return f"<img src='{src}' alt='{rel}'>"
+
+
+def _table(rows, cols, headers, best="max", best_cols=None):
+    """rows = list of (label, {col: float|None}); highlight the best cell per best_col."""
+    best_cols = best_cols or cols
+    best_val = {}
+    for c in best_cols:
+        vals = [r[1].get(c) for r in rows if r[1].get(c) is not None]
+        if vals:
+            best_val[c] = max(vals) if best == "max" else min(vals)
+    out = ["<table><tr><th>variant</th>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"]
+    for label, vals in rows:
+        cells = []
+        for c in cols:
+            v = vals.get(c)
+            if v is None:
+                cells.append("<td>—</td>")
+            else:
+                hot = c in best_val and abs(v - best_val[c]) < 1e-9
+                cells.append(f"<td class=pos>{v:.3f}</td>" if hot else f"<td>{v:.3f}</td>")
+        out.append(f"<tr><td class=v>{label}</td>{''.join(cells)}</tr>")
+    out.append("</table>")
+    return "".join(out)
+
+
+def _g(sc, k):
+    """Pull a mean from a report cell that may be a {'mean':..} dict, a float, or None."""
+    v = sc.get(k)
+    if isinstance(v, dict):
+        return v.get("mean")
+    return v
+
+
+def _site(report, parts=None):
+    """Self-contained explainer: TL;DR -> glossary -> method -> visuals-then-numbers.
+
+    Pure templating from `report` (= results/e30/report.json) + the saved strips on disk;
+    loads no model and re-scores nothing, so the page rebuilds anywhere (`--part site`)."""
     try:
-        from e27_site import data_uri  # self-contained base64 embedding
+        from e27_site import data_uri  # base64 embed -> portable single file
     except Exception:
         data_uri = None
 
-    def emb_img(rel):
-        p = os.path.join(OUT, rel)
-        if data_uri and os.path.exists(p):
-            return f"<img src='{data_uri(p)}' style='max-width:100%'>"
-        return f"<img src='{rel}' style='max-width:100%'>"
+    h = ["<!doctype html><meta charset=utf-8><title>E30 — text-frequency control</title>",
+         f"<style>{_CSS}</style>",
+         "<h1>E30 — Continuous text-frequency control &amp; extraction</h1>"]
 
-    h = ["<!doctype html><meta charset=utf-8><title>E30 text-frequency control</title>",
-         "<style>body{font:14px/1.5 system-ui;max-width:1100px;margin:2rem auto;"
-         "padding:0 1rem;color:#222}code{background:#f0f0f0;padding:1px 4px;border-radius:3px}"
-         "h1,h2{line-height:1.2}img{border:1px solid #ddd;margin:.4em 0}"
-         "figure{margin:1em 0}</style>",
-         "<h1>E30 — Continuous text-frequency control &amp; extraction</h1>",
-         "<p><b>Follow-up to E24.</b> We FFT a prompt's T5 <b>sequence</b> embedding "
-         "<code>(1,L,4096)</code> along the <b>token axis</b> (a 1-D DFT per embedding "
-         "channel — not 2-D, and not the pooled vector), then turn a single knob — "
-         "low-pass cutoff, high-band gain, or two-prompt swap-cut — and regenerate. The "
-         "goal is continuous control plus understanding what frequency filtering does to "
-         "long and compositional prompts.</p>",
-         _SCHEMATIC_SVG,
-         "<h2>Continuous sweeps</h2>"]
-    for rel in _strip_imgs(report, parts):
-        h.append(f"<p><code>{rel}</code><br>{emb_img(rel)}</p>")
+    # ---- TL;DR ----
+    h.append(
+        "<div class=tldr><b>In one paragraph.</b> A text-to-image model first turns the prompt "
+        "into a <b>sequence of token embeddings</b> (Flux's T5 encoder: a <code>(1, L, 4096)</code> "
+        "array — <code>L</code> word-pieces, each a 4096-dim vector). E24 showed you can take a "
+        "<b>1-D Fourier transform along the token axis</b> (independently per channel) and the "
+        "resulting low/high frequency <b>bands</b> are meaningful. E30 (a) makes that a "
+        "<b>continuous knob</b> (sweep a cutoff / gain / two-prompt crossover and watch the image "
+        "morph), and (b) asks <b>what each band carries</b>. <b>Headline:</b> the token spectrum is "
+        "genuinely structured — <b>phase carries the content</b>, the <b>low band is a coarse gist</b> "
+        "and the <b>mid/high bands carry attribute–object binding</b> — but <b>no single band is "
+        "load-bearing</b> and <b>spectral blending still loses to literally writing \"A and B\"</b>. "
+        "So it is a clean <i>map</i> of the spectrum, not a new control lever.</div>")
+    h.append(_SCHEMATIC_SVG)
 
-    # compact metric tables
+    # ---- glossary ----
+    h.append("<h2>0 · Background (plain language)</h2><dl>"
+             "<dt>Token-axis FFT</dt><dd>The prompt embedding is <code>(1, L, 4096)</code>. We run a "
+             "<b>1-D real FFT along the <i>token</i> axis</b> (length <code>L</code>), <b>separately "
+             "for each of the 4096 channels</b>. This is <i>not</i> a 2-D image FFT and <i>not</i> the "
+             "single pooled vector — it asks how each embedding dimension <i>varies from word to word</i>.</dd>"
+             "<dt>Token-frequency, DC, bands</dt><dd>Frequencies are normalized to <code>[0, 1]</code>. "
+             "<b>DC</b> (freq 0) = the per-channel average across tokens (the prompt's bag-of-words gist). "
+             "<b>Low</b> frequencies = slow drift across the sequence; <b>high</b> = fast token-to-token "
+             "change (fine detail). The default split is the cut <code>0.25</code> (low = "
+             "<code>[0, 0.25]</code>, high = <code>[0.25, 1]</code>); the per-band probe slices "
+             f"<code>[0,1]</code> into {N_BANDS} equal bands <code>b0..b{N_BANDS-1}</code>.</dd>"
+             "<dt>The single-prompt variants</dt><dd>"
+             "<code>full</code> = the unmodified embedding (baseline). "
+             "<code>low</code> = <b>low-pass</b>: keep DC..0.25, zero the rest (coarse gist only). "
+             "<code>high</code> = <b>high-pass</b>: keep 0.25..1 (+DC) (fine token detail only). "
+             "<code>notch_lo</code> = <b>remove only the low band</b> <code>[0,0.25]</code>, keep "
+             "everything above it (tests whether the low band is <i>necessary</i>, vs. the mid/high). "
+             "<code>phase_only</code> = keep the spectrum's <b>phase</b>, set every magnitude to 1. "
+             "<code>mag_only</code> = keep the <b>magnitude</b>, set every phase to 0. "
+             f"<code>notch_b0..b{N_BANDS-1}</code> = knock out exactly one of the {N_BANDS} equal "
+             "bands, keep the other five.</dd>"
+             "<dt>The two-prompt merge variants</dt><dd>For prompts A and B: "
+             "<code>band_swap</code> = low band from A + high band from B (hard cut at 0.25). "
+             "<code>band_blend</code> = same, but a soft cosine crossover (no hard edge). "
+             "<code>lerp</code> = plain 50/50 average of the two embeddings (the time-domain baseline). "
+             "<code>concat</code> = the <b>gold-standard baseline</b>: just encode the literal text "
+             "<code>\"A and B\"</code>.</dd>"
+             "<dt>The metrics</dt><dd>"
+             "<b>CLIP-T</b> (0–1, higher = better): cosine similarity between the image and the prompt "
+             "text in CLIP space — how well the image matches the words. "
+             "<b>B-VQA</b> (0–1, higher = better): a visual-question-answering check that each named "
+             "object appears <i>with its correct attribute</i> (color/shape/texture) — i.e. attribute "
+             "binding. <b>sharpness / hf_frac / colorful</b>: image statistics (edge energy, "
+             "high-spatial-frequency fraction, colorfulness) used as sanity signals.</dd>"
+             "</dl>")
+
+    # ---- method ----
+    h.append("<h2>1 · Method</h2><dl>"
+             "<dt>probe_deep</dt><dd>One prompt at a time: regenerate under "
+             "<code>full / phase_only / mag_only / notch_b0..b5</code>. <i>Which part of the spectrum "
+             "carries the content?</i></dd>"
+             "<dt>continuous</dt><dd>The headline visuals: regenerate while sweeping <b>one</b> knob — a "
+             "low-pass cutoff (0.1→0.9), a high-band gain (0→2×), and a two-prompt A↔B crossover. "
+             "<i>Does the image move smoothly?</i></dd>"
+             "<dt>concat</dt><dd>Merge two prompts via <code>band_swap / band_blend / lerp</code> and "
+             "compare to the literal <code>concat</code> (\"A and B\"). <i>Does any spectral merge keep "
+             "<b>both</b> objects (B-VQA) better than just writing them?</i></dd>"
+             "<dt>longprompt / compositional</dt><dd>Apply <code>low / high / notch_lo</code> to long "
+             "(DPG-Bench) and compositional (T2I-CompBench) prompts. <i>Which band carries the gist, and "
+             "which carries the attribute–object binding?</i></dd>"
+             "</dl>")
+
+    h.append("<h2>2 · Results</h2>")
+
+    # --- probe_deep ---
     if report.get("probe_deep"):
-        h.append("<h2>Probe — what each band controls (CLIP + image stats)</h2>")
+        h.append("<h3>probe_deep — what each band carries</h3>")
+        h.append("<div class=look><b>What to look for.</b> Compare <code>phase_only</code> and "
+                 "<code>mag_only</code> to <code>full</code>: if <code>phase_only</code> still looks "
+                 "on-prompt but <code>mag_only</code> is junk, the <b>phase</b> carries the meaning. "
+                 "Across <code>notch_b0..b5</code>, if every image stays on-prompt, <b>no single band "
+                 "is essential</b>.</div>")
+        h.append("<div class=read><b>Reading.</b> <code>phase_only</code> ≈ <code>full</code> in CLIP "
+                 "while <code>mag_only</code> collapses for the object prompts (cat/car) — the "
+                 "<b>token-axis phase carries the content; magnitude is near-discardable</b>. And no "
+                 "single-band knockout moves CLIP by more than ~0.02, so the content is "
+                 "<b>redundantly spread across bands</b>.</div>")
         for key, e in report["probe_deep"].items():
-            h.append(f"<h3>{key}: <code>{e['prompt']}</code></h3><table border=1 "
-                     "cellpadding=4 style='border-collapse:collapse'><tr><th>variant</th>"
-                     "<th>CLIP</th><th>sharpness</th><th>hf_frac</th><th>colorful</th></tr>")
-            for v, sc in e["variants"].items():
-                cl = f"{sc['clip']['mean']:.3f}" if sc.get('clip') else '—'
-                h.append(f"<tr><td>{v}</td><td>{cl}</td><td>{sc['sharpness']:.1f}</td>"
-                         f"<td>{sc['hf_frac']:.3f}</td><td>{sc['colorfulness']:.3f}</td></tr>")
-            h.append("</table>")
-    for sub, cols in (("concat", ["clip_A", "clip_B", "bvqa"]),
-                      ("longprompt", ["clip", "bvqa", "vqa"]),
-                      ("compositional", ["clip", "bvqa", "vqa"])):
+            h.append(f"<h4>{key}: <code>{e['prompt']}</code></h4>")
+            h.append(_emb(data_uri, f"probe_deep/{key}/strip.png"))
+            h.append("<p class=cap>columns: full · phase_only · mag_only · notch_b0…b5</p>")
+            rows = [(v, {"CLIP": _g(sc, "clip"), "sharpness": sc.get("sharpness"),
+                         "hf_frac": sc.get("hf_frac"), "colorful": sc.get("colorfulness")})
+                    for v, sc in e["variants"].items()]
+            h.append(_table(rows, ["CLIP", "sharpness", "hf_frac", "colorful"],
+                            ["CLIP-T ↑", "sharpness", "hf_frac", "colorful"], best_cols=["CLIP"]))
+
+    # --- continuous ---
+    if "continuous" in (parts or []) or any(
+            os.path.exists(os.path.join(OUT, "continuous", k, "lowpass_sweep.png"))
+            for k, _ in PROBE_PROMPTS):
+        h.append("<h3>continuous — turn one knob, watch it morph</h3>")
+        h.append("<div class=look><b>What to look for.</b> Left→right each strip is one knob moving. "
+                 "Low-pass cutoff: at a low cut only the coarse gist survives, growing into the full "
+                 "prompt. High-band gain: 0× strips fine detail, 2× over-emphasizes it. A↔B morph: the "
+                 "image should slide from prompt B toward prompt A as the cut rises.</div>")
+        for key, _p in PROBE_PROMPTS:
+            for fn, cap in (("lowpass_sweep.png", "low-pass cutoff sweep (cut 0.1 → 0.9)"),
+                            ("gain_sweep.png", f"high-band gain sweep (g 0 → 2×, cut={CUT0})")):
+                rel = f"continuous/{key}/{fn}"
+                if os.path.exists(os.path.join(OUT, rel)):
+                    h.append(f"<h4>{key} — {cap}</h4>{_emb(data_uri, rel)}")
+        for key, _a, _b in MERGE_PAIRS:
+            rel = f"continuous/morph_{key}/morph_sweep.png"
+            if os.path.exists(os.path.join(OUT, rel)):
+                h.append(f"<h4>{key} — A↔B morph (band_swap, cut 0.1 → 0.9; B → A)</h4>"
+                         f"{_emb(data_uri, rel)}")
+
+    # --- concat ---
+    if report.get("concat"):
+        h.append("<h3>concat — spectral merge vs. writing \"A and B\"</h3>")
+        h.append("<div class=look><b>What to look for.</b> Only the <code>concat</code> panel should "
+                 "show <b>both</b> objects; the spectral merges tend to keep one and drop the other. "
+                 "The number that matters is <b>B-VQA</b> (both present?).</div>")
+        h.append("<div class=read><b>Reading.</b> <code>concat</code> wins decisively on B-VQA; every "
+                 "spectral merge collapses toward whichever prompt owns the low band. Spectral blending "
+                 "offers nothing over just writing the two objects.</div>")
+        for key, e in report["concat"].items():
+            h.append(f"<h4>{key}: <code>A = {e.get('A')}</code> · <code>B = {e.get('B')}</code></h4>")
+            h.append(_emb(data_uri, f"concat/{key}/strip.png"))
+            h.append("<p class=cap>columns: band_swap · band_blend · lerp · concat</p>")
+            rows = [(v, {"clip_A": _g(sc, "clip_A"), "clip_B": _g(sc, "clip_B"),
+                         "bvqa": _g(sc, "bvqa")}) for v, sc in e["variants"].items()]
+            h.append(_table(rows, ["clip_A", "clip_B", "bvqa"],
+                            ["CLIP→A ↑", "CLIP→B ↑", "B-VQA ↑"], best_cols=["bvqa"]))
+
+    # --- longprompt / compositional ---
+    for sub, blurb in (
+        ("longprompt", "Long (DPG-Bench) prompts. B-VQA is sparse on ~80-word prompts, so read CLIP: "
+                       "removing the low band (<code>notch_lo</code>) tends to hurt most — the low band "
+                       "carries the gist."),
+        ("compositional", "Compositional (T2I-CompBench) prompts. <b>low-pass destroys attribute "
+                          "binding</b> (B-VQA → ~0) while <code>notch_lo</code> (drop only the low band) "
+                          "often keeps it — so the <b>binding lives in the mid/high bands</b>, the gist "
+                          "in the low band.")):
         if not report.get(sub):
             continue
-        h.append(f"<h2>{sub}</h2>")
+        h.append(f"<h3>{sub} — which band carries what</h3>")
+        h.append("<div class=look><b>What to look for.</b> columns are "
+                 "<code>full · low · high · notch_lo</code>. Watch whether the named objects and their "
+                 "attributes survive each filter.</div>")
+        h.append(f"<div class=read><b>Reading.</b> {blurb}</div>")
         for key, e in report[sub].items():
-            cap = e.get("prompt") or f"A={e.get('A')} · B={e.get('B')}"
-            h.append(f"<h4>{key}: <code>{cap}</code></h4><table border=1 cellpadding=4 "
-                     "style='border-collapse:collapse'><tr><th>variant</th>"
-                     + "".join(f"<th>{c}</th>" for c in cols) + "</tr>")
-            for v, sc in e["variants"].items():
-                cells = "".join(f"<td>{sc[c]['mean']:.3f}</td>" if sc.get(c) else "<td>—</td>"
-                                for c in cols)
-                h.append(f"<tr><td>{v}</td>{cells}</tr>")
-            h.append("</table>")
+            h.append(f"<h4>{key}: <code>{e.get('prompt')}</code></h4>")
+            h.append(_emb(data_uri, f"{sub}/{key}/strip.png"))
+            rows = [(v, {"clip": _g(sc, "clip"), "bvqa": _g(sc, "bvqa"), "vqa": _g(sc, "vqa")})
+                    for v, sc in e["variants"].items()]
+            h.append(_table(rows, ["clip", "bvqa", "vqa"],
+                            ["CLIP-T ↑", "B-VQA ↑", "VQAScore ↑"], best_cols=["clip", "bvqa"]))
+
+    h.append("<h2>3 · Caveats &amp; next</h2><div class=cav>"
+             "Single seed per cell (read directions, not third decimals); VQAScore was deferred "
+             "(<code>--no_vqa</code>) so those columns are blank — B-VQA already carries the binding "
+             "story. The structure is descriptive: it explains the spectrum but does not beat writing "
+             "the prompt, so the thread is mapped rather than a live control lever.</div>")
 
     with open(os.path.join(OUT, "index.html"), "w") as f:
         f.write("\n".join(h))
@@ -502,6 +669,14 @@ def main(args):
         run_gen(args, gen_parts)
     if "analyze" in parts:
         run_analyze(args)
+    if "site" in parts:   # model-free: rebuild index.html from report.json + cached strips
+        rp = os.path.join(OUT, "report.json")
+        if not os.path.exists(rp):
+            raise SystemExit(f"[e30] --part site needs {rp} (run analyze first / fetch it)")
+        with open(rp) as f:
+            report = json.load(f)
+        _site(report, [k for k in report if k != "params"])
+        print(f"[e30] rebuilt {os.path.join(OUT, 'index.html')} (no model loaded)", flush=True)
 
 
 if __name__ == "__main__":

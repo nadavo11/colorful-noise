@@ -19,7 +19,8 @@ Design:
   Controls: re-roll (fresh random seed, no opt) — does biasing beat luck?; do-no-harm on
     a sample of PASSING pairs.
 
-Run:  python experiments/e28_seedrescue.py [quick]
+Run:  python experiments/e28_seedrescue.py [quick]      # generate (loads SDXL + CLIP + B-VQA)
+      python experiments/e28_seedrescue.py --part site  # model-free: rebuild index.html only
 Out:  experiments/results/e28/{grid_recovered.png, grid_nochange.png, summary.png,
       report.json, pairs/}
 """
@@ -91,6 +92,16 @@ def bvqa_full(bvqa, prompt, img):
     for _, p in pys:
         score *= p
     return score, pys
+
+
+def run_site():
+    """Rebuild results/e28/index.html from report.json + cached figures. Loads NO model and
+    re-scores nothing (all numbers already live in report.json), so it runs anywhere."""
+    from e28_site import build
+    if build() is None:
+        print("[e28] --part site: no results/e28/report.json yet (regeneration BLOCKED until a "
+              "run exists). index.html left as-is; generate first with: "
+              "python experiments/e28_seedrescue.py", flush=True)
 
 
 def main():
@@ -264,4 +275,8 @@ def plot_summary(s, path):
 
 
 if __name__ == "__main__":
-    main()
+    # Model-free path mirrors E30's `--part site`: rebuild the explainer with no model load.
+    if "--part" in sys.argv and "site" in sys.argv[sys.argv.index("--part") + 1:]:
+        run_site()
+    else:
+        main()

@@ -426,10 +426,19 @@ def make_plots(report):
     plt.close(fig)
 
 
+def run_site(args):
+    """Model-free: rebuild results/e10/index.html from cfg_spectral.json + the
+    cached plots, loading no model and re-scoring nothing (mirrors E30 --part site).
+    If cfg_spectral.json is absent it prints "run --part analyze first" and exits
+    gracefully -- the expected no-data path."""
+    from e10_site import build_site
+    build_site()
+
+
 def main(args):
     os.makedirs(OUT, exist_ok=True)
     runners = {"download": run_download, "coco": run_coco, "gen": run_gen,
-               "real": run_real, "analyze": run_analyze}
+               "real": run_real, "analyze": run_analyze, "site": run_site}
     for part in filter(None, (p.strip() for p in args.part.split(","))):
         runners[part](args)
 

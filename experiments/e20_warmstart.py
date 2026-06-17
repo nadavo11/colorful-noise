@@ -379,9 +379,15 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     runners = {"preflight": preflight, "profile": part_profile, "oracle": part_oracle,
                "condition": part_condition, "noiseshape": part_noiseshape,
-               "analyze": analyze}
+               "analyze": analyze, "site": part_site}
     for part in filter(None, (p.strip() for p in args.part.split(","))):
         runners[part](args)
+
+
+def part_site(args):
+    """Model-free: rebuild results/e20/index.html from the jsons + cached grids (no model)."""
+    from e20_site import build_site
+    build_site()
 
 
 if __name__ == "__main__":

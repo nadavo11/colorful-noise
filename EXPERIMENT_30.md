@@ -8,10 +8,6 @@ characterizes the bands more finely, (b) turns the manipulation into a **continu
 with image-strip visualizations, and (c) asks what frequency filtering does to **long** and
 **compositional** prompts.
 
-Transform reminder (see EXPERIMENT_24.md "How the FFT works"): a **1-D DFT along the token
-axis**, computed **independently per embedding channel**, on the **full T5 sequence**
-embeddings `(1, L, 4096)` — not 2-D, not the pooled vector.
-
 ## Schematic
 
 ```mermaid
@@ -23,6 +19,29 @@ flowchart LR
   K --> I["inverse FFT → conditioning"]
   I --> FL["Flux"] --> IMG["image (morphs as the knob turns)"]
 ```
+
+## Background (plain language)
+*The HTML report (`results/e30/index.html`) carries the same glossary inline and leads each
+result with its figure. Defining every term here keeps this writeup self-contained.*
+
+- **Token-axis FFT** — a prompt becomes a T5 embedding `(1, L, 4096)` (`L` word-pieces, each a
+  4096-dim vector). We take a **1-D real FFT along the token axis** (length `L`), **separately
+  per channel** — *not* a 2-D image FFT and *not* the single pooled vector. It measures how each
+  embedding dimension varies *from word to word*.
+- **Token-frequency / DC / bands** — frequencies are normalized to `[0, 1]`. **DC** (freq 0) =
+  the per-channel average over tokens (bag-of-words gist); **low** = slow drift across the
+  sequence; **high** = fast token-to-token change. Default split is the cut `0.25`; the per-band
+  probe slices `[0,1]` into 6 equal bands `b0..b5`.
+- **Single-prompt variants** — `full` = unmodified (baseline); `low` = low-pass (keep DC..0.25);
+  `high` = high-pass (keep 0.25..1 + DC); `notch_lo` = **remove only the low band [0,0.25], keep
+  everything above** (is the low band *necessary*?); `phase_only` = keep phase, set all magnitudes
+  to 1; `mag_only` = keep magnitude, zero all phases; `notch_b0..b5` = knock out one of the 6 bands.
+- **Two-prompt merge variants** — `band_swap` = low(A)+high(B), hard cut; `band_blend` = soft
+  cosine crossover; `lerp` = plain 50/50 embedding average (baseline); `concat` = the
+  **gold-standard baseline**, encode the literal text `"A and B"`.
+- **Metrics** — **CLIP-T** (0–1 ↑): image↔prompt similarity in CLIP space. **B-VQA** (0–1 ↑):
+  VQA check that each named object appears *with its correct attribute* (attribute binding).
+  **sharpness / hf_frac / colorful**: image statistics used as sanity signals.
 
 ## Method (`experiments/e30_text_freq_control.py`, Flux)
 
@@ -57,22 +76,6 @@ Parts (`--part`):
   objects/attributes, low band = global gist) — via which objects survive band filtering on
   long/compositional prompts.
 - Whether spectral blending offers anything over simply writing "A and B".
-
-## Run
-
-```bash
-# self-gating cluster job (smoke probe_deep -> CLIP gate -> full sweep)
-runai submit --name e30-text-freq -g 1 -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
-  --pvc=storage:/storage --large-shm --command -- \
-  bash /storage/malnick/colorful-noise/experiments/cluster_e30_job.sh
-
-# local / single GPU
-python experiments/e30_text_freq_control.py --part continuous --num_prompts 1 --steps 8  # smoke
-python experiments/e30_text_freq_control.py   # full -> results/e30/{...,index.html}
-```
-
-> Cluster note: ship code with `kubectl cp` (the `/storage` checkout is not git; the image
-> has no git). Heavy scorers (VQAScore ~11 GB, B-VQA) load in `analyze` after Flux is freed.
 
 ## Results (runai `e30-text-freq`, Flux, 28 steps, true-CFG=1 / guidance 3.5)
 Full sweep ran clean (`probe_deep,continuous,concat,longprompt,compositional,analyze`),
@@ -115,6 +118,25 @@ most — low band carries the gist.)
 **Bottom line.** Continuous control works visually and the token spectrum is genuinely
 structured (low=gist, mid/high=binding, phase=content), but spectral *blending* still offers
 nothing over just writing the prompt. The structure is descriptive, not a better control knob.
+
+## Reproduce
+
+```bash
+# self-gating cluster job (smoke probe_deep -> CLIP gate -> full sweep)
+runai submit --name e30-text-freq -g 1 -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
+  --pvc=storage:/storage --large-shm --command -- \
+  bash /storage/malnick/colorful-noise/experiments/cluster_e30_job.sh
+
+# local / single GPU
+python experiments/e30_text_freq_control.py --part continuous --num_prompts 1 --steps 8  # smoke
+python experiments/e30_text_freq_control.py   # full -> results/e30/{...,index.html}
+
+# rebuild the HTML explainer offline (no GPU) from report.json + cached strips
+python experiments/e30_text_freq_control.py --part site
+```
+
+> Cluster note: ship code with `kubectl cp` (the `/storage` checkout is not git; the image
+> has no git). Heavy scorers (VQAScore ~11 GB, B-VQA) load in `analyze` after Flux is freed.
 
 ## Status
 Complete. Full sweep ran on runai (`e30-text-freq`, Succeeded). Results above;

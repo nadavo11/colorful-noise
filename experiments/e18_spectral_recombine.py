@@ -26,6 +26,8 @@ Parts (--part, comma list; default both):
   preflight -- numeric asserts on the recombination math (no model)
   analyze   -- encode + recombine + decode + score + grids + report
                (needs only a VAE ~160MB and CLIP ViT-L; --vae sd35|flux)
+  site      -- model-free: rebuild the self-contained results/e18/index.html from
+               whatever report_<vae>.json + grids exist (no model load)
 
 --vae flux runs immediately against the cached Flux VAE (smoke test); --vae sd35
 matches the E19+ generation model (small gated download).
@@ -241,11 +243,16 @@ def main():
     ap.add_argument("--cuts", default="0.1,0.25,0.5",
                     type=lambda s: [float(x) for x in s.split(",")])
     args = ap.parse_args()
-    parts = args.part.split(",")
+    parts = [p.strip() for p in args.part.split(",") if p.strip()]
     if "preflight" in parts:
         preflight()
     if "analyze" in parts:
         analyze(args)
+    if "site" in parts:   # model-free: rebuild index.html from report_<vae>.json + grids
+        from e18_site import build
+        if build() is None:
+            print("[e18] --part site: no results/e18/report_<vae>.json found; "
+                  "run --part analyze first (or kubectl cp the report + grid).", flush=True)
 
 
 if __name__ == "__main__":

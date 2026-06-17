@@ -25,7 +25,8 @@ Arm A: additive direction, sweep strength s (incl. -v).
 Arm B: heavy per-seed optimization (reuse e26.optimize_seed), sweep #steps N -> see the
        over-optimization / CLIP-adversarial regime.
 
-Run:  python experiments/e27_seeddir.py [quick]
+Run:  python experiments/e27_seeddir.py [quick]      # generate (loads SDXL + CLIP)
+      python experiments/e27_seeddir.py --part site  # model-free: rebuild index.html only
 Out:  experiments/results/e27/{grid_direction.png, grid_anchors.png, grid_heavy.png,
       deltaclip.png, report.json, pairs/}
 """
@@ -130,6 +131,17 @@ def oom_retry(fn, *args, tries=6, wait=30, **kw):
             if i == tries - 1:
                 raise
             time.sleep(wait)
+
+
+# ---- site (model-free) -------------------------------------------------------
+def run_site():
+    """Rebuild results/e27/index.html from report.json + cached grids. Loads NO model and
+    re-scores nothing (all numbers already live in report.json), so it runs anywhere."""
+    from e27_site import build
+    if build() is None:
+        print("[e27] --part site: no results/e27/report.json yet (regeneration BLOCKED until a "
+              "run exists). index.html left as-is; generate first with: "
+              "python experiments/e27_seeddir.py", flush=True)
 
 
 # ---- main --------------------------------------------------------------------
@@ -324,4 +336,8 @@ def plot_deltaclip(records, s_sweep, heavy_n, path):
 
 
 if __name__ == "__main__":
-    main()
+    # Model-free path mirrors E30's `--part site`: rebuild the explainer with no SDXL/CLIP load.
+    if "--part" in sys.argv and "site" in sys.argv[sys.argv.index("--part") + 1:]:
+        run_site()
+    else:
+        main()

@@ -181,6 +181,19 @@ def run_analyze(args):
             print(f"\n=== {jf} ===\n" + json.dumps(json.load(open(p)), indent=1)[:2500])
 
 
+def run_site(args):
+    """Model-free: rebuild results/e22/index.html from invert.json (+ edit.json if
+    present) + the cached reconstruction / edit grids. No model load."""
+    import e22_site
+    if not os.path.exists(f"{OUT}/invert.json") and not os.path.exists(f"{OUT}/edit.json"):
+        print(f"[e22] --part site: no data in {OUT} (need invert.json / edit.json); "
+              "run the driver first: e22_ddim_edit.py --part invert,edit", flush=True)
+        return
+    dest, html, invert, edit = e22_site.build()
+    print(f"[e22] rebuilt {dest} ({len(html) // 1024} KB; no model loaded; "
+          f"invert={'yes' if invert else 'no'}, edit={'yes' if edit else 'no'})", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", default="preflight")
@@ -195,11 +208,10 @@ def main():
                     type=lambda s: [float(x) for x in s.split(",")])
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
-    {"preflight": preflight, "invert": run_invert, "edit": run_edit,
-     "analyze": run_analyze}[args.part.split(",")[0]]  # validate first part name
+    runners = {"preflight": preflight, "invert": run_invert, "edit": run_edit,
+               "analyze": run_analyze, "site": run_site}
     for part in filter(None, (p.strip() for p in args.part.split(","))):
-        {"preflight": preflight, "invert": run_invert, "edit": run_edit,
-         "analyze": run_analyze}[part](args)
+        runners[part](args)
 
 
 if __name__ == "__main__":
