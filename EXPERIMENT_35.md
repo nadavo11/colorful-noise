@@ -77,6 +77,35 @@ LAION aesthetic / baseline-drift), sorted by adherence; baseline = 0.283 / 5.83:
 Per-parameter curves (faceted by prompt category) and contact sheets are in
 `results/e35/index.html`.
 
+### Follow-up: vs the BASELINE GENERATION (the right reference)
+
+The headline/delta views score the edit against the **prompt** (CLIP-T), where the unedited
+baseline is the ceiling *by construction* — so `delta.html`'s Δ-vs-baseline heatmaps can only
+ever be red. That measures "how far the edit fell from the prompt", not "is the edited image a
+better image than the model would have made". `e35_vs_baseline.py` re-references every edit to
+its **same-seed baseline image** and splits the question in two (writes `vs_baseline.html`):
+
+- **Directional — does the operator IMPROVE on the baseline image?** `d_imagereward`
+  (prompt-aware, learned; **not** capped at baseline, so green is achievable), `d_aesthetic`,
+  and signed image-stat deltas. **Result: no operator beats baseline.** Ranked by ΔImageReward
+  (all-category mean): per-object −0.17, lerp −0.40, then everything −1.5…−2.6; on Δaesthetic
+  only **lerp** is positive (+0.05) and per-object is ~0. The two interpolation/localized ops
+  are merely the *least harmful* (near no-ops); single-band surgery is uniformly downhill.
+- **Distance — how far / in what way it moved.** `clip_i2i_dist`(=drift), `lpips`, `dssim`,
+  `img_psd_l2` (image-domain spectral change — the low-pass/phase-only texture axis CLIP-img
+  misses), `color_l2`. Cleanly ordered: per-object/lerp gentlest (LPIPS 0.34/0.42), mag-only
+  moves furthest (LPIPS 0.90, img-PSD 2.29). The operators ARE large, controllable distance
+  knobs — the edits are real and big — but on average the moves lower image quality.
+- **Merges still don't pull in B:** `d_imagereward_B` swap −0.07 / blend −0.07 / lerp +0.006;
+  lerp's tiny B-gain is dwarfed by its A-cost (−0.40). Reproduces E24's "MERGE negative".
+
+**Takeaway.** Measured against the correct (uncapped, prompt-aware) reference, the SD1.5
+token-frequency toolkit is a clean **negative result as an image-*improvement* tool**, while
+remaining a genuine **distance/diversity** lever. "Interesting by eye" is a tail/distance
+effect (big LPIPS/PSD), not a mean-quality gain — both reference framings now agree.
+Tier 1 of the view (Δaesthetic, image-stats, CLIP-i2i) is free from `report.json`; Tier 2
+(`--with_images`: LPIPS/SSIM/PSD/color/ImageReward) re-scores the saved PNGs, no re-gen.
+
 ## Caveats & next
 
 - **No-reference fidelity.** Aesthetic + image-stats are proxies; there's no SD1.5
@@ -95,7 +124,12 @@ python experiments/e35_op_sweep.py --part preflight                 # counts/spa
 python experiments/e35_op_sweep.py --part gen,analyze --coverage quick \
     --num_prompts 2 --seeds 2 --steps 8 --out_tag smoke             # smoke
 bash experiments/cluster_e35_job.sh                                 # full on runai
+python experiments/e35_vs_baseline.py                              # vs-baseline view (tier 1)
+python experiments/e35_vs_baseline.py --with_images               # + LPIPS/SSIM/PSD/ImageReward
+bash experiments/cluster_e35_vsbase_job.sh                         # vs-baseline view on runai
 ```
-Code: `experiments/e35_op_sweep.py`, reuses `text_spectral_ops.py`, `e9_clipt.py`,
-`fidelity_metrics.py`, `clip_sim.py`, `e9_bandnorm_classes.py`, `common.py`, `e27_site.py`.
-Cluster: `experiments/cluster_e35_job.sh` (ship via `kubectl cp`; `/storage` is not git).
+Code: `experiments/e35_op_sweep.py` + `experiments/e35_vs_baseline.py` (vs-baseline view),
+reuses `text_spectral_ops.py`, `e9_clipt.py`, `fidelity_metrics.py`, `clip_sim.py`,
+`e9_bandnorm_classes.py`, `common.py`, `e27_site.py`.
+Cluster: `experiments/cluster_e35_job.sh` (full sweep) and `experiments/cluster_e35_vsbase_job.sh`
+(vs-baseline views, no re-gen) — ship via `kubectl cp`; `/storage` is not git.
