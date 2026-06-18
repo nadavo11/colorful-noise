@@ -420,22 +420,23 @@ def apply_op(op, promptA, peA, ppeA, LA, peB, ppeB, LB, p):
 
 LAT_OPS = [
     "baseline", "low-pass", "high-pass", "band gain", "notch",
-    "phase-only", "mag-only", "phase band-keep", "quantize phase",
+    "phase-only", "mag-only", "phase band-keep", "phase shift", "quantize phase",
     "SBN→cfg1", "SBN→real", "SBN→universal", "band modulate", "global power", "colored-noise init",
     "restyle→B", "SBN blend A+B", "hybrid (low A / high B)", "phase-swap (A phase / B mag)",
 ]
 LAT_SCHEDULES = ["every", "early", "late", "last", "interval"]
 LAT_PERSTEP = {"low-pass", "high-pass", "band gain", "notch", "phase-only", "mag-only",
-               "phase band-keep", "quantize phase", "SBN→cfg1", "SBN→real", "SBN→universal",
+               "phase band-keep", "phase shift", "quantize phase", "SBN→cfg1", "SBN→real", "SBN→universal",
                "band modulate", "global power", "restyle→B", "SBN blend A+B"}
 LAT_TWO_PROMPT = {"restyle→B", "SBN blend A+B", "hybrid (low A / high B)",
                   "phase-swap (A phase / B mag)"}
 LAT_OFFLINE = {"hybrid (low A / high B)", "phase-swap (A phase / B mag)"}
 LAT_NEEDS_CUT = {"low-pass", "high-pass", "band modulate",
                  "hybrid (low A / high B)", "phase-swap (A phase / B mag)"}
-LAT_NEEDS_RANGE = {"band gain", "notch", "phase band-keep"}
+LAT_NEEDS_RANGE = {"band gain", "notch", "phase band-keep", "phase shift"}
 LAT_NEEDS_GAIN = {"band gain", "band modulate"}
 LAT_NEEDS_QK = {"quantize phase"}
+LAT_NEEDS_DELTA = {"phase shift"}
 LAT_NEEDS_STRENGTH = {"restyle→B"}
 LAT_NEEDS_SCALE = {"global power"}
 
@@ -466,6 +467,7 @@ LAT_HELP = {
     "phase-only": "**Phase-only** *(schedule)*. Keep the latent's spatial phase, flatten magnitude (Oppenheim-Lim) — layout, no spectral envelope.",
     "mag-only": "**Mag-only** *(schedule)*. Keep magnitude, randomise phase — texture/palette, no layout.",
     "phase band-keep": "**Phase band-keep** *(cut, band, schedule)*. Keep phase only in one radial band (magnitude kept everywhere).",
+    "phase shift": "**Phase shift** *(band, δ, schedule)*. ADD a constant offset δ (radians) to the spatial phase inside the radial band (magnitude kept). δ=0 identity; ±π rotates the phase structure. Applied anti-symmetrically so the latent stays real.",
     "quantize phase": "**Quantize phase** *(k, schedule)*. Snap the spatial phase to `k` levels (magnitude kept).",
     "SBN→cfg1": "**SBN → cfg=1** *(schedule)*. Clamp each radial band's power toward a cfg=1 reference of the SAME prompt — the E8/E16 de-saturation lever. (Records the reference on first use.)",
     "SBN→real": "**SBN → real** *(schedule)*. Clamp band power toward REAL-photo statistics (E23, +aesthetic). Needs results/e10/real_latents.pt.",
@@ -663,6 +665,9 @@ def _latent_op_fn(op, p, ctx):
     if op == "phase band-keep":
         lo, hi = _range(p)
         return lambda lat, i: L.band_phase_filter_2d(lat, lo, hi)
+    if op == "phase shift":
+        lo, hi = _range(p); d = p["delta"]
+        return lambda lat, i: L.band_phase_shift_2d(lat, lo, hi, d)
     if op == "quantize phase":
         k = int(p["qk"]); return lambda lat, i: L.quantize_phase_2d(lat, k)
     if op == "global power":
@@ -716,7 +721,7 @@ def generate_latent(pe, ppe, seed, steps, guidance, size, op_fn=None, schedule="
     return img
 
 
-def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, interval, strength, scale,
+def run_latent(promptA, promptB, op, cut, gain, band, qk, delta, schedule, interval, strength, scale,
                seed, steps, guidance, size):
     if MODEL["kind"] != "flux":
         return None, None, _FLUX_ONLY_NOTE
@@ -734,7 +739,8 @@ def run_latent(promptA, promptB, op, cut, gain, band, qk, schedule, interval, st
     need_B = op in LAT_TWO_PROMPT
     if need_B and not (promptB or "").strip():
         return base, None, "enter prompt B for a two-prompt op"
-    p = dict(cut=cut, gain=gain, lo=band[0], hi=band[1], qk=qk, strength=strength, scale=scale)
+    p = dict(cut=cut, gain=gain, lo=band[0], hi=band[1], qk=qk, delta=delta,
+             strength=strength, scale=scale)
     try:
         if op in LAT_OFFLINE:
             peB, ppeB, LB = _encode_cached(promptB)
@@ -800,6 +806,7 @@ def _latent_visibility(op):
         gr.update(visible=op in LAT_NEEDS_RANGE),             # band range [lo,hi]
         gr.update(visible=op in LAT_NEEDS_GAIN),              # gain
         gr.update(visible=op in LAT_NEEDS_QK),                # quant k
+        gr.update(visible=op in LAT_NEEDS_DELTA),             # phase shift δ
         gr.update(visible=op in LAT_PERSTEP),                 # schedule
         gr.update(visible=op in LAT_PERSTEP),                 # interval (timesteps)
         gr.update(visible=op in LAT_NEEDS_STRENGTH),          # strength
@@ -1037,6 +1044,9 @@ def _latent_tab():
                              info=">1 amplify, 1 identity, <1 attenuate. DC kept at 1.", visible=False)
             qk = gr.Slider(2, 16, value=8, step=1, label="phase levels k", visible=False,
                            info="Quantize spatial phase to k levels (fewer = harsher).")
+            delta = gr.Slider(-3.15, 3.15, value=0.0, step=0.05, label="phase shift δ (radians)",
+                              info="Add δ to the phase in the band. 0=identity, ±π=half-turn.",
+                              visible=False)
             strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="restyle strength",
                                  info="0 = keep A's spectrum, 1 = fully adopt B's per-band power.",
                                  visible=False)
@@ -1060,9 +1070,9 @@ def _latent_tab():
             desc = gr.Markdown()
 
     op.change(_latent_visibility, op,
-              [promptB, cut, band, gain, qk, schedule, interval, strength, scale, helpbox])
+              [promptB, cut, band, gain, qk, delta, schedule, interval, strength, scale, helpbox])
     go.click(run_latent,
-             [promptA, promptB, op, cut, gain, band, qk, schedule, interval, strength, scale,
+             [promptA, promptB, op, cut, gain, band, qk, delta, schedule, interval, strength, scale,
               seed, steps, guidance, size],
              [out_base, out_edit, desc])
 

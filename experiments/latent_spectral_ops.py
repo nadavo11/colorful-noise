@@ -69,6 +69,22 @@ def _band_sel(H, W, lo, hi, device, keep_dc=False, drop_dc=False):
     return sel
 
 
+def _hermitian_sign(H, W, device):
+    """(+1,-1,0) field: +1 where an FFT bin precedes its conjugate, -1 where it follows,
+    0 on self-conjugate bins (DC + Nyquist corners). Multiplying an additive phase offset
+    by this makes it anti-symmetric (phi'(-k) = -phi'(k)), so ifft2 stays real. The integer
+    index-vs-conjugate-index comparison handles every conjugate pair correctly, including the
+    Nyquist row where a fftfreq-sign rule would assign both partners the same sign."""
+    ny = torch.arange(H, device=device)[:, None].expand(H, W)
+    nx = torch.arange(W, device=device)[None, :].expand(H, W)
+    idx = ny * W + nx
+    cidx = ((-ny) % H) * W + ((-nx) % W)        # flat index of the conjugate bin
+    s = torch.zeros(H, W, device=device)
+    s[idx < cidx] = 1.0
+    s[idx > cidx] = -1.0
+    return s                                     # 0 where idx == cidx (self-conjugate)
+
+
 def band_to_norm(cut, band):
     """('low'|'high', cut) -> (lo, hi) normalised-radius band edges."""
     return (0.0, cut) if band == "low" else (cut, 1.0)
@@ -127,6 +143,23 @@ def band_phase_gain_2d(x, lo, hi, gain, keep_dc=True):
     sel = _band_sel(H, W, lo, hi, x.device, drop_dc=keep_dc)[None, None]
     new_ph = torch.where(sel, F.angle() * float(gain), F.angle())
     Fp = torch.polar(F.abs(), new_ph)
+    _restore_self_conj(Fp, F, H, W)
+    return torch.fft.ifft2(Fp).real.to(x.dtype)
+
+
+def band_phase_shift_2d(x, lo, hi, delta, keep_dc=True):
+    """PHASE shift: ADD a constant offset `delta` (radians) to the spatial phase inside the
+    radial band [lo, hi] (magnitude kept). Applied anti-symmetrically across conjugate bins
+    (+delta on one half-plane, -delta on its mirror, via _hermitian_sign) so ifft2 stays real.
+    delta=0 = identity; the phase analogue of a rotation/translation knob. DC/Nyquist
+    self-conjugate bins get no shift (sign=0) and are restored from source. Contrast
+    band_phase_gain_2d (multiplicative scaling of the phase angle)."""
+    B, C, H, W = x.shape
+    F = torch.fft.fft2(x.float())
+    sel = _band_sel(H, W, lo, hi, x.device, drop_dc=keep_dc).to(F.real.dtype)
+    sign = _hermitian_sign(H, W, x.device)
+    shift = (sel * sign * float(delta))[None, None]
+    Fp = torch.polar(F.abs(), F.angle() + shift)
     _restore_self_conj(Fp, F, H, W)
     return torch.fft.ifft2(Fp).real.to(x.dtype)
 
