@@ -1286,62 +1286,12 @@ _INV_SIZE = 1024                # px the real image is VAE-encoded at (-> _FH x 
 _INV_SEQLEN = 512               # Flux txt_ids length
 
 
-# Flux denoising plumbing for the invert tab. Inlined from e31_flowedit_freq (rather than
-# imported) so the demo's startup stays free of e31's heavy import chain (matplotlib, e7/e10/e24).
-def flux_sigmas(pipe, steps, seq_len=(_FH // 2) * (_FW // 2)):
-    """Flux's resolution-shifted sigma grid (steps+1, decreasing, [-1]=0)."""
-    import numpy as np
-    from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate_shift
-    cfg = pipe.scheduler.config
-    sigmas = np.linspace(1.0, 1.0 / steps, steps)
-    try:
-        mu = calculate_shift(seq_len, cfg.get("base_image_seq_len", 256),
-                             cfg.get("max_image_seq_len", 4096),
-                             cfg.get("base_shift", 0.5), cfg.get("max_shift", 1.15))
-        retrieve_timesteps(pipe.scheduler, steps, "cuda", sigmas=sigmas, mu=mu)
-    except Exception as e:
-        print(f"[invert] shift schedule failed ({e}); plain set_timesteps", flush=True)
-        pipe.scheduler.set_timesteps(steps, device="cuda")
-    return pipe.scheduler.sigmas.float()
-
-
-def _gids(pipe, guidance):
-    """Per-run constants: guidance embed, txt_ids (zeros), img_ids (positional)."""
-    img_ids = pipe._prepare_latent_image_ids(1, _FH // 2, _FW // 2, "cuda", pipe.dtype)
-    txt_ids = torch.zeros(_INV_SEQLEN, 3, device="cuda", dtype=pipe.dtype)
-    g = torch.full([1], float(guidance), device="cuda", dtype=torch.float32)
-    return g, txt_ids, img_ids
-
-
-@torch.no_grad()
-def flux_velocity(pipe, packed_x, sigma, pe, ppe, gids):
-    """Flow-matching velocity v(x, sigma | conditioning) in PACKED latent space."""
-    guidance, txt_ids, img_ids = gids
-    t = torch.full((packed_x.shape[0],), float(sigma), device="cuda", dtype=pipe.dtype)
-    v = pipe.transformer(hidden_states=packed_x.to(pipe.dtype), timestep=t,
-                         guidance=guidance, pooled_projections=ppe.to(pipe.dtype),
-                         encoder_hidden_states=pe.to(pipe.dtype),
-                         txt_ids=txt_ids, img_ids=img_ids, return_dict=False)[0]
-    return v.float()
-
-
-def pack(pipe, lat):
-    return pipe._pack_latents(lat.cuda().float(), 1, 16, _FH, _FW)
-
-
-def unpack(pipe, packed):
-    return pipe._unpack_latents(packed, _INV_SIZE, _INV_SIZE, pipe.vae_scale_factor)
-
-
-def vae_encode(vae, pil):
-    """Real image -> generation-space latent (1, 16, _FH, _FW)."""
-    import numpy as np
-    img = pil.convert("RGB").resize((_INV_SIZE, _INV_SIZE))
-    x = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
-    x = (x.permute(2, 0, 1)[None] * 2 - 1).to(vae.dtype).cuda()
-    with torch.no_grad():
-        z = vae.encode(x).latent_dist.mean
-    return ((z - vae.config.shift_factor) * vae.config.scaling_factor).float().cpu()
+# Flux denoising plumbing + spectral clamp + RF-inversion edit now live in invert_core
+# (shared verbatim with the e41 calibration harness). Imported as thin aliases so every
+# existing call site -- and the demo's light startup -- is unchanged.
+import invert_core as _ic
+from invert_core import flux_sigmas, flux_velocity, pack, unpack, vae_encode
+_gids = _ic.gids
 
 
 _INV_INTRO_MD = (
@@ -1355,85 +1305,22 @@ _INV_INTRO_MD = (
     "`strength` blends the clamp; the time window limits which steps clamp.")
 
 
-def _inv_band_centers_norm(device):
-    from spectral_ops import radial_bins
-    rr = radial_bins(_FH, _FW, device)
-    edges = torch.linspace(0, rr.max() + 1e-6, N_BINS + 1, device=device)
-    c = 0.5 * (edges[:-1] + edges[1:])
-    return c / rr.max()
-
-
-def _inv_sbn_low(gen, ref, cut, strength, idx):
-    from spectral_ops import band_power, psd_match
-    low = _inv_band_centers_norm(gen.device) < cut
-    rbp = band_power((torch.fft.fft2(ref.float()).abs() ** 2)[0], idx, N_BINS)
-    cbp = band_power((torch.fft.fft2(gen.float()).abs() ** 2)[0], idx, N_BINS)
-    tgt = cbp.clone()
-    s = float(strength)
-    tgt[:, low] = (cbp[:, low].clamp(min=1e-8) ** (1 - s)) * (rbp[:, low].clamp(min=1e-8) ** s)
-    return psd_match(gen, tgt, idx, N_BINS)
-
-
-def _inv_band_phase_keep(out, ref, lo, hi):
-    """Keep `out`'s magnitude everywhere; take phase from `ref` (source) inside the
-    radial band [lo, hi] (fractions of the corner), from `out` elsewhere. DC kept
-    from `out`. The radial mask is Hermitian-symmetric, so the ifft stays real."""
-    from spectral_ops import radial_bins
-    rr = radial_bins(_FH, _FW, out.device)
-    rmax = rr.max()
-    band = ((rr >= lo * rmax) & (rr <= hi * rmax)).float()[None, None]
-    Fo, Fr = torch.fft.fft2(out.float()), torch.fft.fft2(ref.float())
-    phi = Fr.angle() * band + Fo.angle() * (1.0 - band)
-    mix = Fo.abs() * torch.exp(1j * phi)
-    mix[..., 0, 0] = Fo[..., 0, 0]
-    return torch.fft.ifft2(mix).real.to(out.dtype)
-
-
-def _inv_clamp(gen, ref, mode, cut, strength, idx, M, cen_k, phase_band=(0.0, 0.25)):
-    """gen, ref: unpacked (1, 16, 128, 128) cuda. Pull gen's low band toward ref."""
-    if mode == "sbn":
-        return _inv_sbn_low(gen, ref, cut, strength, idx)
-    if mode == "phase":
-        out = _inv_sbn_low(gen, ref, cut, strength, idx)
-        return _inv_band_phase_keep(out, ref, phase_band[0], phase_band[1])
-    if mode == "adain":
-        from spectral_adain import spectral_adain
-        sources = [ref if cen_k[k] < cut else gen for k in range(M.shape[0])]
-        out = spectral_adain(gen, sources, M)
-        s = float(strength)
-        return gen * (1 - s) + out * s
-    return gen
+_inv_clamp = _ic.inv_clamp
 
 
 @torch.no_grad()
 def _rf_invert(pe, ppe, x0_packed, sig, gids):
-    steps = len(sig) - 1
-    x = x0_packed
-    traj = [None] * (steps + 1)
-    traj[steps] = unpack(PIPE, x).float().cpu()
-    for i in range(steps - 1, -1, -1):
-        s_lo, s_hi = float(sig[i + 1]), float(sig[i])
-        v = flux_velocity(PIPE, x, s_lo, pe, ppe, gids)
-        x = x + (s_hi - s_lo) * v
-        traj[i] = unpack(PIPE, x).float().cpu()
-    return x, traj
+    return _ic.rf_invert(PIPE, pe, ppe, x0_packed, sig, gids)
 
 
 @torch.no_grad()
 def _forward_edit(pe, ppe, x_noise, sig, gids, traj=None, mode=None, cut=0.25,
                   strength=1.0, window=None, idx=None, M=None, cen_k=None,
                   phase_band=(0.0, 0.25)):
-    steps = len(sig) - 1
-    x = x_noise
-    for i in range(steps):
-        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
-        if traj is not None and (window is None or window[0] <= i <= window[1]):
-            lat = _inv_clamp(unpack(PIPE, x).float(), traj[i].cuda(), mode, cut,
-                             strength, idx, M, cen_k, phase_band)
-            x = pack(PIPE, lat)
-        v = flux_velocity(PIPE, x, s_hi, pe, ppe, gids)
-        x = x + (s_lo - s_hi) * v
-    return decode_latent(unpack(PIPE, x).float())
+    lat = _ic.forward_edit(PIPE, pe, ppe, x_noise, sig, gids, traj=traj, mode=mode,
+                           cut=cut, strength=strength, window=window, idx=idx, M=M,
+                           cen_k=cen_k, phase_band=phase_band)
+    return decode_latent(lat)
 
 
 # Single-slot caches for the invert tab: the inversion (x_noise, traj) and the no-clamp
