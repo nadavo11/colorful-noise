@@ -7,6 +7,7 @@ __pycache__/
 
 # Experiment outputs (large, regenerable)
 experiments/results/
+experiments/saved_runs/
 
 # Benchmark data (downloadable/regenerable, kept out of git)
 experiments/compbench_data/

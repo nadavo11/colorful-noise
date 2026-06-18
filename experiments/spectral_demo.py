@@ -1012,10 +1012,14 @@ def _token_tab():
 
     op.change(_visibility, op,
               [promptB, object_phrase, cut, band, gain, width, alpha, clip_pool, interval, helpbox])
-    go.click(run,
-             [promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
-              interval, seed, steps, guidance, size],
-             [out_base, out_edit, desc])
+    names = ["promptA", "promptB", "object_phrase", "op", "cut", "gain", "band", "width",
+             "alpha", "clip_pool", "interval", "seed", "steps", "guidance", "size"]
+    inputs = [promptA, promptB, object_phrase, op, cut, gain, band, width, alpha, clip_pool,
+              interval, seed, steps, guidance, size]
+    go.click(run, inputs, [out_base, out_edit, desc])
+    _save_load_ui("token", names, inputs, out_base, out_edit,
+                  vis=(_visibility, op, [promptB, object_phrase, cut, band, gain, width, alpha,
+                                         clip_pool, interval, helpbox]))
 
 
 def _latent_tab():
@@ -1073,10 +1077,14 @@ def _latent_tab():
 
     op.change(_latent_visibility, op,
               [promptB, cut, band, gain, qk, schedule, interval, strength, scale, helpbox])
-    go.click(run_latent,
-             [promptA, promptB, op, cut, gain, band, qk, schedule, interval, strength, scale,
-              seed, steps, guidance, size],
-             [out_base, out_edit, desc])
+    names = ["promptA", "promptB", "op", "cut", "gain", "band", "qk", "schedule", "interval",
+             "strength", "scale", "seed", "steps", "guidance", "size"]
+    inputs = [promptA, promptB, op, cut, gain, band, qk, schedule, interval, strength, scale,
+              seed, steps, guidance, size]
+    go.click(run_latent, inputs, [out_base, out_edit, desc])
+    _save_load_ui("latent", names, inputs, out_base, out_edit,
+                  vis=(_latent_visibility, op, [promptB, cut, band, gain, qk, schedule, interval,
+                                                strength, scale, helpbox]))
 
 
 def _velocity_tab():
@@ -1118,9 +1126,12 @@ def _velocity_tab():
             desc = gr.Markdown()
 
     op.change(_velocity_visibility, op, [band, strength, gain, interval, helpbox])
-    go.click(run_velocity,
-             [promptA, op, band, strength, gain, interval, seed, steps, guidance, size],
-             [out_base, out_edit, desc])
+    names = ["promptA", "op", "band", "strength", "gain", "interval", "seed", "steps",
+             "guidance", "size"]
+    inputs = [promptA, op, band, strength, gain, interval, seed, steps, guidance, size]
+    go.click(run_velocity, inputs, [out_base, out_edit, desc])
+    _save_load_ui("velocity", names, inputs, out_base, out_edit,
+                  vis=(_velocity_visibility, op, [band, strength, gain, interval, helpbox]))
 
 
 # ===========================================================================
@@ -1255,10 +1266,14 @@ def _adain_tab():
 
     op.change(_adain_visibility, op,
               [g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi, helpbox])
-    go.click(run_adain,
-             [prompt, op, g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi,
-              seed, steps, guidance, size],
-             [out_base, out_edit, desc])
+    names = ["prompt", "op", "g_all", "b_all", "g_lo", "b_lo", "g_mid", "b_mid", "g_hi", "b_hi",
+             "seed", "steps", "guidance", "size"]
+    inputs = [prompt, op, g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi,
+              seed, steps, guidance, size]
+    go.click(run_adain, inputs, [out_base, out_edit, desc])
+    _save_load_ui("adain", names, inputs, out_base, out_edit,
+                  vis=(_adain_visibility, op,
+                       [g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi, helpbox]))
 
 
 # ---------------------------------------------------------------------------
@@ -1530,10 +1545,12 @@ def _invert_tab():
                 out_base = gr.Image(label="edit · no clamp", type="pil")
                 out_edit = gr.Image(label="edit · low-band clamped", type="pil")
             desc = gr.Markdown()
-    go.click(run_invert,
-             [src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
-              phase_band, seed, steps, guidance, inv_guidance],
-             [out_base, out_edit, desc])
+    names = ["src_prompt", "edit_prompt", "real_img", "mode", "cut", "strength", "interval",
+             "phase_band", "seed", "steps", "guidance", "inv_guidance"]
+    inputs = [src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
+              phase_band, seed, steps, guidance, inv_guidance]
+    go.click(run_invert, inputs, [out_base, out_edit, desc])
+    _save_load_ui("invert", names, inputs, out_base, out_edit)
 
 
 # ---------------------------------------------------------------------------
@@ -1661,10 +1678,94 @@ def _flowedit_tab():
                 out_base = gr.Image(label="FlowEdit · no smoothing", type="pil")
                 out_edit = gr.Image(label="FlowEdit · annealed low-pass", type="pil")
             desc = gr.Markdown()
-    go.click(run_flowedit,
-             [src_prompt, tar_prompt, real_img, skip, start_cut, end_cut, renorm,
-              seed, steps, guidance],
-             [out_base, out_edit, desc])
+    names = ["src_prompt", "tar_prompt", "real_img", "skip", "start_cut", "end_cut", "renorm",
+             "seed", "steps", "guidance"]
+    inputs = [src_prompt, tar_prompt, real_img, skip, start_cut, end_cut, renorm,
+              seed, steps, guidance]
+    go.click(run_flowedit, inputs, [out_base, out_edit, desc])
+    _save_load_ui("flowedit", names, inputs, out_base, out_edit)
+
+
+SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_runs")
+
+
+def _list_runs(tab):
+    """Saved-run folder names for a tab, newest first."""
+    if not os.path.isdir(SAVE_DIR):
+        return []
+    return sorted((n for n in os.listdir(SAVE_DIR)
+                   if n.startswith(tab + "_") and os.path.isdir(os.path.join(SAVE_DIR, n))),
+                  reverse=True)
+
+
+def _save_run(tab, names, base, edit, *vals):
+    """Write a timestamped folder with the output images + a config.json that load can replay.
+    Image-valued inputs are saved as PNGs and referenced by filename; tuples (RangeSliders) as lists."""
+    import json, time
+    import gradio as gr
+    d = os.path.join(SAVE_DIR, f"{tab}_{time.strftime('%Y%m%d-%H%M%S')}")
+    os.makedirs(d, exist_ok=True)
+    cfg = {}
+    for n, v in zip(names, vals):
+        if isinstance(v, Image.Image):
+            v.save(os.path.join(d, f"input_{n}.png"))
+            cfg[n] = {"__image__": f"input_{n}.png"}
+        else:
+            cfg[n] = list(v) if isinstance(v, tuple) else v
+    if base is not None:
+        base.save(os.path.join(d, "baseline.png"))
+    if edit is not None:
+        edit.save(os.path.join(d, "edited.png"))
+    with open(os.path.join(d, "config.json"), "w") as f:
+        json.dump({"tab": tab, "config": cfg}, f, indent=2, default=str)
+    return f"Saved → {os.path.basename(d)}", gr.update(choices=_list_runs(tab))
+
+
+def _load_run(tab, names, run_name):
+    """Replay a saved run: value-updates for every input (in `names` order) + the saved images."""
+    import json
+    import gradio as gr
+    if not run_name:
+        return [gr.update() for _ in names] + [gr.update(), gr.update(), "pick a saved run"]
+    d = os.path.join(SAVE_DIR, run_name)
+    with open(os.path.join(d, "config.json")) as f:
+        cfg = json.load(f)["config"]
+    updates = []
+    for n in names:
+        v = cfg.get(n)
+        if isinstance(v, dict) and "__image__" in v:
+            v = Image.open(os.path.join(d, v["__image__"]))
+        elif isinstance(v, list):
+            v = tuple(v)
+        updates.append(gr.update(value=v))
+    def _png(name):
+        p = os.path.join(d, name)
+        return Image.open(p) if os.path.exists(p) else None
+    return updates + [_png("baseline.png"), _png("edited.png"), f"loaded {run_name}"]
+
+
+def _save_load_ui(tab, names, inputs, out_base, out_edit, vis=None):
+    """Add a Save/Load accordion under a tab. `names`/`inputs` are parallel; `vis`, if given, is
+    (visibility_fn, op_component, vis_outputs) re-run after load so dependent controls re-show."""
+    import gradio as gr
+    with gr.Accordion("Save / load run", open=False):
+        with gr.Row():
+            save_btn = gr.Button("💾 Save this run")
+            runs = gr.Dropdown(_list_runs(tab), label="Saved runs", scale=2)
+            load_btn = gr.Button("Load")
+        status = gr.Markdown()
+
+    def do_save(base, edit, *vals):
+        return _save_run(tab, names, base, edit, *vals)
+
+    def do_load(run_name):
+        return _load_run(tab, names, run_name)
+
+    save_btn.click(do_save, [out_base, out_edit] + inputs, [status, runs])
+    ev = load_btn.click(do_load, runs, inputs + [out_base, out_edit, status])
+    if vis is not None:
+        fn, op_comp, vis_out = vis
+        ev.then(fn, op_comp, vis_out)
 
 
 def build_ui():
