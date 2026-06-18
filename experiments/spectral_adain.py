@@ -119,6 +119,22 @@ def freq_mixed_init(x0, eps, cut):
 # learned per-band/per-time schedule (Demo 3)
 # ---------------------------------------------------------------------------
 
+def adain_affine(v_content, M, g, b, eps=1e-6):
+    """Self-AdaIN with absolute targets, constant over the run:
+       |V~_k| = g_k*(|V| - mu_k)/sig_k + b_k,  phase from v_content.
+    mu_k, sig_k are v_content's OWN mask-weighted band moments (band_moments). g, b are
+    length-K sequences (per band): g_k = target std, b_k = target mean magnitude (raw units)."""
+    dt = v_content.dtype
+    V = fft.fft2(v_content.float(), norm="ortho")
+    magV, phase = V.abs(), V.angle()
+    muc, sigc = band_moments(magV, M)
+    per_band = []
+    for k in range(M.shape[0]):
+        norm = (magV - muc[k][..., None, None]) / (sigc[k][..., None, None] + eps)
+        per_band.append(float(g[k]) * norm + float(b[k]))
+    return _reassemble(per_band, M, phase, V).to(dt)
+
+
 class BandSchedule(nn.Module):
     """A tiny learnable table {g_k(t), b_k(t)} of size K x T_bins x 2 -- a learned
     frequency-shaping schedule over the trajectory:

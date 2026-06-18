@@ -6,13 +6,12 @@ A single operator, `spectral_adain` (in `experiments/spectral_adain.py`), that s
 sampler — outside the network — on a velocity or a latent**. It splits the 2-D spatial
 spectrum into **soft radial bands** (Gaussian rings that form a partition of unity,
 `∑ₖ mₖ(ω)=1`), rewrites the **magnitude's mean *and* std per band** toward a chosen source,
-and **reuses the content phase** so the output stays real. One primitive covers four uses:
-match a reference's frequency statistics, mix two latents, anchor a velocity's low band to the
-running clean estimate, and run real-image SDEdit with a structure lock — plus a tiny
-**learned** per-band/per-time table that distills a frequency correction into a few hundred
-parameters (and doubles as a concept-erasure probe). Demos: `e39_spectral_adain.py`
-(`demo0` pixels, `demo3` learned schedule) and a **Spectral AdaIN** tab in `spectral_demo.py`
-(latent mixing, in-sampler correction, real-image SDEdit).
+and **reuses the content phase** so the output stays real. The library `spectral_adain.py` keeps
+several primitives (reference matching `spectral_adain`, two-latent `band_mag_mix`, the learned
+`BandSchedule` table); the interactive **Spectral AdaIN** tab in `spectral_demo.py` now exposes the
+simplest member — a **single-pass self-AdaIN** with absolute, user-picked per-band targets via
+`adain_affine` (modes **global** and **3-band**). Demos: `e39_spectral_adain.py` (`demo0` pixels,
+`demo3` learned schedule).
 
 ## Where it sits — and why it is *not* AdaLN
 
@@ -80,6 +79,15 @@ the designated content latent.
 **Learned schedule** (`BandSchedule`): replace the reference-derived stats with a learnable
 per-band/per-time affine `|Ṽ|_k = g_k(t)·(|V|−muc_k)/sigc_k + b_k(t)`. The params are a tiny
 table of size `K × T_bins × 2` — a **learned frequency-shaping schedule over the trajectory**.
+*(Deferred — the class stays in the module; design TBD, not wired into the tab.)*
+
+**Single-pass self-AdaIN** (`adain_affine`, what the tab uses): the same affine but with
+**user-picked, absolute** targets held *constant* over the run, and `muc_k, sigc_k` taken from the
+**current** latent each step (no reference, no second generation):
+`|Ṽ|_k = g_k·(|V|−muc_k)/sigc_k + b_k`, with `g_k` = target std and `b_k` = target mean magnitude in
+**raw latent units**. Identity is `g_k≈σ_k, b_k≈μ_k`; the tab measures and reports the live per-band
+μ_k, σ_k so the targets can be calibrated. `global` uses K=1 (whole spectrum), `3-band` uses 3 soft
+rings. One scalar `(g_k,b_k)` is shared across the 16 latent channels.
 
 ## The demos
 
@@ -87,16 +95,14 @@ table of size `K × T_bins × 2` — a **learned frequency-shaping schedule over
   on two RGB images: low band from B, high band + phase from A. Validates FFT / band / realness
   before any FLUX dynamics. Prints the imaginary residue (want `< 1e-3`; measured ~2.7e-8) and the
   partition-of-unity sum (`[1.0000, 1.0000]`). If you see ringing, widen the band widths.
-- **Demo 1 — latent band-AdaIN** (Spectral AdaIN tab). During generation, drive A's low-band
-  magnitude toward prompt B's latent (B's palette/tone), keep A's high band + phase. *Caveat:*
-  latent frequency ≠ pixel frequency (the VAE), so map bands → perceptual attributes empirically
-  before trusting pixel intuition.
-- **Demo 2 — in-sampler correction** (tab). Manual Euler loop: each step anchor the velocity's low
-  band to the running clean estimate **x̂₀ = x_t − σ·v** (high band = identity). *Caveat:* FLUX-dev
-  is guidance-**distilled** — there is no two-pass true `v_∅`, so this is the x̂₀-anchor form, not a
-  true-CFG match. (On a real-CFG model the same call with `sources=[v_∅,…]` is the true-CFG
-  frequency correction — that is the E37 velocity SBN, of which this is the soft-band, mean+std
-  generalisation.)
+- **Spectral AdaIN tab** (`spectral_demo.py`, Flux). Single prompt, **one** generation pass: each
+  step apply `adain_affine` with picked per-band targets. **global** = one `(g,b)` over the whole
+  spectrum; **3-band** = `(g,b)` per low/mid/high soft ring. The run reports the measured per-band
+  μ_k, σ_k for calibration. *Caveats:* latent frequency ≠ pixel frequency (the VAE), so map bands →
+  perceptual attributes empirically; and absolute targets reset the band every step while the
+  natural scale drifts along the trajectory — start near the reported μ_k, σ_k. *(The earlier
+  B-reference latent mixing, in-sampler x̂₀ correction, and real-image SDEdit were removed from the
+  tab; the underlying primitives stay in `spectral_adain.py`, and inversion is handled separately.)*
 - **Demo 3 — learned schedule** (`e39_spectral_adain.py demo3`). Fit `BandSchedule` to reshape a
   low-guidance velocity into the high-guidance (distilled-CFG) velocity, per band and per timestep,
   by minimising `‖schedule(v) − v_ref‖²` over a few `(x_t, σ)` pairs. The fitted `g`/`b` heatmaps
@@ -104,29 +110,25 @@ table of size `K × T_bins × 2` — a **learned frequency-shaping schedule over
   read off which `(k,t)` cells are driven toward attenuation — a candidate frequency-domain erasure
   operator. Whether concepts have clean, separable band signatures is an **open empirical
   question**; this demo is the test, not an assumption.
-- **Demo 4 — real-image SDEdit** (tab, image upload). Encode the photo, noise to level `t`, denoise
-  while **re-locking the low band to the real latent** each step (`freq_mixed_init`: low from x₀,
-  high from the evolving latent) — keep layout, regenerate texture. A one-shot variant uses a
-  frequency-mixed init then denoises. *Caveat:* x̂₀ is a weak anchor in the high-noise regime; use
-  the timestep window to act later.
 
 ## Use cases
 
 1. **Magnitude/style transfer in frequency space** without disturbing layout (phase).
-2. **One-pass CFG magnitude correction** (the soft-band mean+std cousin of E37).
+2. **Single-pass per-band magnitude shaping** with picked targets (the tab; `adain_affine`).
 3. **Cheap distillation** of a frequency correction into a `K×T×2` table (Demo 3).
 4. **Frequency-domain concept erasure** probe (Demo 3, concept-conditioned).
-5. **Two-latent / two-prompt mixing** with per-band control (`band_mag_mix`).
-6. **Real-image editing** (SDEdit) with an explicit layout-vs-texture frontier (Demo 4).
+5. **Two-latent / two-prompt mixing** with per-band control (`band_mag_mix`, library primitive).
+6. **One-pass CFG magnitude correction** (the soft-band mean+std cousin of E37; `spectral_adain`).
 
 ## Caveats & next
 
-- FLUX-dev has no true `v_∅`; Demo 2/3 use the distilled velocity (x̂₀ anchor / low-vs-high
-  guidance). For a true-CFG study, run on SD3.5 (the Velocity tab's model).
-- Latent-band ↔ perceptual-attribute mapping is empirical (VAE); start from Demo 1 sweeps.
-- Demo 2/4 run at 1024px (reuse `e31_flowedit_freq`'s velocity/sigmas/pack helpers).
-- Next: sweep `(t, cut)` to trace the SDEdit layout-vs-texture frontier; fit Demo 3 per-prompt vs
-  global; test full-complex (real/imag) moment matching for the erasure probe.
+- The tab's targets are **absolute** (raw latent units) and **constant** over the run, while the
+  band's natural scale drifts along the trajectory — read the reported μ_k, σ_k and start near them.
+- One `(g_k,b_k)` is shared across the 16 latent channels (different per-channel scales).
+- Latent-band ↔ perceptual-attribute mapping is empirical (VAE); sweep to map it.
+- FLUX-dev has no true `v_∅`; Demo 3 uses the distilled velocity. For a true-CFG study, run on SD3.5.
+- Next: design the learned/erasure mode (Mode 3) and a separate inversion path; per-channel or
+  relative-multiplier targets; full-complex (real/imag) moment matching for the erasure probe.
 
 ## Reproduce
 
@@ -134,7 +136,7 @@ table of size `K × T_bins × 2` — a **learned frequency-shaping schedule over
 # Demo 0 — pixel sanity, no GPU:
 python experiments/e39_spectral_adain.py demo0 A.png B.png --out e39_demo0.png
 
-# Demos 1/2/4 — interactive (Flux):
+# Spectral AdaIN tab — interactive (Flux): single-pass self-AdaIN, global / 3-band
 python experiments/spectral_demo.py --model flux-dev        # open the "Spectral AdaIN" tab
 
 # Demo 3 — fit the learned schedule (Flux + GPU):

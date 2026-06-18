@@ -54,7 +54,6 @@ Run with uv (auto-builds/caches an env from the inline deps below, incl. a CUDA 
 import os
 import sys
 
-import numpy as np
 import torch
 from PIL import Image
 
@@ -1113,276 +1112,128 @@ def _velocity_tab():
 
 
 # ===========================================================================
-# SPECTRAL AdaIN (E39): a SOFT-band frequency knob on the sampler's output / latent
+# SPECTRAL AdaIN (E39): a single-pass, picked-params self-AdaIN on the latent
 # ===========================================================================
-# The operator lives in spectral_adain.py; this tab is a thin wrapper. Unlike the
-# latent tab's HARD-band SBN (psd_match, mean power only), spectral_adain uses soft
-# Gaussian-ring bands (a partition of unity) and matches the magnitude's mean AND std
-# per band, keeping the content phase. Flux is distilled (no true v_∅), so the
-# in-sampler op anchors the LOW band to the running x̂0 = x_t − σ·v instead of v_∅.
+# The operator lives in spectral_adain.py; this tab is a thin wrapper. During the ONE
+# generation pass, each step it FFTs the latent, splits the 2D spectrum into soft radial
+# bands (a partition of unity), and rewrites each band's MAGNITUDE to a user-picked AdaIN
+# affine |V~_k| = g_k*(|V|-mu_k)/sig_k + b_k (mu_k, sig_k measured from the current latent),
+# keeping the content phase. Absolute targets in raw latent units; identity is g=sig, b=mu.
 
-ADAIN_OPS = ["latent-band-AdaIN", "in-sampler-correct", "real-image-SDEdit"]
-ADAIN_NEEDS_B = {"latent-band-AdaIN"}
-ADAIN_NEEDS_IMG = {"real-image-SDEdit"}
-ADAIN_NEEDS_STRENGTH = {"latent-band-AdaIN"}
-ADAIN_NEEDS_INTERVAL = {"in-sampler-correct"}
-ADAIN_NEEDS_T = {"real-image-SDEdit"}
+ADAIN_OPS = ["global", "3-band"]
 
 ADAIN_INTRO_MD = """\
-### Spectral band-AdaIN — a frequency knob outside the network (E39)
+### Spectral AdaIN — a single-pass frequency knob (E39)
 The network's internal **AdaLN** is a *semantic / timestep* knob. This is the orthogonal
-*frequency* knob: it sits in the **sampler**, on the model's output (a velocity or a
-latent). It splits the 2D spatial spectrum into **soft radial bands** (Gaussian rings that
-sum to 1), rewrites the **magnitude mean+std per band** toward a chosen source, and keeps
-the **content phase** (so the output stays real). `cut` sets the low/high split (0 = DC …
-1 = corner).
+*frequency* knob: during the **one** generation pass, each step it FFTs the latent, splits the 2D
+spectrum into **soft radial bands**, and rewrites each band's **magnitude** to an AdaIN affine you
+choose — `|V~_k| = g_k·(|V|−μ_k)/σ_k + b_k` — keeping the **content phase**. μ_k, σ_k are measured
+from the *current* latent (no reference image, no second generation).
 
-- **latent-band-AdaIN** *(needs Prompt B)* — during generation, drive A's **low** band
-  magnitude toward prompt **B**'s latent (B's color/global layout), keep A's high band +
-  phase. `strength` lerps edit↔baseline.
-- **in-sampler-correct** — manual Euler loop: each step anchor the velocity's **low** band
-  to the running clean estimate **x̂0 = x_t − σ·v** (high band = identity). The frequency
-  cousin of CFG correction. *(Flux is distilled — no two-pass true CFG — so this is the
-  anchor form, not a true-CFG match; runs at 1024px.)*
-- **real-image-SDEdit** *(upload an image)* — encode the photo, noise it to level **t**,
-  denoise while **locking its low-band structure** to the real latent (keep layout,
-  regenerate texture). Optional one-shot frequency-mixed init. Runs at 1024px.
+- **global** — one band over the whole spectrum: target std `g`, target mean magnitude `b`.
+- **3-band** — three soft radial groups (low / mid / high), each with its own `g, b`.
 
-Left = baseline, right = edit, same seed. Needs **Flux** (`--model flux-dev`).
+`g, b` are **absolute, raw latent units** (not multipliers): identity is `g≈σ, b≈μ`. The run
+**reports the measured μ_k, σ_k per band** — read them, then set targets near those for a gentle
+edit or far for a strong one. One (g,b) is shared across the 16 latent channels.
+
+Left = baseline (vanilla), right = edit, same seed. Needs **Flux** (`--model flux-dev`).
 """
 
 ADAIN_HELP = {
-    "latent-band-AdaIN": "**Latent band-AdaIN** *(cut, strength; needs Prompt B)*. Each step, "
-        "match A's low-band (`[0,cut]`) magnitude moments to prompt B's latent, keep A's high band "
-        "+ phase. B's palette/tone on A's layout. `strength` blends toward baseline.",
-    "in-sampler-correct": "**In-sampler correct** *(cut, timesteps)*. Manual Euler loop; on the "
-        "chosen step window, anchor the velocity's low band (`[0,cut]`) to x̂0 = x_t − σ·v (high band "
-        "untouched). Flux has no true v_∅, so this anchors to the running clean estimate.",
-    "real-image-SDEdit": "**Real-image SDEdit** *(image, t, cut)*. Encode the upload, noise to level "
-        "`t` (0 = keep image … 1 = pure noise), denoise while re-locking the low band (`[0,cut]`) to "
-        "the real latent each step — keep layout, regenerate texture. One-shot = frequency-mixed init.",
+    "global": "**Global AdaIN** *(g, b)*. Each step, reset the whole spectrum's magnitude to mean "
+        "`b`, std `g` (phase kept). Absolute raw units — see the reported μ, σ; g≈σ & b≈μ ≈ identity.",
+    "3-band": "**3-band AdaIN** *(g/b × low/mid/high)*. Same affine per soft radial band: low = "
+        "global tone/layout, high = fine texture. Absolute units; read the reported per-band μ_k, σ_k.",
 }
 
 
-# --- Flux low-level helpers, inlined from e31_flowedit_freq to keep the demo off its
-# heavy import chain (e7/e10/e24/e9_clipt/fidelity pull matplotlib + CLIP + aesthetic
-# models the demo never uses). Native 1024px; latents (1,16,128,128), packed 4096x64.
-_FH = _FW = 128
-_FSIZE = 1024
-_FTXT = 512
-
-
-def flux_sigmas(pipe, steps):
-    from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate_shift
-    cfg = pipe.scheduler.config
-    sigmas = np.linspace(1.0, 1.0 / steps, steps)
-    try:
-        mu = calculate_shift((_FH // 2) * (_FW // 2), cfg.get("base_image_seq_len", 256),
-                             cfg.get("max_image_seq_len", 4096),
-                             cfg.get("base_shift", 0.5), cfg.get("max_shift", 1.15))
-        retrieve_timesteps(pipe.scheduler, steps, "cuda", sigmas=sigmas, mu=mu)
-    except Exception as e:
-        print(f"[adain] shift schedule failed ({e}); plain set_timesteps", flush=True)
-        pipe.scheduler.set_timesteps(steps, device="cuda")
-    return pipe.scheduler.sigmas.float()
-
-
-def _gids(pipe, guidance):
-    img_ids = pipe._prepare_latent_image_ids(1, _FH // 2, _FW // 2, "cuda", pipe.dtype)
-    txt_ids = torch.zeros(_FTXT, 3, device="cuda", dtype=pipe.dtype)
-    g = torch.full([1], float(guidance), device="cuda", dtype=torch.float32)
-    return g, txt_ids, img_ids
-
-
-@torch.no_grad()
-def flux_velocity(pipe, packed_x, sigma, pe, ppe, gids):
-    guidance, txt_ids, img_ids = gids
-    t = torch.full((packed_x.shape[0],), float(sigma), device="cuda", dtype=pipe.dtype)
-    v = pipe.transformer(hidden_states=packed_x.to(pipe.dtype), timestep=t,
-                         guidance=guidance, pooled_projections=ppe.to(pipe.dtype),
-                         encoder_hidden_states=pe.to(pipe.dtype),
-                         txt_ids=txt_ids, img_ids=img_ids, return_dict=False)[0]
-    return v.float()
-
-
-def pack(pipe, lat):
-    return pipe._pack_latents(lat.cuda().float(), 1, 16, _FH, _FW)
-
-
-def unpack(pipe, packed):
-    return pipe._unpack_latents(packed, _FSIZE, _FSIZE, pipe.vae_scale_factor)
-
-
-def vae_encode(vae, pil):
-    img = pil.convert("RGB").resize((_FSIZE, _FSIZE))
-    x = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
-    x = (x.permute(2, 0, 1)[None] * 2 - 1).to(vae.dtype).cuda()
-    with torch.no_grad():
-        z = vae.encode(x).latent_dist.mean
-    return ((z - vae.config.shift_factor) * vae.config.scaling_factor).float().cpu()
-
-
-def _adain_masks(hl, wl, cut, device):
-    """Two soft radial bands split at `cut` (a partition of unity): band 0 = LOW (the
-    source / anchor), band 1 = HIGH (the content)."""
+def _adain_band_masks(hl, wl, mode, device):
+    """global -> one all-ones band (K=1); 3-band -> 3 soft radial rings (partition of unity)."""
     from spectral_adain import soft_band_masks
-    return soft_band_masks(hl, wl, [0.0, 1.0], [max(float(cut), 0.06), max(1.0 - float(cut), 0.06)],
-                           device)
+    if mode == "global":
+        return torch.ones(1, hl, wl, device=device)
+    return soft_band_masks(hl, wl, centers=[0.0, 0.5, 1.0], widths=[0.22, 0.22, 0.22], device=device)
 
 
-def _adain_in_sampler(pe, ppe, seed, steps, guidance, cut, interval, correct):
-    """Manual Flux Euler loop at 1024px (reuses e31's velocity/sigmas/pack). With
-    `correct`, replace the LOW band of v with the running x̂0 = x_t − σ·v anchor (high band
-    = identity) on the inclusive step window `interval`."""
-    from spectral_adain import spectral_adain
-    pe, ppe = pe.cuda(), ppe.cuda()
-    steps = int(steps)
-    sig = flux_sigmas(PIPE, steps)
-    gids = _gids(PIPE, float(guidance))
-    noise = torch.randn((1, 16, 128, 128), generator=torch.Generator("cuda").manual_seed(int(seed)),
-                        device="cuda", dtype=torch.float32)
-    x = pack(PIPE, noise)
-    i_lo, i_hi = interval
-    M = None
-    for i in range(steps):
-        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
-        v = flux_velocity(PIPE, x, s_hi, pe, ppe, gids)
-        if correct and i_lo <= i <= i_hi:
-            uv, ux = unpack(PIPE, v).float(), unpack(PIPE, x).float()
-            if M is None:
-                M = _adain_masks(uv.shape[-2], uv.shape[-1], cut, uv.device)
-            xhat0 = ux - s_hi * uv
-            v = pack(PIPE, spectral_adain(uv, sources=[xhat0, uv], M=M))
-        x = x + (s_lo - s_hi) * v
-    return decode_latent(unpack(PIPE, x).float())
-
-
-def _adain_sdedit(pil, pe, ppe, seed, steps, guidance, t, cut, mode):
-    """SDEdit a real image at 1024px. mode: 'plain' (vanilla SDEdit), 'anchor' (re-lock the
-    low band to the real latent each step), 'oneshot' (frequency-mixed init, then denoise)."""
-    from spectral_adain import freq_mixed_init
-    pe, ppe = pe.cuda(), ppe.cuda()
-    steps = int(steps)
-    x0 = vae_encode(PIPE.vae, pil).cuda()
-    sig = flux_sigmas(PIPE, steps)
-    gids = _gids(PIPE, float(guidance))
-    start = max(0, min(steps - 1, int(round((1.0 - float(t)) * steps))))
-    noise = torch.randn((1, 16, 128, 128), generator=torch.Generator("cuda").manual_seed(int(seed)),
-                        device="cuda", dtype=torch.float32)
-    s0 = float(sig[start])
-    if mode == "oneshot":
-        x = pack(PIPE, freq_mixed_init(x0, noise, cut))
-    else:
-        x = pack(PIPE, (1.0 - s0) * x0 + s0 * noise)
-    for i in range(start, steps):
-        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
-        v = flux_velocity(PIPE, x, s_hi, pe, ppe, gids)
-        x = x + (s_lo - s_hi) * v
-        if mode == "anchor":
-            x = pack(PIPE, freq_mixed_init(x0, unpack(PIPE, x).float(), cut))
-    return decode_latent(unpack(PIPE, x).float())
-
-
-def run_adain(promptA, promptB, real_img, op, cut, strength, interval, t, one_shot,
+def run_adain(prompt, op, g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi,
               seed, steps, guidance, size):
     if MODEL["kind"] != "flux":
         return None, None, _FLUX_ONLY_NOTE
-    seed, steps, cut = int(seed), int(steps), float(cut)
+    if not (prompt or "").strip():
+        return None, None, "enter a prompt"
+    seed, steps, size = int(seed), int(steps), int(size)
     try:
-        if op == "latent-band-AdaIN":
-            if not (promptA or "").strip():
-                return None, None, "enter prompt A"
-            if not (promptB or "").strip():
-                return None, None, "enter prompt B (the style/low-band source)"
-            size = int(size)
-            from spectral_adain import spectral_adain
-            peA, ppeA, _ = _encode_cached(promptA)
-            bkey = (promptA, seed, steps, float(guidance), size)
-            if bkey not in _BASE_CACHE:
-                _BASE_CACHE[bkey] = generate(peA, ppeA, seed, steps, guidance, size)
-            base = _BASE_CACHE[bkey]
-            peB, ppeB, _ = _encode_cached(promptB)
-            styleB = _final_latent(peB, ppeB, seed, steps, guidance, size).cuda()
-            s = float(strength)
+        import torch.fft as _tfft
+        from spectral_adain import adain_affine, band_moments
+        peA, ppeA, _ = _encode_cached(prompt)
+        bkey = (prompt, seed, steps, float(guidance), size)
+        if bkey not in _BASE_CACHE:
+            _BASE_CACHE[bkey] = generate(peA, ppeA, seed, steps, guidance, size)
+        base = _BASE_CACHE[bkey]
 
-            def op_fn(lat, i):
-                M = _adain_masks(lat.shape[-2], lat.shape[-1], cut, lat.device)
-                out = spectral_adain(lat.float(), sources=[styleB, lat.float()], M=M)
-                return ((1.0 - s) * lat.float() + s * out).to(lat.dtype)
+        g = [float(g_all)] if op == "global" else [float(g_lo), float(g_mid), float(g_hi)]
+        b = [float(b_all)] if op == "global" else [float(b_lo), float(b_mid), float(b_hi)]
+        M_holder, meas = [None], [None]
 
-            edited = generate_latent(peA, ppeA, seed, steps, guidance, size, op_fn=op_fn,
-                                     schedule="every")
-            return base, edited, f"latent-band-AdaIN: low band ← B, cut {cut:.2f}, strength {s:.2f}"
+        def op_fn(lat, i):
+            if M_holder[0] is None:
+                M_holder[0] = _adain_band_masks(lat.shape[-2], lat.shape[-1], op, lat.device)
+            M = M_holder[0]
+            if meas[0] is None:
+                mu, sig = band_moments(_tfft.fft2(lat.float(), norm="ortho").abs(), M)
+                meas[0] = (mu.mean(dim=(1, 2)).tolist(), sig.mean(dim=(1, 2)).tolist())
+            return adain_affine(lat.float(), M, g, b).to(lat.dtype)
 
-        # in-sampler / SDEdit run at e31's native 1024px
-        if not (promptA or "").strip():
-            return None, None, "enter prompt A"
-        peA, ppeA, _ = _encode_cached(promptA)
-        if op == "in-sampler-correct":
-            t_lo, t_hi = _ordered(interval)
-            i_lo, i_hi = int(round(t_lo * (steps - 1))), int(round(t_hi * (steps - 1)))
-            base = _adain_in_sampler(peA, ppeA, seed, steps, guidance, cut, (0, steps - 1), correct=False)
-            edited = _adain_in_sampler(peA, ppeA, seed, steps, guidance, cut, (i_lo, i_hi), correct=True)
-            return base, edited, (f"in-sampler correct: low band ← x̂0, steps {i_lo}–{i_hi}, "
-                                  f"cut {cut:.2f} (distilled v — Flux has no true CFG)")
-        if op == "real-image-SDEdit":
-            if real_img is None:
-                return None, None, "upload a real image"
-            base = _adain_sdedit(real_img, peA, ppeA, seed, steps, guidance, t, cut, "plain")
-            edited = _adain_sdedit(real_img, peA, ppeA, seed, steps, guidance, t, cut,
-                                   "oneshot" if one_shot else "anchor")
-            tag = "one-shot freq-mixed init" if one_shot else "low-band anchored"
-            return base, edited, f"SDEdit ({tag}): t {float(t):.2f}, cut {cut:.2f}"
+        edited = generate_latent(peA, ppeA, seed, steps, guidance, size, op_fn=op_fn,
+                                 schedule="every")
+        names = ["all"] if op == "global" else ["low", "mid", "high"]
+        mu_m, sig_m = meas[0]
+        rows = "; ".join(f"{n}: measured μ={m:.3g} σ={s:.3g} → target b={bb:.3g} g={gg:.3g}"
+                         for n, m, s, bb, gg in zip(names, mu_m, sig_m, b, g))
+        return base, edited, f"AdaIN {op} (absolute targets) — {rows}"
     except Exception as e:
         return None, None, f"error: {e}"
-    return None, None, f"unknown op {op}"
 
 
 def _adain_visibility(op):
     import gradio as gr
-    return [
-        gr.update(visible=op in ADAIN_NEEDS_B),         # prompt B
-        gr.update(visible=op in ADAIN_NEEDS_IMG),       # image upload
-        gr.update(visible=op in ADAIN_NEEDS_STRENGTH),  # strength
-        gr.update(visible=op in ADAIN_NEEDS_INTERVAL),  # interval
-        gr.update(visible=op in ADAIN_NEEDS_T),         # t (noise level)
-        gr.update(visible=op in ADAIN_NEEDS_IMG),       # one-shot checkbox
-        gr.update(value=ADAIN_HELP.get(op, "")),        # help
-    ]
+    glob = (op == "global")
+    return [gr.update(visible=glob), gr.update(visible=glob),          # g_all, b_all
+            gr.update(visible=not glob), gr.update(visible=not glob),  # g_lo, b_lo
+            gr.update(visible=not glob), gr.update(visible=not glob),  # g_mid, b_mid
+            gr.update(visible=not glob), gr.update(visible=not glob),  # g_hi, b_hi
+            gr.update(value=ADAIN_HELP.get(op, ""))]
 
 
 def _adain_tab():
     import gradio as gr
-    from gradio_rangeslider import RangeSlider
     with gr.Accordion("How it works  ·  what the knobs mean", open=False):
         gr.Markdown(ADAIN_INTRO_MD)
     with gr.Row():
         with gr.Column(scale=1):
-            promptA = gr.Textbox(label="Prompt A (content)",
-                                 value="a fluffy orange tabby cat sitting on a windowsill")
-            promptB = gr.Textbox(label="Prompt B (low-band source)", visible=False,
-                                 value="a stained glass window, vivid colors")
-            real_img = gr.Image(label="Real image (SDEdit)", type="pil", visible=False)
-            op = gr.Dropdown(ADAIN_OPS, value="latent-band-AdaIN", label="Operation")
-            helpbox = gr.Markdown(ADAIN_HELP["latent-band-AdaIN"])
-            cut = gr.Slider(0.05, 0.95, value=0.3, step=0.01, label="cut (low/high split)",
-                            info="0 = DC/global … 1 = corner/fine. The soft low/high band split.")
-            strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="strength", visible=False,
-                                 info="0 = baseline, 1 = full AdaIN edit.")
-            interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
-                                   label="timesteps to intervene [start, end]", visible=False,
-                                   info="Fraction of the schedule the correction fires on.")
-            t = gr.Slider(0.1, 0.95, value=0.6, step=0.01, label="SDEdit noise level t", visible=False,
-                          info="0 = keep image … 1 = pure noise. More noise = more regeneration.")
-            one_shot = gr.Checkbox(value=False, label="one-shot freq-mixed init", visible=False,
-                                   info="Init = low(real) + high(noise), then denoise (vs per-step anchor).")
+            prompt = gr.Textbox(label="Prompt",
+                                value="a fluffy orange tabby cat sitting on a windowsill")
+            op = gr.Dropdown(ADAIN_OPS, value="global", label="Operation")
+            helpbox = gr.Markdown(ADAIN_HELP["global"])
+            with gr.Row():
+                g_all = gr.Number(value=1.0, label="g (target std)")
+                b_all = gr.Number(value=1.0, label="b (target mean)")
+            with gr.Row():
+                g_lo = gr.Number(value=1.0, label="g low", visible=False)
+                b_lo = gr.Number(value=1.0, label="b low", visible=False)
+            with gr.Row():
+                g_mid = gr.Number(value=1.0, label="g mid", visible=False)
+                b_mid = gr.Number(value=1.0, label="b mid", visible=False)
+            with gr.Row():
+                g_hi = gr.Number(value=1.0, label="g high", visible=False)
+                b_hi = gr.Number(value=1.0, label="b high", visible=False)
             with gr.Row():
                 seed = gr.Number(value=0, precision=0, label="seed")
                 steps = gr.Slider(4, 28, value=MODEL["steps"], step=1, label="steps")
             with gr.Row():
                 guidance = gr.Slider(1.0, 7.0, value=3.5, step=0.1, label="guidance")
-                size = gr.Dropdown([512, 768, 1024], value=768, label="size (latent-AdaIN only)",
-                                   info="in-sampler / SDEdit always run at 1024.")
+                size = gr.Dropdown([512, 768, 1024], value=768, label="size")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
             with gr.Row():
@@ -1391,9 +1242,9 @@ def _adain_tab():
             desc = gr.Markdown()
 
     op.change(_adain_visibility, op,
-              [promptB, real_img, strength, interval, t, one_shot, helpbox])
+              [g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi, helpbox])
     go.click(run_adain,
-             [promptA, promptB, real_img, op, cut, strength, interval, t, one_shot,
+             [prompt, op, g_all, b_all, g_lo, b_lo, g_mid, b_mid, g_hi, b_hi,
               seed, steps, guidance, size],
              [out_base, out_edit, desc])
 
@@ -1406,8 +1257,8 @@ def build_ui():
                     "(SD3.5, real CFG) edits the CFG *velocity* `v_w` toward the unconditional `v_∅` "
                     "*during* generation; **Token modulation** (Flux) edits the text embedding's token-axis "
                     "spectrum once up front; **Latent modulation** (Flux) edits the image latent's 2D radial "
-                    "spectrum during generation; **Spectral AdaIN** (Flux) is the soft-band magnitude "
-                    "mean+std knob — latent mixing, in-sampler x̂0 correction, and real-image SDEdit. "
+                    "spectrum during generation; **Spectral AdaIN** (Flux) is a single-pass self-AdaIN that resets each radial "
+                    "band's magnitude (mean+std) to absolute targets you choose (global or 3-band). "
                     "Left = baseline, right = edit, same seed.")
         with gr.Tabs():
             with gr.TabItem("Velocity modulation"):
