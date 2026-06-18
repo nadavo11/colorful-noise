@@ -54,6 +54,7 @@ Run with uv (auto-builds/caches an env from the inline deps below, incl. a CUDA 
 import os
 import sys
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -1163,6 +1164,64 @@ ADAIN_HELP = {
 }
 
 
+# --- Flux low-level helpers, inlined from e31_flowedit_freq to keep the demo off its
+# heavy import chain (e7/e10/e24/e9_clipt/fidelity pull matplotlib + CLIP + aesthetic
+# models the demo never uses). Native 1024px; latents (1,16,128,128), packed 4096x64.
+_FH = _FW = 128
+_FSIZE = 1024
+_FTXT = 512
+
+
+def flux_sigmas(pipe, steps):
+    from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate_shift
+    cfg = pipe.scheduler.config
+    sigmas = np.linspace(1.0, 1.0 / steps, steps)
+    try:
+        mu = calculate_shift((_FH // 2) * (_FW // 2), cfg.get("base_image_seq_len", 256),
+                             cfg.get("max_image_seq_len", 4096),
+                             cfg.get("base_shift", 0.5), cfg.get("max_shift", 1.15))
+        retrieve_timesteps(pipe.scheduler, steps, "cuda", sigmas=sigmas, mu=mu)
+    except Exception as e:
+        print(f"[adain] shift schedule failed ({e}); plain set_timesteps", flush=True)
+        pipe.scheduler.set_timesteps(steps, device="cuda")
+    return pipe.scheduler.sigmas.float()
+
+
+def _gids(pipe, guidance):
+    img_ids = pipe._prepare_latent_image_ids(1, _FH // 2, _FW // 2, "cuda", pipe.dtype)
+    txt_ids = torch.zeros(_FTXT, 3, device="cuda", dtype=pipe.dtype)
+    g = torch.full([1], float(guidance), device="cuda", dtype=torch.float32)
+    return g, txt_ids, img_ids
+
+
+@torch.no_grad()
+def flux_velocity(pipe, packed_x, sigma, pe, ppe, gids):
+    guidance, txt_ids, img_ids = gids
+    t = torch.full((packed_x.shape[0],), float(sigma), device="cuda", dtype=pipe.dtype)
+    v = pipe.transformer(hidden_states=packed_x.to(pipe.dtype), timestep=t,
+                         guidance=guidance, pooled_projections=ppe.to(pipe.dtype),
+                         encoder_hidden_states=pe.to(pipe.dtype),
+                         txt_ids=txt_ids, img_ids=img_ids, return_dict=False)[0]
+    return v.float()
+
+
+def pack(pipe, lat):
+    return pipe._pack_latents(lat.cuda().float(), 1, 16, _FH, _FW)
+
+
+def unpack(pipe, packed):
+    return pipe._unpack_latents(packed, _FSIZE, _FSIZE, pipe.vae_scale_factor)
+
+
+def vae_encode(vae, pil):
+    img = pil.convert("RGB").resize((_FSIZE, _FSIZE))
+    x = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
+    x = (x.permute(2, 0, 1)[None] * 2 - 1).to(vae.dtype).cuda()
+    with torch.no_grad():
+        z = vae.encode(x).latent_dist.mean
+    return ((z - vae.config.shift_factor) * vae.config.scaling_factor).float().cpu()
+
+
 def _adain_masks(hl, wl, cut, device):
     """Two soft radial bands split at `cut` (a partition of unity): band 0 = LOW (the
     source / anchor), band 1 = HIGH (the content)."""
@@ -1175,7 +1234,6 @@ def _adain_in_sampler(pe, ppe, seed, steps, guidance, cut, interval, correct):
     """Manual Flux Euler loop at 1024px (reuses e31's velocity/sigmas/pack). With
     `correct`, replace the LOW band of v with the running x̂0 = x_t − σ·v anchor (high band
     = identity) on the inclusive step window `interval`."""
-    from e31_flowedit_freq import flux_velocity, flux_sigmas, _gids, pack, unpack
     from spectral_adain import spectral_adain
     pe, ppe = pe.cuda(), ppe.cuda()
     steps = int(steps)
@@ -1202,7 +1260,6 @@ def _adain_in_sampler(pe, ppe, seed, steps, guidance, cut, interval, correct):
 def _adain_sdedit(pil, pe, ppe, seed, steps, guidance, t, cut, mode):
     """SDEdit a real image at 1024px. mode: 'plain' (vanilla SDEdit), 'anchor' (re-lock the
     low band to the real latent each step), 'oneshot' (frequency-mixed init, then denoise)."""
-    from e31_flowedit_freq import flux_velocity, flux_sigmas, _gids, pack, unpack, vae_encode
     from spectral_adain import freq_mixed_init
     pe, ppe = pe.cuda(), ppe.cuda()
     steps = int(steps)
