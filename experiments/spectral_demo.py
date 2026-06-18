@@ -1477,10 +1477,10 @@ def _invert_tab():
             edit_prompt = gr.Textbox(label="Edit prompt",
                                      value="a photograph of a dog sitting on a sofa")
             real_img = gr.Image(label="Real image", type="pil")
-            mode = gr.Dropdown(["sbn", "phase", "adain"], value="phase", label="Clamp mode")
+            mode = gr.Dropdown(["sbn", "phase", "adain"], value="sbn", label="Clamp mode")
             cut = gr.Slider(0.05, 0.95, value=0.25, step=0.01, label="cut (low-band cutoff)",
                             info="0 = DC/global … 1 = corner/fine. Lower = preserve only coarse structure.")
-            strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="strength",
+            strength = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="strength",
                                  info="0 = no clamp (= baseline), 1 = full clamp to the source trajectory.")
             interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
                                    label="clamp window [start, end]",
