@@ -1261,6 +1261,68 @@ def _adain_tab():
 
 INV_ADAIN_K = 8
 _FH = _FW = 128                 # Flux latent dims (real image is encoded at 1024px -> 128x128)
+_INV_SIZE = 1024                # px the real image is VAE-encoded at (-> _FH x _FW latent)
+_INV_SEQLEN = 512               # Flux txt_ids length
+
+
+# Flux denoising plumbing for the invert tab. Inlined from e31_flowedit_freq (rather than
+# imported) so the demo's startup stays free of e31's heavy import chain (matplotlib, e7/e10/e24).
+def flux_sigmas(pipe, steps, seq_len=(_FH // 2) * (_FW // 2)):
+    """Flux's resolution-shifted sigma grid (steps+1, decreasing, [-1]=0)."""
+    import numpy as np
+    from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate_shift
+    cfg = pipe.scheduler.config
+    sigmas = np.linspace(1.0, 1.0 / steps, steps)
+    try:
+        mu = calculate_shift(seq_len, cfg.get("base_image_seq_len", 256),
+                             cfg.get("max_image_seq_len", 4096),
+                             cfg.get("base_shift", 0.5), cfg.get("max_shift", 1.15))
+        retrieve_timesteps(pipe.scheduler, steps, "cuda", sigmas=sigmas, mu=mu)
+    except Exception as e:
+        print(f"[invert] shift schedule failed ({e}); plain set_timesteps", flush=True)
+        pipe.scheduler.set_timesteps(steps, device="cuda")
+    return pipe.scheduler.sigmas.float()
+
+
+def _gids(pipe, guidance):
+    """Per-run constants: guidance embed, txt_ids (zeros), img_ids (positional)."""
+    img_ids = pipe._prepare_latent_image_ids(1, _FH // 2, _FW // 2, "cuda", pipe.dtype)
+    txt_ids = torch.zeros(_INV_SEQLEN, 3, device="cuda", dtype=pipe.dtype)
+    g = torch.full([1], float(guidance), device="cuda", dtype=torch.float32)
+    return g, txt_ids, img_ids
+
+
+@torch.no_grad()
+def flux_velocity(pipe, packed_x, sigma, pe, ppe, gids):
+    """Flow-matching velocity v(x, sigma | conditioning) in PACKED latent space."""
+    guidance, txt_ids, img_ids = gids
+    t = torch.full((packed_x.shape[0],), float(sigma), device="cuda", dtype=pipe.dtype)
+    v = pipe.transformer(hidden_states=packed_x.to(pipe.dtype), timestep=t,
+                         guidance=guidance, pooled_projections=ppe.to(pipe.dtype),
+                         encoder_hidden_states=pe.to(pipe.dtype),
+                         txt_ids=txt_ids, img_ids=img_ids, return_dict=False)[0]
+    return v.float()
+
+
+def pack(pipe, lat):
+    return pipe._pack_latents(lat.cuda().float(), 1, 16, _FH, _FW)
+
+
+def unpack(pipe, packed):
+    return pipe._unpack_latents(packed, _INV_SIZE, _INV_SIZE, pipe.vae_scale_factor)
+
+
+def vae_encode(vae, pil):
+    """Real image -> generation-space latent (1, 16, _FH, _FW)."""
+    import numpy as np
+    img = pil.convert("RGB").resize((_INV_SIZE, _INV_SIZE))
+    x = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
+    x = (x.permute(2, 0, 1)[None] * 2 - 1).to(vae.dtype).cuda()
+    with torch.no_grad():
+        z = vae.encode(x).latent_dist.mean
+    return ((z - vae.config.shift_factor) * vae.config.scaling_factor).float().cpu()
+
+
 _INV_INTRO_MD = (
     "**RF inversion + spectral clamp.** Upload an image and give its caption (**source**) plus an "
     "**edit** prompt. We RF-invert the image to noise under the source prompt, recording the latent "
@@ -1358,12 +1420,6 @@ def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
     if not (edit_prompt or "").strip():
         return None, None, "enter the edit prompt"
     try:
-        # e31 Flux helpers, imported lazily (only when this Flux-only tab runs) to keep
-        # e31's heavy import chain out of demo startup; bound as globals so the module-level
-        # _rf_invert / _forward_edit resolve them too.
-        global flux_sigmas, flux_velocity, _gids, pack, unpack, vae_encode
-        from e31_flowedit_freq import (flux_sigmas, flux_velocity, _gids, pack, unpack,
-                                       vae_encode)
         from spectral_ops import band_index_map
         from spectral_adain import soft_band_masks
         seed, steps, cut = int(seed), int(steps), float(cut)
