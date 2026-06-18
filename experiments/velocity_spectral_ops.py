@@ -25,7 +25,7 @@ Hermitian, so `ifft2(.).real` loses only ~1e-6; the four self-conjugate bins (DC
 Nyquist axes) are restored from the source so realness (and v_w's global level) is exact.
 
 Two NORMALIZE modes (both exposed in the demo):
-  - "mag"        per-BIN magnitude transplant   |V_w| <- |V_uncond| inside [lo,hi].
+  - "mag"        per-BIN SBN gain                |V_w| *= sqrt(|V_uncond|^2/|V_w|^2) in [lo,hi].
   - "band power" per-BAND mean-power match       psd_match(v_w -> band_power(v_uncond)).
 plus a band amplify/reduce gain (independent of v_uncond), and an interval gate so the
 op fires only on a contiguous window of denoising steps.
@@ -63,13 +63,16 @@ def cfg_velocity(v_uncond, v_cond, w):
 # ---------------------------------------------------------------------------
 
 def mag_transplant_band(v_w, v_src, lo, hi, strength=1.0):
-    """Per-BIN magnitude transplant. Inside the normalised radial band [lo, hi],
-    replace |V_w| with |V_src| (blended by `strength`: 1=full, 0=identity) while
-    KEEPING v_w's phase; outside the band v_w is untouched. DC + Nyquist self-conj
-    bins are restored from v_w so the global level stays and ifft2 is real.
+    """Per-BIN SBN gain (the per-bin analogue of psd_match). Inside the normalised
+    radial band [lo, hi], multiply V_w by a real gain sqrt(tgt/cur) that drives each
+    bin's power toward v_src's, KEEPING v_w's phase; outside the band gain=1 (v_w
+    untouched). `strength` blends the target power between v_w's own (0) and v_src's
+    (1), exactly like `bandpower_match_band`. DC + Nyquist self-conj bins are restored
+    from v_w so the global level stays and ifft2 is real.
 
-        mag = (1-s)|V_w| + s|V_src|  on [lo,hi];  |V_w| elsewhere
-        V'  = mag * exp(i * angle(V_w))
+        cur = |V_w|^2,  ref = |V_src|^2
+        tgt  = (1-s)*cur + s*ref                        on [lo,hi];  cur elsewhere
+        V'   = V_w * sqrt(tgt/cur)        (s=1 -> |V'|=|V_src|, the full transplant)
 
     v_w, v_src: (B, C, H, W) real (same shape). Math in fp32, cast back to v_w.dtype."""
     dt = v_w.dtype
@@ -78,8 +81,11 @@ def mag_transplant_band(v_w, v_src, lo, hi, strength=1.0):
     Fs = torch.fft.fft2(v_src.float())
     sel = _band_sel(H, W, lo, hi, v_w.device, drop_dc=True)[None, None]   # exclude DC
     s = float(strength)
-    new_mag = torch.where(sel, (1.0 - s) * Fw.abs() + s * Fs.abs(), Fw.abs())
-    Fp = torch.polar(new_mag, Fw.angle())
+    cur = Fw.abs() ** 2
+    ref = Fs.abs() ** 2
+    gain = torch.sqrt(((1.0 - s) * cur + s * ref) / cur.clamp(min=1e-8))
+    gain = torch.where(sel, gain, torch.ones_like(gain))
+    Fp = Fw * gain
     _restore_self_conj(Fp, Fw, H, W)
     return torch.fft.ifft2(Fp).real.to(dt)
 
