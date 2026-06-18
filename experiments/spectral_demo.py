@@ -95,6 +95,7 @@ MODELS = {
     "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "kind": "flux", "max_seq": 256, "steps": 4,  "guidance": 3.5},
 }
 MODEL = MODELS["sd3.5-medium"]         # overridden in __main__ from --model
+MODEL_NAME = "sd3.5-medium"            # the --model key, recorded in saved runs
 REPO = MODEL["repo"]
 
 OBJ_CUT = 0.51   # E32 per-object median split (short windows need >0.25; see e32_object_freq)
@@ -1708,7 +1709,7 @@ def _save_run(tab, names, base, edit, *vals):
     if edit is not None:
         edit.save(os.path.join(d, "edited.png"))
     with open(os.path.join(d, "config.json"), "w") as f:
-        json.dump({"tab": tab, "config": cfg}, f, indent=2, default=str)
+        json.dump({"tab": tab, "model": MODEL_NAME, "config": cfg}, f, indent=2, default=str)
     return f"Saved → {os.path.basename(d)}", gr.update(choices=_list_runs(tab))
 
 
@@ -1835,7 +1836,7 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=7860, help="Gradio server port.")
     ap.add_argument("--share", action="store_true", help="create a public Gradio link.")
     a = ap.parse_args()
-    MODEL = MODELS[a.model]; REPO = MODEL["repo"]
+    MODEL = MODELS[a.model]; MODEL_NAME = a.model; REPO = MODEL["repo"]
     print(f"[demo] model={a.model} ({REPO})", flush=True)
     _patch_gradio_schema_bug()
     PIPE = load_pipe()
