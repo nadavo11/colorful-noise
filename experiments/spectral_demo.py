@@ -1338,6 +1338,13 @@ def _forward_edit(pe, ppe, x_noise, sig, gids, traj=None, mode=None, cut=0.25,
     return decode_latent(unpack(PIPE, x).float())
 
 
+# Single-slot caches for the invert tab: the inversion (x_noise, traj) and the no-clamp
+# baseline depend only on the source/edit prompts, image, steps and guidance -- not on the
+# method knobs -- so tweaking mode/cut/strength/interval reuses both and only re-runs `edited`.
+_INV_CACHE = {"key": None, "val": None}
+_INV_BASE_CACHE = {"key": None, "val": None}
+
+
 def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
                seed, steps, guidance, inv_guidance):
     import gradio as gr
@@ -1364,13 +1371,26 @@ def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
         M = soft_band_masks(_FH, _FW, cen.tolist(), [1.0 / INV_ADAIN_K] * INV_ADAIN_K, "cuda")
         cen_k = cen.tolist()
 
-        x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
-        x_noise, traj = _rf_invert(peS, ppeS, x0, sig, gids_inv)
+        # 1) inversion (source prompt, image, steps, inv-guidance) -> noise + trajectory
+        img_hash = hash(real_img.tobytes())
+        inv_key = (src_prompt, img_hash, steps, float(inv_guidance))
+        if _INV_CACHE["key"] != inv_key:
+            x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
+            _INV_CACHE.update(key=inv_key, val=_rf_invert(peS, ppeS, x0, sig, gids_inv))
+        x_noise, traj = _INV_CACHE["val"]
         nstd = float(unpack(PIPE, x_noise).std())
 
         t_lo, t_hi = _ordered(interval)
         window = (int(round(t_lo * (steps - 1))), int(round(t_hi * (steps - 1))))
-        base = _forward_edit(peE, ppeE, x_noise, sig, gids_gen)
+
+        # 2) no-clamp baseline (inversion + edit prompt + guidance), independent of the knobs
+        base_key = (inv_key, edit_prompt, float(guidance))
+        if _INV_BASE_CACHE["key"] != base_key:
+            _INV_BASE_CACHE.update(key=base_key,
+                                   val=_forward_edit(peE, ppeE, x_noise, sig, gids_gen))
+        base = _INV_BASE_CACHE["val"]
+
+        # 3) method output -- the only pass that depends on mode/cut/strength/interval
         edited = _forward_edit(peE, ppeE, x_noise, sig, gids_gen, traj=traj, mode=mode,
                                cut=cut, strength=float(strength), window=window,
                                idx=idx, M=M, cen_k=cen_k)
