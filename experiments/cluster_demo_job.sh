@@ -21,4 +21,4 @@ pip install --quiet --no-input \
 python -c "import torch; assert torch.cuda.is_available(); print('[demo] gpu', torch.cuda.get_device_name(0))"
 
 echo "[demo] launching Gradio on 0.0.0.0:7860 ..."
-exec python token_freq_demo.py
+exec python spectral_demo.py

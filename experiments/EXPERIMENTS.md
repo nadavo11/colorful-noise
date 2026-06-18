@@ -1039,13 +1039,13 @@ only the **high-freq band** slightly beats baseline (+0.011, driven by **color_a
 worst on compositional tags. Reading: low-freq velocity magnitude carries adherence/composition
 (don't touch); high-freq is CFG's correctable over-amplification. Caveat: n=1 → +0.011 within
 seed noise; pattern coherent. Operators also validated off-GPU (realness $\sim\!10^{-7}$,
-identity at strength 0, step-window gating). Demo **Velocity** tab on `token_freq_demo.py`
+identity at strength 0, step-window gating). Demo **Velocity** tab on `spectral_demo.py`
 (default `--model sd3.5-medium`; Flux tabs gated to `--model flux-dev`). DPG-Bench + multi-seed
 + official-scorer + band-amplify/late-window sweeps next.
 
 **Artifacts.** `experiments/e37_geneval.py` (+ `geneval_score.py`, `geneval_data/`,
 `cluster_e37_geneval_job.sh`), `experiments/velocity_spectral_ops.py`,
-`experiments/VELOCITY_SPECTRAL_MATH.md`, the Velocity tab in `token_freq_demo.py`. Deep writeup
+`experiments/VELOCITY_SPECTRAL_MATH.md`, the Velocity tab in `spectral_demo.py`. Deep writeup
 `EXPERIMENT_37.md`; example HTML via `e37_geneval.py --part site` (counting / color_attr).
 Results (gitignored) in `results/e37_geneval/`.
 

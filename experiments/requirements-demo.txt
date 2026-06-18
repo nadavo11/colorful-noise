@@ -1,11 +1,11 @@
-# Deps for the token-frequency Gradio demo (experiments/token_freq_demo.py), FLUX.1-dev.
+# Deps for the token-frequency Gradio demo (experiments/spectral_demo.py), FLUX.1-dev.
 # Pins matter: gradio 6 / huggingface-hub>=1.0 break diffusers 0.38.
 # torch is pulled from the CUDA 12.4 wheel index so the A5000 is used (not CPU torch).
 #
 #   uv venv && uv pip install -r experiments/requirements-demo.txt
-#   uv run python experiments/token_freq_demo.py
+#   uv run python experiments/spectral_demo.py
 #
-# (Or skip this file entirely: `uv run experiments/token_freq_demo.py` reads the inline
+# (Or skip this file entirely: `uv run experiments/spectral_demo.py` reads the inline
 #  PEP 723 deps from the script itself.)
 --extra-index-url https://download.pytorch.org/whl/cu124
 torch==2.5.1

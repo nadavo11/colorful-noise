@@ -22,11 +22,11 @@ The tabs are thin wrappers around the ops in `velocity_spectral_ops.py` (velocit
 `style_ops.py` (latent axis); the only new machinery is keeping the text encoders + VAE
 loaded so arbitrary prompts encode on the fly.
 
-Run:  python experiments/token_freq_demo.py   (then ssh -L 7860:localhost:7860 <host>)
+Run:  python experiments/spectral_demo.py   (then ssh -L 7860:localhost:7860 <host>)
 Model: SD3.5-medium (bf16, ~24GB) by default; --model flux-dev for the Flux tabs.
 
 Run with uv (auto-builds/caches an env from the inline deps below, incl. a CUDA torch):
-    uv run experiments/token_freq_demo.py
+    uv run experiments/spectral_demo.py
 """
 # /// script
 # requires-python = ">=3.10"

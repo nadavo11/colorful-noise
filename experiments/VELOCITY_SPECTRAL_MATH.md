@@ -22,7 +22,7 @@ Source file: `velocity_spectral_ops.py` (`cfg_velocity`, `mag_transplant_band`,
 `bandpower_match_band`, `band_gain_velocity`, `make_velocity_override`), reusing
 `spectral_ops.py` (`band_index_map`, `band_power`, `psd_match`, `_restore_self_conj`) and
 `latent_spectral_ops.py` (`radial_norm`, `_band_sel`). Interception plumbing:
-`token_freq_demo.gen_sd3_demo` (after `e17_sd35.gen_sd3`).
+`spectral_demo.gen_sd3_demo` (after `e17_sd35.gen_sd3`).
 
 ---
 
@@ -189,7 +189,7 @@ transformer forward, since $v_\varnothing,v_c$ are already computed by CFG.
 ## 5. Status
 
 Operators implemented and validated off-GPU (realness, $s=0$ identity, power-match exactness,
-gating). Exposed as the **Velocity modulation** tab of `token_freq_demo.py` (default model
+gating). Exposed as the **Velocity modulation** tab of `spectral_demo.py` (default model
 `stabilityai/stable-diffusion-3.5-medium`). Quantitative evaluation (GenEval, DPG-Bench) and
 RL-style tuning of the band/strength/interval against aesthetic + CLIP scores are **deferred**
 (see `EXPERIMENTS.md` §E37).

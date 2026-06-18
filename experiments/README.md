@@ -38,7 +38,7 @@ SIGGRAPH 2026) — reuses their code from `/workspace/colorful_noise` unmodified
   `v_w` toward the unconditional `v_∅` during generation (per-bin magnitude
   transplant / per-band power match / band gain), via an SD3.5 `scheduler.step`
   override. Formalized in [`VELOCITY_SPECTRAL_MATH.md`](VELOCITY_SPECTRAL_MATH.md).
-- `token_freq_demo.py` — interactive Gradio demo, three tabs: **Velocity**
+- `spectral_demo.py` — interactive Gradio demo, three tabs: **Velocity**
   modulation (SD3.5, real CFG; E37), **Token** modulation (Flux text-embedding
   spectrum; E24/E30/E32/E35) and **Latent** modulation (Flux latent radial
   spectrum; E8–E23/E36). `--model sd3.5-medium` (default) / `flux-dev`.
