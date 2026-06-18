@@ -1398,6 +1398,178 @@ def _adain_tab():
              [out_base, out_edit, desc])
 
 
+# ---------------------------------------------------------------------------
+# RF inversion + trajectory-matched low-band spectral clamp (E40)
+# ---------------------------------------------------------------------------
+#
+# Invert a real image to noise on Flux (reverse Euler under the source prompt), recording the
+# latent at every sigma node -> the inversion *trajectory*. Regenerate under the edit prompt
+# and clamp the LOW band [0, cut] of each step's latent back to traj[i] (same sigma). Low bands
+# carry coarse layout, so this preserves structure while the high band follows the edit.
+# Three modes: sbn (power), phase (power + low-band phase lock), adain (per-band mean+std).
+
+INV_ADAIN_K = 8
+_INV_INTRO_MD = (
+    "**RF inversion + spectral clamp.** Upload an image and give its caption (**source**) plus an "
+    "**edit** prompt. We RF-invert the image to noise under the source prompt, recording the latent "
+    "spectrum at every step, then regenerate under the edit prompt while pinning the **low band "
+    "[0, cut]** back to that recorded trajectory. **Left** = plain inversion edit (no clamp); "
+    "**right** = clamped edit. Modes — **sbn**: match low-band power; **phase**: + lock low-band "
+    "phase; **adain**: match low-band mean+std. Smaller `cut` preserves only the coarsest structure; "
+    "`strength` blends the clamp; the time window limits which steps clamp.")
+
+
+def _inv_band_centers_norm(device):
+    from spectral_ops import radial_bins
+    rr = radial_bins(_FH, _FW, device)
+    edges = torch.linspace(0, rr.max() + 1e-6, N_BINS + 1, device=device)
+    c = 0.5 * (edges[:-1] + edges[1:])
+    return c / rr.max()
+
+
+def _inv_sbn_low(gen, ref, cut, strength, idx):
+    from spectral_ops import band_power, psd_match
+    low = _inv_band_centers_norm(gen.device) < cut
+    rbp = band_power((torch.fft.fft2(ref.float()).abs() ** 2)[0], idx, N_BINS)
+    cbp = band_power((torch.fft.fft2(gen.float()).abs() ** 2)[0], idx, N_BINS)
+    tgt = cbp.clone()
+    s = float(strength)
+    tgt[:, low] = (cbp[:, low].clamp(min=1e-8) ** (1 - s)) * (rbp[:, low].clamp(min=1e-8) ** s)
+    return psd_match(gen, tgt, idx, N_BINS)
+
+
+def _inv_clamp(gen, ref, mode, cut, strength, idx, M, cen_k):
+    """gen, ref: unpacked (1, 16, 128, 128) cuda. Pull gen's low band toward ref."""
+    if mode == "sbn":
+        return _inv_sbn_low(gen, ref, cut, strength, idx)
+    if mode == "phase":
+        from spectral_ops import band_phase_swap, radial_bins
+        out = _inv_sbn_low(gen, ref, cut, strength, idx)
+        rr = radial_bins(_FH, _FW, gen.device)
+        q = float((rr <= cut * rr.max()).float().mean())
+        return band_phase_swap(ref, out, q, mag_from="B").real.to(out.dtype)
+    if mode == "adain":
+        from spectral_adain import spectral_adain
+        sources = [ref if cen_k[k] < cut else gen for k in range(M.shape[0])]
+        out = spectral_adain(gen, sources, M)
+        s = float(strength)
+        return gen * (1 - s) + out * s
+    return gen
+
+
+@torch.no_grad()
+def _rf_invert(pe, ppe, x0_packed, sig, gids):
+    steps = len(sig) - 1
+    x = x0_packed
+    traj = [None] * (steps + 1)
+    traj[steps] = unpack(PIPE, x).float().cpu()
+    for i in range(steps - 1, -1, -1):
+        s_lo, s_hi = float(sig[i + 1]), float(sig[i])
+        v = flux_velocity(PIPE, x, s_lo, pe, ppe, gids)
+        x = x + (s_hi - s_lo) * v
+        traj[i] = unpack(PIPE, x).float().cpu()
+    return x, traj
+
+
+@torch.no_grad()
+def _forward_edit(pe, ppe, x_noise, sig, gids, traj=None, mode=None, cut=0.25,
+                  strength=1.0, window=None, idx=None, M=None, cen_k=None):
+    steps = len(sig) - 1
+    x = x_noise
+    for i in range(steps):
+        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
+        if traj is not None and (window is None or window[0] <= i <= window[1]):
+            lat = _inv_clamp(unpack(PIPE, x).float(), traj[i].cuda(), mode, cut,
+                             strength, idx, M, cen_k)
+            x = pack(PIPE, lat)
+        v = flux_velocity(PIPE, x, s_hi, pe, ppe, gids)
+        x = x + (s_lo - s_hi) * v
+    return decode_latent(unpack(PIPE, x).float())
+
+
+def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
+               seed, steps, guidance, inv_guidance):
+    import gradio as gr
+    if MODEL["kind"] != "flux":
+        return None, None, _FLUX_ONLY_NOTE
+    if real_img is None:
+        return None, None, "upload a real image"
+    if not (src_prompt or "").strip():
+        return None, None, "enter the source caption"
+    if not (edit_prompt or "").strip():
+        return None, None, "enter the edit prompt"
+    try:
+        from spectral_ops import band_index_map
+        from spectral_adain import soft_band_masks
+        seed, steps, cut = int(seed), int(steps), float(cut)
+        peS, ppeS, _ = _encode_cached(src_prompt)
+        peE, ppeE, _ = _encode_cached(edit_prompt)
+        peS, ppeS, peE, ppeE = peS.cuda(), ppeS.cuda(), peE.cuda(), ppeE.cuda()
+        sig = flux_sigmas(PIPE, steps)
+        gids_inv = _gids(PIPE, float(inv_guidance))
+        gids_gen = _gids(PIPE, float(guidance))
+        idx = band_index_map(_FH, _FW, N_BINS, "cuda")
+        cen = torch.linspace(0, 1, INV_ADAIN_K)
+        M = soft_band_masks(_FH, _FW, cen.tolist(), [1.0 / INV_ADAIN_K] * INV_ADAIN_K, "cuda")
+        cen_k = cen.tolist()
+
+        x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
+        x_noise, traj = _rf_invert(peS, ppeS, x0, sig, gids_inv)
+        nstd = float(unpack(PIPE, x_noise).std())
+
+        t_lo, t_hi = _ordered(interval)
+        window = (int(round(t_lo * (steps - 1))), int(round(t_hi * (steps - 1))))
+        base = _forward_edit(peE, ppeE, x_noise, sig, gids_gen)
+        edited = _forward_edit(peE, ppeE, x_noise, sig, gids_gen, traj=traj, mode=mode,
+                               cut=cut, strength=float(strength), window=window,
+                               idx=idx, M=M, cen_k=cen_k)
+        desc = (f"RF-inversion edit · mode **{mode}** · cut {cut:.2f} · strength {float(strength):.2f} "
+                f"· clamp steps {window[0]}–{window[1]} · inv-guidance {float(inv_guidance):.1f} "
+                f"· inverted-noise std {nstd:.3f} (≈1.0 = clean inversion)")
+        return base, edited, desc
+    except Exception as e:
+        return None, None, f"error: {e}"
+
+
+def _invert_tab():
+    import gradio as gr
+    from gradio_rangeslider import RangeSlider
+    with gr.Accordion("How it works  ·  what the knobs mean", open=False):
+        gr.Markdown(_INV_INTRO_MD)
+    with gr.Row():
+        with gr.Column(scale=1):
+            src_prompt = gr.Textbox(label="Source caption (describes the image)",
+                                    value="a photograph of a cat sitting on a sofa")
+            edit_prompt = gr.Textbox(label="Edit prompt",
+                                     value="a photograph of a dog sitting on a sofa")
+            real_img = gr.Image(label="Real image", type="pil")
+            mode = gr.Dropdown(["sbn", "phase", "adain"], value="phase", label="Clamp mode")
+            cut = gr.Slider(0.05, 0.95, value=0.25, step=0.01, label="cut (low-band cutoff)",
+                            info="0 = DC/global … 1 = corner/fine. Lower = preserve only coarse structure.")
+            strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="strength",
+                                 info="0 = no clamp (= baseline), 1 = full clamp to the source trajectory.")
+            interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
+                                   label="clamp window [start, end]",
+                                   info="Fraction of the schedule on which the low-band clamp fires.")
+            with gr.Row():
+                seed = gr.Number(value=0, precision=0, label="seed")
+                steps = gr.Slider(4, 28, value=MODEL["steps"], step=1, label="steps")
+            with gr.Row():
+                guidance = gr.Slider(1.0, 7.0, value=3.5, step=0.1, label="guidance (edit)")
+                inv_guidance = gr.Slider(1.0, 7.0, value=1.0, step=0.1, label="guidance (inversion)",
+                                         info="Flux inversion is usually most faithful at 1.0.")
+            go = gr.Button("Generate", variant="primary")
+        with gr.Column(scale=2):
+            with gr.Row():
+                out_base = gr.Image(label="edit · no clamp", type="pil")
+                out_edit = gr.Image(label="edit · low-band clamped", type="pil")
+            desc = gr.Markdown()
+    go.click(run_invert,
+             [src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
+              seed, steps, guidance, inv_guidance],
+             [out_base, out_edit, desc])
+
+
 def build_ui():
     import gradio as gr
     with gr.Blocks(title="Spectral image editing — velocity, token, latent & AdaIN") as demo:
@@ -1408,6 +1580,8 @@ def build_ui():
                     "spectrum once up front; **Latent modulation** (Flux) edits the image latent's 2D radial "
                     "spectrum during generation; **Spectral AdaIN** (Flux) is the soft-band magnitude "
                     "mean+std knob — latent mixing, in-sampler x̂0 correction, and real-image SDEdit. "
+                    "**RF inversion** (Flux) inverts a real image to noise, records its per-step spectrum, "
+                    "and clamps the low band back to that trajectory while an edit prompt regenerates. "
                     "Left = baseline, right = edit, same seed.")
         with gr.Tabs():
             with gr.TabItem("Velocity modulation"):
@@ -1418,6 +1592,8 @@ def build_ui():
                 _latent_tab()
             with gr.TabItem("Spectral AdaIN"):
                 _adain_tab()
+            with gr.TabItem("RF inversion"):
+                _invert_tab()
     return demo
 
 
