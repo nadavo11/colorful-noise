@@ -1005,9 +1005,7 @@ def _token_tab():
                                    info="Pixels; smaller = faster, less VRAM.")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
-            with gr.Row():
-                out_base = gr.Image(label="baseline", type="pil")
-                out_edit = gr.Image(label="edited", type="pil")
+            out_base, out_edit = _image_pair("baseline", "edited", "pair_token")
             desc = gr.Markdown()
 
     op.change(_visibility, op,
@@ -1070,9 +1068,7 @@ def _latent_tab():
                                    info="Pixels; smaller = faster, less VRAM.")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
-            with gr.Row():
-                out_base = gr.Image(label="baseline", type="pil")
-                out_edit = gr.Image(label="edited", type="pil")
+            out_base, out_edit = _image_pair("baseline", "edited", "pair_latent")
             desc = gr.Markdown()
 
     op.change(_latent_visibility, op,
@@ -1120,9 +1116,8 @@ def _velocity_tab():
                                    info="Pixels; smaller = faster, less VRAM.")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
-            with gr.Row():
-                out_base = gr.Image(label="baseline (plain CFG)", type="pil")
-                out_edit = gr.Image(label="velocity-edited", type="pil")
+            out_base, out_edit = _image_pair("baseline (plain CFG)", "velocity-edited",
+                                              "pair_velocity")
             desc = gr.Markdown()
 
     op.change(_velocity_visibility, op, [band, strength, gain, interval, helpbox])
@@ -1259,9 +1254,7 @@ def _adain_tab():
                 size = gr.Dropdown([512, 768, 1024], value=768, label="size")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
-            with gr.Row():
-                out_base = gr.Image(label="baseline", type="pil")
-                out_edit = gr.Image(label="edited", type="pil")
+            out_base, out_edit = _image_pair("baseline", "edited", "pair_adain")
             desc = gr.Markdown()
 
     op.change(_adain_visibility, op,
@@ -1541,9 +1534,8 @@ def _invert_tab():
                                          info="Flux inversion is usually most faithful at 1.0.")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
-            with gr.Row():
-                out_base = gr.Image(label="edit · no clamp", type="pil")
-                out_edit = gr.Image(label="edit · low-band clamped", type="pil")
+            out_base, out_edit = _image_pair("edit · no clamp", "edit · low-band clamped",
+                                              "pair_invert")
             desc = gr.Markdown()
     names = ["src_prompt", "edit_prompt", "real_img", "mode", "cut", "strength", "interval",
              "phase_band", "seed", "steps", "guidance", "inv_guidance"]
@@ -1674,9 +1666,8 @@ def _flowedit_tab():
             guidance = gr.Slider(1.0, 7.0, value=3.5, step=0.1, label="guidance")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
-            with gr.Row():
-                out_base = gr.Image(label="FlowEdit · no smoothing", type="pil")
-                out_edit = gr.Image(label="FlowEdit · annealed low-pass", type="pil")
+            out_base, out_edit = _image_pair("FlowEdit · no smoothing",
+                                              "FlowEdit · annealed low-pass", "pair_flowedit")
             desc = gr.Markdown()
     names = ["src_prompt", "tar_prompt", "real_img", "skip", "start_cut", "end_cut", "renorm",
              "seed", "steps", "guidance"]
@@ -1768,9 +1759,31 @@ def _save_load_ui(tab, names, inputs, out_base, out_edit, vis=None):
         ev.then(fn, op_comp, vis_out)
 
 
+COMPARE_CSS = """
+.img-pair:fullscreen { background:#000; padding:0; gap:4px; align-items:center; }
+.img-pair:fullscreen > * { flex:1 1 0; min-width:0; height:100vh; }
+.img-pair:fullscreen img { height:100%; width:100%; object-fit:contain; }
+"""
+
+
+def _image_pair(label_base, label_edit, elem_id):
+    """A baseline/edit image Row plus a button that opens the pair side by side
+    in browser fullscreen. Returns (out_base, out_edit)."""
+    import gradio as gr
+    with gr.Row(elem_id=elem_id, elem_classes="img-pair"):
+        out_base = gr.Image(label=label_base, type="pil")
+        out_edit = gr.Image(label=label_edit, type="pil")
+    gr.Button("⛶ View side by side (fullscreen)", size="sm").click(
+        fn=None, inputs=None, outputs=None,
+        js=f"() => {{ const el = document.getElementById('{elem_id}'); "
+           f"if (el) el.requestFullscreen(); }}")
+    return out_base, out_edit
+
+
 def build_ui():
     import gradio as gr
-    with gr.Blocks(title="Spectral image editing — velocity, token, latent & AdaIN") as demo:
+    with gr.Blocks(title="Spectral image editing — velocity, token, latent & AdaIN",
+                   css=COMPARE_CSS) as demo:
         gr.Markdown("# Spectral image editing (E24–E39)\n"
                     "Four ways to steer a diffusion model in frequency space. **Velocity modulation** "
                     "(SD3.5, real CFG) edits the CFG *velocity* `v_w` toward the unconditional `v_∅` "
