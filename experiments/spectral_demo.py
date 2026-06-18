@@ -1260,13 +1260,77 @@ def _adain_tab():
 # Three modes: sbn (power), phase (power + low-band phase lock), adain (per-band mean+std).
 
 INV_ADAIN_K = 8
+_FH = _FW = 128                 # Flux latent dims (real image is encoded at 1024px -> 128x128)
+_INV_SIZE = 1024                # px the real image is VAE-encoded at (-> _FH x _FW latent)
+_INV_SEQLEN = 512               # Flux txt_ids length
+
+
+# Flux denoising plumbing for the invert tab. Inlined from e31_flowedit_freq (rather than
+# imported) so the demo's startup stays free of e31's heavy import chain (matplotlib, e7/e10/e24).
+def flux_sigmas(pipe, steps, seq_len=(_FH // 2) * (_FW // 2)):
+    """Flux's resolution-shifted sigma grid (steps+1, decreasing, [-1]=0)."""
+    import numpy as np
+    from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate_shift
+    cfg = pipe.scheduler.config
+    sigmas = np.linspace(1.0, 1.0 / steps, steps)
+    try:
+        mu = calculate_shift(seq_len, cfg.get("base_image_seq_len", 256),
+                             cfg.get("max_image_seq_len", 4096),
+                             cfg.get("base_shift", 0.5), cfg.get("max_shift", 1.15))
+        retrieve_timesteps(pipe.scheduler, steps, "cuda", sigmas=sigmas, mu=mu)
+    except Exception as e:
+        print(f"[invert] shift schedule failed ({e}); plain set_timesteps", flush=True)
+        pipe.scheduler.set_timesteps(steps, device="cuda")
+    return pipe.scheduler.sigmas.float()
+
+
+def _gids(pipe, guidance):
+    """Per-run constants: guidance embed, txt_ids (zeros), img_ids (positional)."""
+    img_ids = pipe._prepare_latent_image_ids(1, _FH // 2, _FW // 2, "cuda", pipe.dtype)
+    txt_ids = torch.zeros(_INV_SEQLEN, 3, device="cuda", dtype=pipe.dtype)
+    g = torch.full([1], float(guidance), device="cuda", dtype=torch.float32)
+    return g, txt_ids, img_ids
+
+
+@torch.no_grad()
+def flux_velocity(pipe, packed_x, sigma, pe, ppe, gids):
+    """Flow-matching velocity v(x, sigma | conditioning) in PACKED latent space."""
+    guidance, txt_ids, img_ids = gids
+    t = torch.full((packed_x.shape[0],), float(sigma), device="cuda", dtype=pipe.dtype)
+    v = pipe.transformer(hidden_states=packed_x.to(pipe.dtype), timestep=t,
+                         guidance=guidance, pooled_projections=ppe.to(pipe.dtype),
+                         encoder_hidden_states=pe.to(pipe.dtype),
+                         txt_ids=txt_ids, img_ids=img_ids, return_dict=False)[0]
+    return v.float()
+
+
+def pack(pipe, lat):
+    return pipe._pack_latents(lat.cuda().float(), 1, 16, _FH, _FW)
+
+
+def unpack(pipe, packed):
+    return pipe._unpack_latents(packed, _INV_SIZE, _INV_SIZE, pipe.vae_scale_factor)
+
+
+def vae_encode(vae, pil):
+    """Real image -> generation-space latent (1, 16, _FH, _FW)."""
+    import numpy as np
+    img = pil.convert("RGB").resize((_INV_SIZE, _INV_SIZE))
+    x = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
+    x = (x.permute(2, 0, 1)[None] * 2 - 1).to(vae.dtype).cuda()
+    with torch.no_grad():
+        z = vae.encode(x).latent_dist.mean
+    return ((z - vae.config.shift_factor) * vae.config.scaling_factor).float().cpu()
+
+
 _INV_INTRO_MD = (
     "**RF inversion + spectral clamp.** Upload an image and give its caption (**source**) plus an "
     "**edit** prompt. We RF-invert the image to noise under the source prompt, recording the latent "
     "spectrum at every step, then regenerate under the edit prompt while pinning the **low band "
     "[0, cut]** back to that recorded trajectory. **Left** = plain inversion edit (no clamp); "
-    "**right** = clamped edit. Modes — **sbn**: match low-band power; **phase**: + lock low-band "
-    "phase; **adain**: match low-band mean+std. Smaller `cut` preserves only the coarsest structure; "
+    "**right** = clamped edit. Modes — **sbn**: match low-band power; **phase**: sbn power **plus** "
+    "lock the source phase on an independent **phase band [lo, hi]** (its own slider); "
+    "**adain**: match low-band mean+std. Smaller `cut` preserves only the coarsest structure; "
     "`strength` blends the clamp; the time window limits which steps clamp.")
 
 
@@ -1289,16 +1353,28 @@ def _inv_sbn_low(gen, ref, cut, strength, idx):
     return psd_match(gen, tgt, idx, N_BINS)
 
 
-def _inv_clamp(gen, ref, mode, cut, strength, idx, M, cen_k):
+def _inv_band_phase_keep(out, ref, lo, hi):
+    """Keep `out`'s magnitude everywhere; take phase from `ref` (source) inside the
+    radial band [lo, hi] (fractions of the corner), from `out` elsewhere. DC kept
+    from `out`. The radial mask is Hermitian-symmetric, so the ifft stays real."""
+    from spectral_ops import radial_bins
+    rr = radial_bins(_FH, _FW, out.device)
+    rmax = rr.max()
+    band = ((rr >= lo * rmax) & (rr <= hi * rmax)).float()[None, None]
+    Fo, Fr = torch.fft.fft2(out.float()), torch.fft.fft2(ref.float())
+    phi = Fr.angle() * band + Fo.angle() * (1.0 - band)
+    mix = Fo.abs() * torch.exp(1j * phi)
+    mix[..., 0, 0] = Fo[..., 0, 0]
+    return torch.fft.ifft2(mix).real.to(out.dtype)
+
+
+def _inv_clamp(gen, ref, mode, cut, strength, idx, M, cen_k, phase_band=(0.0, 0.25)):
     """gen, ref: unpacked (1, 16, 128, 128) cuda. Pull gen's low band toward ref."""
     if mode == "sbn":
         return _inv_sbn_low(gen, ref, cut, strength, idx)
     if mode == "phase":
-        from spectral_ops import band_phase_swap, radial_bins
         out = _inv_sbn_low(gen, ref, cut, strength, idx)
-        rr = radial_bins(_FH, _FW, gen.device)
-        q = float((rr <= cut * rr.max()).float().mean())
-        return band_phase_swap(ref, out, q, mag_from="B").real.to(out.dtype)
+        return _inv_band_phase_keep(out, ref, phase_band[0], phase_band[1])
     if mode == "adain":
         from spectral_adain import spectral_adain
         sources = [ref if cen_k[k] < cut else gen for k in range(M.shape[0])]
@@ -1324,22 +1400,30 @@ def _rf_invert(pe, ppe, x0_packed, sig, gids):
 
 @torch.no_grad()
 def _forward_edit(pe, ppe, x_noise, sig, gids, traj=None, mode=None, cut=0.25,
-                  strength=1.0, window=None, idx=None, M=None, cen_k=None):
+                  strength=1.0, window=None, idx=None, M=None, cen_k=None,
+                  phase_band=(0.0, 0.25)):
     steps = len(sig) - 1
     x = x_noise
     for i in range(steps):
         s_hi, s_lo = float(sig[i]), float(sig[i + 1])
         if traj is not None and (window is None or window[0] <= i <= window[1]):
             lat = _inv_clamp(unpack(PIPE, x).float(), traj[i].cuda(), mode, cut,
-                             strength, idx, M, cen_k)
+                             strength, idx, M, cen_k, phase_band)
             x = pack(PIPE, lat)
         v = flux_velocity(PIPE, x, s_hi, pe, ppe, gids)
         x = x + (s_lo - s_hi) * v
     return decode_latent(unpack(PIPE, x).float())
 
 
+# Single-slot caches for the invert tab: the inversion (x_noise, traj) and the no-clamp
+# baseline depend only on the source/edit prompts, image, steps and guidance -- not on the
+# method knobs -- so tweaking mode/cut/strength/interval reuses both and only re-runs `edited`.
+_INV_CACHE = {"key": None, "val": None}
+_INV_BASE_CACHE = {"key": None, "val": None}
+
+
 def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
-               seed, steps, guidance, inv_guidance):
+               phase_band, seed, steps, guidance, inv_guidance):
     import gradio as gr
     if MODEL["kind"] != "flux":
         return None, None, _FLUX_ONLY_NOTE
@@ -1364,18 +1448,33 @@ def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
         M = soft_band_masks(_FH, _FW, cen.tolist(), [1.0 / INV_ADAIN_K] * INV_ADAIN_K, "cuda")
         cen_k = cen.tolist()
 
-        x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
-        x_noise, traj = _rf_invert(peS, ppeS, x0, sig, gids_inv)
+        # 1) inversion (source prompt, image, steps, inv-guidance) -> noise + trajectory
+        img_hash = hash(real_img.tobytes())
+        inv_key = (src_prompt, img_hash, steps, float(inv_guidance))
+        if _INV_CACHE["key"] != inv_key:
+            x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
+            _INV_CACHE.update(key=inv_key, val=_rf_invert(peS, ppeS, x0, sig, gids_inv))
+        x_noise, traj = _INV_CACHE["val"]
         nstd = float(unpack(PIPE, x_noise).std())
 
         t_lo, t_hi = _ordered(interval)
         window = (int(round(t_lo * (steps - 1))), int(round(t_hi * (steps - 1))))
-        base = _forward_edit(peE, ppeE, x_noise, sig, gids_gen)
+
+        # 2) no-clamp baseline (inversion + edit prompt + guidance), independent of the knobs
+        base_key = (inv_key, edit_prompt, float(guidance))
+        if _INV_BASE_CACHE["key"] != base_key:
+            _INV_BASE_CACHE.update(key=base_key,
+                                   val=_forward_edit(peE, ppeE, x_noise, sig, gids_gen))
+        base = _INV_BASE_CACHE["val"]
+
+        # 3) method output -- the only pass that depends on mode/cut/strength/interval
+        pband = _ordered(phase_band)
         edited = _forward_edit(peE, ppeE, x_noise, sig, gids_gen, traj=traj, mode=mode,
                                cut=cut, strength=float(strength), window=window,
-                               idx=idx, M=M, cen_k=cen_k)
-        desc = (f"RF-inversion edit · mode **{mode}** · cut {cut:.2f} · strength {float(strength):.2f} "
-                f"· clamp steps {window[0]}–{window[1]} · inv-guidance {float(inv_guidance):.1f} "
+                               idx=idx, M=M, cen_k=cen_k, phase_band=pband)
+        pdesc = f" · phase band [{pband[0]:.2f},{pband[1]:.2f}]" if mode == "phase" else ""
+        desc = (f"RF-inversion edit · mode **{mode}** · cut {cut:.2f} · strength {float(strength):.2f}"
+                f"{pdesc} · clamp steps {window[0]}–{window[1]} · inv-guidance {float(inv_guidance):.1f} "
                 f"· inverted-noise std {nstd:.3f} (≈1.0 = clean inversion)")
         return base, edited, desc
     except Exception as e:
@@ -1394,11 +1493,15 @@ def _invert_tab():
             edit_prompt = gr.Textbox(label="Edit prompt",
                                      value="a photograph of a dog sitting on a sofa")
             real_img = gr.Image(label="Real image", type="pil")
-            mode = gr.Dropdown(["sbn", "phase", "adain"], value="phase", label="Clamp mode")
+            mode = gr.Dropdown(["sbn", "phase", "adain"], value="sbn", label="Clamp mode")
             cut = gr.Slider(0.05, 0.95, value=0.25, step=0.01, label="cut (low-band cutoff)",
                             info="0 = DC/global … 1 = corner/fine. Lower = preserve only coarse structure.")
-            strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="strength",
+            strength = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="strength",
                                  info="0 = no clamp (= baseline), 1 = full clamp to the source trajectory.")
+            phase_band = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 0.25), step=0.01,
+                                     label="phase band [lo, hi]  (phase mode only)",
+                                     info="Radial band whose PHASE is taken from the source (magnitude kept). "
+                                          "Independent of cut; 0 = DC … 1 = corner.")
             interval = RangeSlider(minimum=0.0, maximum=1.0, value=(0.0, 1.0), step=0.01,
                                    label="clamp window [start, end]",
                                    info="Fraction of the schedule on which the low-band clamp fires.")
@@ -1417,7 +1520,7 @@ def _invert_tab():
             desc = gr.Markdown()
     go.click(run_invert,
              [src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
-              seed, steps, guidance, inv_guidance],
+              phase_band, seed, steps, guidance, inv_guidance],
              [out_base, out_edit, desc])
 
 

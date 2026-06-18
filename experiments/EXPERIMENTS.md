@@ -1081,3 +1081,21 @@ null). Generation pending a GPU/cluster run.
 `experiments/cluster_e38_job.sh`. Outputs to `results/e38/`: `summary.json` (per-band mean±std
 over prompts, band coeff counts, random-phase null), `mag_direction.png`, `phase_coherence.png`,
 self-contained `index.html`, plus `images/` and the `traj/` latent trajectories.
+
+
+## E40 — RF inversion + trajectory-matched low-band spectral clamp (Flux)
+
+**Method.** RF-invert a real image to noise under the source prompt, recording the latent at
+every sigma (the inversion *trajectory*); regenerate under the edit prompt while clamping the
+**low band [0, cut]** of each step back to the recorded trajectory. Modes: **sbn** (match
+low-band power), **phase** (sbn + lock low-band phase), **adain** (low-band mean+std). Blended
+by **strength** (0 = no clamp = baseline, 1 = full). Demo tab in `spectral_demo.py`
+(`--model flux-dev`); offline harness in `experiments/e40_spectral_invert.py`.
+
+**Key result.** For preserving more source structure during an aggressive edit, **sbn with
+cut=0.25, strength=0.5** gives essentially the same edited image as the no-clamp baseline but a
+bit cleaner — observed on a "two dancers" photo edited to LEGO. These are the demo defaults for
+the invert tab. (Ongoing: pushing structure preservation further.)
+
+**Artifacts.** `experiments/e40_spectral_invert.py` (`--part gen,analyze`), invert tab in
+`experiments/spectral_demo.py`. Outputs to `results/e40/`: per-source strips + `index.html`.
