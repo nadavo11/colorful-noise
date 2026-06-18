@@ -70,6 +70,19 @@ UNIVERSAL_REF = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "results", "e9", "universal_ref.pt")  # E9 universal cfg=1 band ref
 N_BINS = 24
 
+# In-memory cache for each tab's LEFT/baseline image, so tweaking only the method knobs
+# reuses the unchanged baseline. Key on the baseline-determining inputs (prompt/image/seed/
+# steps/guidance), NOT the method knobs (op/cut/strength/...). See cached_baseline callers.
+_BASE_CACHE = {}
+def _img_key(pil):
+    return None if pil is None else hash(pil.convert("RGB").resize((256, 256)).tobytes())
+def cached_baseline(key, compute):
+    img = _BASE_CACHE.get(key)
+    if img is None:
+        img = compute()
+        _BASE_CACHE[key] = img
+    return img
+
 # Model registry -- only ONE entry is ever loaded (chosen by --model), so a single model
 # sits on the GPU. `kind` selects the backend: "flux" = guidance-distilled Flux (Token /
 # Latent tabs), "sd3" = Stable Diffusion 3.5 with TRUE classifier-free guidance (the
@@ -863,7 +876,6 @@ def _velocity_visibility(op):
 # Gradio handler (with baseline caching)
 # ---------------------------------------------------------------------------
 
-_BASE_CACHE = {}
 _ENC_CACHE = {}
 
 
@@ -1524,6 +1536,137 @@ def _invert_tab():
              [out_base, out_edit, desc])
 
 
+# ---------------------------------------------------------------------------
+# FlowEdit (inversion-free) with frequency-annealed smoothing of V_delta
+# ---------------------------------------------------------------------------
+#
+# FlowEdit integrates the editing-direction field V_delta = V_tar - V_src directly (no
+# inversion) and adds the accumulated delta to the source latent. Here we low-pass V_delta
+# in the 2D radial frequency domain with a GAUSSIAN mask whose cutoff is ANNEALED from
+# `start_cut` (heavy smoothing, early/high-sigma steps) up to `end_cut` (light/none, late
+# steps): early steps commit only the coarse/low-frequency part of the edit, high-frequency
+# detail enters progressively -- a coarse-to-fine edit. Left = plain FlowEdit (no smoothing),
+# right = annealed-smoothed.
+
+_FE_INTRO_MD = (
+    "**FlowEdit.** Inversion-free text editing: integrate the difference between the "
+    "**target**- and **source**-prompted velocity fields, `V_delta = V_tar - V_src`, and add "
+    "it to the source latent. Upload a real image (or leave empty to generate the source from "
+    "its prompt). **Experimental knob:** low-pass `V_delta` with a gaussian whose cutoff is "
+    "annealed `start_cut → end_cut` over the steps, so early steps make only coarse edits and "
+    "fine detail enters later. **Left** = plain FlowEdit; **right** = annealed-smoothed. "
+    "`skip` drops the noisiest early steps; `renorm` rescales the filtered direction back to "
+    "full magnitude (annealing then changes only *which* frequencies move, not the edit speed).")
+
+
+def _gauss_lowpass(vd_packed, cutoff, renorm):
+    """Gaussian radial low-pass of a packed velocity-delta. cutoff in [0,1] (normalized
+    radius); cutoff>=1 is passthrough. Real & radially-symmetric mask -> stays Hermitian/real."""
+    if cutoff >= 1.0:
+        return vd_packed
+    lat = unpack(PIPE, vd_packed).float()              # (1,16,128,128)
+    rn = L.radial_norm(_FH, _FW, lat.device)           # normalized radius [0,1]
+    mask = torch.exp(-(rn / max(cutoff, 1e-3)) ** 2)
+    out = torch.fft.ifft2(torch.fft.fft2(lat) * mask).real
+    if renorm:
+        out = out * (lat.norm() / out.norm().clamp_min(1e-8))
+    return pack(PIPE, out.to(vd_packed.dtype))
+
+
+@torch.no_grad()
+def flowedit_annealed(x0_packed, C_src, C_tar, sig, skip, seed, gids,
+                      start_cut, end_cut, renorm):
+    """FlowEdit with a gaussian low-pass on V_delta, cutoff annealed start_cut->end_cut."""
+    steps = len(sig) - 1
+    eps = torch.randn(x0_packed.shape, generator=torch.Generator("cuda").manual_seed(seed),
+                      device="cuda").float()
+    delta = torch.zeros_like(x0_packed)
+    i0 = int(skip * steps)
+    for i in range(i0, steps):
+        frac = (i - i0) / max(steps - 1 - i0, 1)            # 0 at first active step -> 1 at last
+        cutoff = start_cut + (end_cut - start_cut) * frac  # linear anneal low -> high
+        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
+        x_src = (1 - s_hi) * x0_packed + s_hi * eps
+        x_tar = x_src + delta
+        v_src = flux_velocity(PIPE, x_src, s_hi, C_src[0], C_src[1], gids)
+        v_tar = flux_velocity(PIPE, x_tar, s_hi, C_tar[0], C_tar[1], gids)
+        vd = _gauss_lowpass((s_lo - s_hi) * (v_tar - v_src), cutoff, renorm)
+        delta = delta + vd
+    return x0_packed + delta
+
+
+def run_flowedit(src_prompt, tar_prompt, real_img, skip, start_cut, end_cut, renorm,
+                 seed, steps, guidance):
+    if MODEL["kind"] != "flux":
+        return None, None, _FLUX_ONLY_NOTE
+    if not (src_prompt or "").strip():
+        return None, None, "enter the source prompt"
+    if not (tar_prompt or "").strip():
+        return None, None, "enter the target prompt"
+    try:
+        seed, steps = int(seed), int(steps)
+        skip, start_cut, end_cut = float(skip), float(start_cut), float(end_cut)
+        guidance = float(guidance)
+        peS, ppeS, _ = _encode_cached(src_prompt)
+        peT, ppeT, _ = _encode_cached(tar_prompt)
+        C_src = (peS.cuda(), ppeS.cuda())
+        C_tar = (peT.cuda(), ppeT.cuda())
+        sig = flux_sigmas(PIPE, steps)
+        gids = _gids(PIPE, guidance)
+        if real_img is not None:
+            x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
+        else:                                            # 1024px source from the prompt itself
+            x0 = pack(PIPE, _final_latent(C_src[0], C_src[1], seed, steps, guidance, 1024))
+        base_key = ("flowedit", src_prompt, tar_prompt, _img_key(real_img), seed, steps,
+                    round(guidance, 3), round(skip, 3))
+        base = cached_baseline(base_key, lambda: decode_latent(unpack(PIPE, flowedit_annealed(
+            x0, C_src, C_tar, sig, skip, seed, gids, 1.0, 1.0, False)).float()))   # passthrough = plain FlowEdit
+        edited = decode_latent(unpack(PIPE, flowedit_annealed(
+            x0, C_src, C_tar, sig, skip, seed, gids, start_cut, end_cut, bool(renorm))).float())
+        desc = (f"FlowEdit · skip {skip:.2f} · guidance {guidance:.1f} · gaussian low-pass on "
+                f"V_delta, cutoff {start_cut:.2f}→{end_cut:.2f} · "
+                f"energy renorm {'on' if renorm else 'off'}")
+        return base, edited, desc
+    except Exception as e:
+        return None, None, f"error: {e}"
+
+
+def _flowedit_tab():
+    import gradio as gr
+    with gr.Accordion("How it works  ·  what the knobs mean", open=False):
+        gr.Markdown(_FE_INTRO_MD)
+    with gr.Row():
+        with gr.Column(scale=1):
+            src_prompt = gr.Textbox(label="Source prompt (describes the image)",
+                                    value="a photograph of a cat sitting on a sofa")
+            tar_prompt = gr.Textbox(label="Target prompt",
+                                    value="a photograph of a dog sitting on a sofa")
+            real_img = gr.Image(label="Real image (optional)", type="pil")
+            skip = gr.Slider(0.0, 0.5, value=0.0, step=0.01, label="skip (drop early steps)",
+                             info="Fraction of the noisiest early steps to skip before editing.")
+            with gr.Row():
+                start_cut = gr.Slider(0.02, 1.0, value=0.1, step=0.01, label="start cutoff",
+                                      info="Low-pass cutoff at the FIRST step (small = heavy smoothing).")
+                end_cut = gr.Slider(0.02, 1.0, value=1.0, step=0.01, label="end cutoff",
+                                    info="Cutoff at the LAST step (1.0 = no smoothing).")
+            renorm = gr.Checkbox(value=False, label="preserve V_delta energy",
+                                 info="Rescale the filtered direction to full magnitude.")
+            with gr.Row():
+                seed = gr.Number(value=0, precision=0, label="seed")
+                steps = gr.Slider(4, 28, value=MODEL["steps"], step=1, label="steps")
+            guidance = gr.Slider(1.0, 7.0, value=3.5, step=0.1, label="guidance")
+            go = gr.Button("Generate", variant="primary")
+        with gr.Column(scale=2):
+            with gr.Row():
+                out_base = gr.Image(label="FlowEdit · no smoothing", type="pil")
+                out_edit = gr.Image(label="FlowEdit · annealed low-pass", type="pil")
+            desc = gr.Markdown()
+    go.click(run_flowedit,
+             [src_prompt, tar_prompt, real_img, skip, start_cut, end_cut, renorm,
+              seed, steps, guidance],
+             [out_base, out_edit, desc])
+
+
 def build_ui():
     import gradio as gr
     with gr.Blocks(title="Spectral image editing — velocity, token, latent & AdaIN") as demo:
@@ -1548,6 +1691,8 @@ def build_ui():
                 _adain_tab()
             with gr.TabItem("RF inversion"):
                 _invert_tab()
+            with gr.TabItem("FlowEdit"):
+                _flowedit_tab()
     return demo
 
 
