@@ -1260,6 +1260,7 @@ def _adain_tab():
 # Three modes: sbn (power), phase (power + low-band phase lock), adain (per-band mean+std).
 
 INV_ADAIN_K = 8
+_FH = _FW = 128                 # Flux latent dims (real image is encoded at 1024px -> 128x128)
 _INV_INTRO_MD = (
     "**RF inversion + spectral clamp.** Upload an image and give its caption (**source**) plus an "
     "**edit** prompt. We RF-invert the image to noise under the source prompt, recording the latent "
@@ -1357,6 +1358,12 @@ def run_invert(src_prompt, edit_prompt, real_img, mode, cut, strength, interval,
     if not (edit_prompt or "").strip():
         return None, None, "enter the edit prompt"
     try:
+        # e31 Flux helpers, imported lazily (only when this Flux-only tab runs) to keep
+        # e31's heavy import chain out of demo startup; bound as globals so the module-level
+        # _rf_invert / _forward_edit resolve them too.
+        global flux_sigmas, flux_velocity, _gids, pack, unpack, vae_encode
+        from e31_flowedit_freq import (flux_sigmas, flux_velocity, _gids, pack, unpack,
+                                       vae_encode)
         from spectral_ops import band_index_map
         from spectral_adain import soft_band_masks
         seed, steps, cut = int(seed), int(steps), float(cut)
