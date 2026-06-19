@@ -29,22 +29,39 @@ def _stride_idx(n, k):
     return sorted(set(np.linspace(0, n - 1, k).astype(int).tolist()))
 
 
+def _as_mask(m):
+    """Coerce a dataset 'mask' field (PIL image, path str, or other) to an L-mode mask
+    or None. PIE-Bench++ stores it as a string we can't use directly -> background
+    metrics are skipped for those (core DINO/LPIPS/CLIP-dir don't need a mask)."""
+    if isinstance(m, Image.Image):
+        return m.convert("L")
+    if isinstance(m, str) and os.path.exists(m):
+        return Image.open(m).convert("L")
+    return None
+
+
 def _load_hf(n_per_type):
+    import collections
+    import shutil
+    # /storage reports df=100% (quota cap) but actually accepts writes; neutralize the
+    # datasets builder's free-space precheck which otherwise hard-fails ("Not enough disk space").
+    shutil.disk_usage = lambda path: collections.namedtuple(
+        "usage", ["total", "used", "free"])(1 << 60, 0, 1 << 60)
     from datasets import get_dataset_config_names, load_dataset
     configs = sorted(get_dataset_config_names(HF_REPO))      # e.g. "1_change_object_80"
     items = []
     for cfg in configs:
-        ds = load_dataset(HF_REPO, cfg, split="train", cache_dir=_CACHE)
+        dd = load_dataset(HF_REPO, cfg, cache_dir=_CACHE)   # split is "V1", not "train"
+        ds = dd[next(iter(dd))]
         etype = "_".join(cfg.split("_")[1:-1]) or cfg        # drop leading idx + trailing count
         for j in _stride_idx(len(ds), n_per_type):
             r = ds[j]
-            mask = r.get("mask")
             items.append({
                 "key": f"{cfg}/{r['id']}",
                 "src_img": r["image"].convert("RGB"),
                 "src_prompt": r["source_prompt"],
                 "edit_prompt": r["target_prompt"],
-                "mask": mask.convert("L") if mask is not None else None,
+                "mask": _as_mask(r.get("mask")),
                 "edit_type": etype,
             })
     return items

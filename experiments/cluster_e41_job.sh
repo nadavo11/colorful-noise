@@ -14,11 +14,11 @@ export PIP_ROOT_USER_ACTION=ignore
 cd /storage/malnick/colorful-noise/experiments
 
 echo "[e41] installing deps ..."
+# No openai/CLIP (needs git, absent in the image) -- metrics use transformers CLIP via clip_sim.
 pip install --quiet --no-input \
     diffusers==0.38.0 transformers==4.57.6 accelerate bitsandbytes \
-    sentencepiece protobuf matplotlib optuna lpips scikit-image datasets \
-    "git+https://github.com/openai/CLIP.git" ftfy regex 2>&1 | tail -3 || \
-    echo "[e41] WARN: some deps failed"
+    sentencepiece protobuf matplotlib optuna lpips scikit-image datasets 2>&1 | tail -3 || \
+    { echo "[e41] FATAL: dep install failed"; exit 1; }
 python -c "import torch; assert torch.cuda.is_available(); print('[e41] gpu', torch.cuda.get_device_name(0))"
 
 SHARD="${1:-0/1}"; shift || true

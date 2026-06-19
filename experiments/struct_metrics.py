@@ -22,9 +22,11 @@ _IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 # model loading
 # ---------------------------------------------------------------------------
 def load_dino(device="cuda"):
-    """DINO ViT-S/8 (Caron et al.) for self-similarity structure distance."""
-    m = torch.hub.load("facebookresearch/dino:main", "dino_vits8", verbose=False)
-    return m.to(device).eval()
+    """DINO ViT-S/8 (Caron et al.) for self-similarity structure distance.
+    Loaded via transformers (not torch.hub, whose `from utils import trunc_normal_`
+    collides with the repo's colorful_noise/utils.py on sys.path)."""
+    from transformers import ViTModel
+    return ViTModel.from_pretrained("facebook/dino-vits8").to(device).eval()
 
 
 def load_metrics(device="cuda"):
@@ -47,7 +49,7 @@ def _dino_prep(img, size, device):
 def _dino_self_sim(dino, img, size=224):
     """(N, N) cosine self-similarity of the last-layer patch tokens."""
     x = _dino_prep(img, size, next(dino.parameters()).device)
-    toks = dino.get_intermediate_layers(x, n=1)[0][:, 1:, :]   # drop CLS -> (1, N, C)
+    toks = dino(pixel_values=x).last_hidden_state[:, 1:, :]    # drop CLS -> (1, N, C)
     toks = toks / (toks.norm(dim=-1, keepdim=True) + 1e-8)
     return (toks[0] @ toks[0].t())
 

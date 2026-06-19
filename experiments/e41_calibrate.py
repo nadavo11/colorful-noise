@@ -210,62 +210,188 @@ def _mean(vals):
     return float(np.mean(v)) if v else None
 
 
+def _stem(key):
+    return os.path.join(ITEMS, key.replace("/", "_"))
+
+
+def _recompute_lpips(recs):
+    """Fill missing LPIPS from saved PNGs (the in-job AlexNet load failed -> nan)."""
+    try:
+        import lpips as _lp
+        import torch
+        net = _lp.LPIPS(net="alex").to("cuda" if torch.cuda.is_available() else "cpu").eval()
+    except Exception as e:
+        print(f"[e41] lpips unavailable for recompute ({e}); leaving as-is", flush=True)
+        return
+    import torch
+    dev = next(net.parameters()).device
+    try:
+        from skimage.metrics import structural_similarity as _ssim
+    except Exception:
+        _ssim = None
+
+    def arr(p):                       # source is 512px, edits 1024px -> common size
+        return np.asarray(Image.open(p).convert("RGB").resize((512, 512)), np.float32)
+
+    def t(a):
+        return (torch.from_numpy(a).permute(2, 0, 1)[None] / 127.5 - 1.0).to(dev)
+
+    for r in recs:
+        sp = _stem(r["key"]) + "_source.png"
+        if not os.path.exists(sp):
+            continue
+        a_src = arr(sp)
+        with torch.no_grad():
+            ts = t(a_src)
+            for m in METHODS:
+                mp = _stem(r["key"]) + f"_{m}.png"
+                if not os.path.exists(mp):
+                    continue
+                a_m = arr(mp)
+                r["metrics"][m]["lpips"] = float(net(t(a_m), ts).item())
+                if _ssim is not None:
+                    r["metrics"][m]["dssim"] = 1.0 - float(
+                        _ssim(a_m, a_src, channel_axis=2, data_range=255.0))
+
+
+def _agg_eta_curve(recs):
+    """Mean RF-inv (clipdir, struct) per eta level across items with an eta_sweep."""
+    by_eta = {}
+    for r in recs:
+        for e in r.get("eta_sweep", []):
+            by_eta.setdefault(e["eta"], []).append((e["clipdir"], e["struct"]))
+    etas = sorted(by_eta)
+    cd = [float(np.mean([p[0] for p in by_eta[e]])) for e in etas]
+    st = [float(np.mean([p[1] for p in by_eta[e]])) for e in etas]
+    return etas, cd, st
+
+
+def _matched_gap(recs):
+    """Per item: ours_struct - RF-inv_struct interpolated at ours' clipdir (neg = ours better).
+    Skips items where ours edits outside RF-inv's whole eta range."""
+    gaps = []
+    for r in recs:
+        es = r.get("eta_sweep")
+        if not es:
+            continue
+        oc, ost = r["metrics"]["ours"]["clipdir"], r["metrics"]["ours"]["struct"]
+        pts = sorted(es, key=lambda e: e["clipdir"])
+        cd = [e["clipdir"] for e in pts]
+        st = [e["struct"] for e in pts]
+        if oc <= cd[0] or oc >= cd[-1]:
+            continue
+        gaps.append(ost - float(np.interp(oc, cd, st)))
+    return np.array(gaps)
+
+
+def _reselect(recs, tol=0.9):
+    """Looser operating point: among trials with clipdir >= tol*base, the min-struct one."""
+    out = []
+    for r in recs:
+        base = r["base_clipdir"]
+        feas = [tt for tt in r["trials"]
+                if tt.get("clipdir") is not None and tt["clipdir"] >= tol * base]
+        out.append(min(feas, key=lambda tt: tt["struct"]) if feas else None)
+    return out
+
+
+def _montage(recs, n=4):
+    """hstack source|vanilla|etadefault|ours for the first n items."""
+    for r in recs[:n]:
+        cols = []
+        for tag in ["source", "vanilla", "etadefault", "ours"]:
+            p = _stem(r["key"]) + f"_{tag}.png"
+            if os.path.exists(p):
+                cols.append(Image.open(p).convert("RGB").resize((384, 384)))
+        if not cols:
+            continue
+        m = Image.new("RGB", (sum(c.width for c in cols), cols[0].height), "white")
+        x = 0
+        for c in cols:
+            m.paste(c, (x, 0))
+            x += c.width
+        mp = os.path.join(OUT, f"montage_{r['key'].replace('/', '_')}.png")
+        m.save(mp)
+        print(f"[e41] wrote {mp} (source|vanilla|etadefault|ours)", flush=True)
+
+
 def run_analyze(args):
     recs = [json.load(open(os.path.join(ITEMS, f)))
             for f in sorted(os.listdir(ITEMS)) if f.endswith(".json")]
     if not recs:
         print("[e41] no item records; run calibrate first", flush=True)
         return
-    keys = ["struct", "lpips", "dssim", "bg_psnr", "bg_lpips", "clipdir", "clipt"]
-    lines = [f"# E41 — {len(recs)} images\n",
-             "## Means by method (matched-editability calibration)\n",
+    _recompute_lpips(recs)
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    keys = ["struct", "lpips", "dssim", "clipdir", "clipt"]
+    lines = [f"# E41 — RF-inversion (eta) vs our spectral-clamp edit — {len(recs)} PIE-Bench images\n",
+             "Structure preservation = DINO self-similarity distance (lower better). "
+             "Editability = CLIP directional similarity (higher better).\n",
+             "## Means by method\n",
              "| method | " + " | ".join(keys) + " |",
              "|" + "---|" * (len(keys) + 1)]
     for name in METHODS:
         row = [_mean([r["metrics"][name].get(k) for r in recs]) for k in keys]
         lines.append(f"| {name} | " +
                      " | ".join("—" if x is None else f"{x:.4f}" for x in row) + " |")
-    # per-edit-type structure distance (ours vs etadefault)
-    lines += ["\n## Structure distance by edit type (ours / etadefault)\n",
-              "| edit type | n | ours | etadefault | vanilla |",
-              "|---|---|---|---|---|"]
-    types = sorted({r["edit_type"] for r in recs})
-    for t in types:
-        rs = [r for r in recs if r["edit_type"] == t]
-        cells = [_mean([r["metrics"][m]["struct"] for r in rs]) for m in METHODS]
-        lines.append(f"| {t} | {len(rs)} | " +
-                     " | ".join(f"{c:.4f}" for c in cells) + " |")
+
     feas = sum(r["feasible"] for r in recs)
-    lines.append(f"\nfeasible (matched editability reached): {feas}/{len(recs)}")
-    md = os.path.join(OUT, "report.md")
-    open(md, "w").write("\n".join(lines))
+    gaps = _matched_gap(recs)
+    lines += ["\n## Headline: structure at MATCHED editability\n",
+              f"- feasible (ours clipdir >= vanilla baseline): {feas}/{len(recs)}",
+              (f"- ours vs RF-inv eta curve at ours' clipdir (n={len(gaps)} interpolatable): "
+               f"mean(ours_struct - RFinv_struct) = {gaps.mean():.4f} "
+               f"(negative = ours preserves structure better); ours wins "
+               f"{int((gaps < 0).sum())}/{len(gaps)}") if len(gaps) else
+              "- (no interpolatable items yet)",
+              f"- {len(recs) - len(gaps)} images: ours edits BEYOND RF-inv's whole eta range "
+              f"(more editable than eta=0 itself)"]
+    alt = [a for a in _reselect(recs, tol=0.9) if a]
+    if alt:
+        lines.append(f"- post-hoc reselect (clipdir>=0.9*base): mean struct "
+                     f"{np.mean([a['struct'] for a in alt]):.4f} @ clipdir "
+                     f"{np.mean([a['clipdir'] for a in alt]):.4f}  (primary ours struct "
+                     f"{_mean([r['metrics']['ours']['struct'] for r in recs]):.4f})")
+
+    lines += ["\n## DINO structure distance by edit type\n",
+              "| edit type | n | ours | vanilla | etadefault | ours<vanilla |",
+              "|---|---|---|---|---|---|"]
+    for t in sorted({r["edit_type"] for r in recs}):
+        rs = [r for r in recs if r["edit_type"] == t]
+        o = _mean([r["metrics"]["ours"]["struct"] for r in rs])
+        v = _mean([r["metrics"]["vanilla"]["struct"] for r in rs])
+        e = _mean([r["metrics"]["etadefault"]["struct"] for r in rs])
+        win = sum(r["metrics"]["ours"]["struct"] < r["metrics"]["vanilla"]["struct"] for r in rs)
+        lines.append(f"| {t} | {len(rs)} | {o:.4f} | {v:.4f} | {e:.4f} | {win}/{len(rs)} |")
+
+    open(os.path.join(OUT, "report.md"), "w").write("\n".join(lines))
     print("\n".join(lines), flush=True)
 
-    # Pareto plot for showcase images with an eta sweep
-    sweepers = [r for r in recs if "eta_sweep" in r]
-    if sweepers:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        for r in sweepers:
-            fig, ax = plt.subplots(figsize=(5, 4))
-            es = r["eta_sweep"]
-            ax.plot([e["clipdir"] for e in es], [e["struct"] for e in es],
-                    "-o", color="#888", label="RF-inv eta sweep")
-            for e in es:
-                ax.annotate(f"{e['eta']:.1f}", (e["clipdir"], e["struct"]), fontsize=7)
-            o = r["metrics"]["ours"]
-            ax.scatter([o["clipdir"]], [o["struct"]], color="crimson", zorder=5,
-                       label="ours (calibrated)")
-            ax.set_xlabel("CLIP-dir (editability) ->")
-            ax.set_ylabel("DINO structure distance (lower = better)")
-            ax.set_title(r["key"])
-            ax.legend(fontsize=8)
-            fig.tight_layout()
-            p = os.path.join(OUT, f"pareto_{r['key'].replace('/', '_')}.png")
-            fig.savefig(p, dpi=130)
-            plt.close(fig)
-            print(f"[e41] wrote {p}", flush=True)
+    # aggregate Pareto: ours point cloud vs the mean RF-inv eta frontier
+    etas, cd, st = _agg_eta_curve(recs)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    if cd:
+        ax.plot(cd, st, "-o", color="#444", label="RF-inv mean eta curve")
+        for e, x, y in zip(etas, cd, st):
+            ax.annotate(f"η={e:.1f}", (x, y), fontsize=7)
+    oc = [r["metrics"]["ours"]["clipdir"] for r in recs]
+    ost = [r["metrics"]["ours"]["struct"] for r in recs]
+    ax.scatter(oc, ost, s=12, color="crimson", alpha=0.45, label="ours (per image)")
+    ax.scatter([np.mean(oc)], [np.mean(ost)], s=150, marker="*", color="crimson",
+               edgecolor="k", zorder=6, label="ours (mean)")
+    ax.set_xlabel("CLIP-dir (editability) →")
+    ax.set_ylabel("DINO structure distance (lower = better)")
+    ax.set_title(f"E41: ours vs RF-inversion eta frontier ({len(recs)} images)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    p = os.path.join(OUT, "aggregate_pareto.png")
+    fig.savefig(p, dpi=140)
+    plt.close(fig)
+    print(f"[e41] wrote {p}", flush=True)
+    _montage(recs, n=4)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +443,7 @@ def main():
     ap.add_argument("--trials", type=int, default=N_TRIALS)
     ap.add_argument("--num", type=int, default=0, help="cap #images (after sharding)")
     ap.add_argument("--shard", default="", help="i/N stride shard for parallel jobs")
-    ap.add_argument("--mem", default="bnb4")
+    ap.add_argument("--mem", default="gpu_resident")   # peak ~17GB, fits 24GB A5000
     ap.add_argument("--eta_sweep_all", action="store_true",
                     help="run the eta sweep on every image (default: showcase only)")
     ap.add_argument("--force", action="store_true", help="recompute cached items")
