@@ -185,3 +185,72 @@ def forward_edit(pipe, pe, ppe, x_noise, sig, g, traj=None, mode=None, cut=0.25,
             v = v + float(eta) * (v_target - v)
         x = x + (s_lo - s_hi) * v
     return unpack(pipe, x).float()
+
+
+# ---------------------------------------------------------------------------
+# FlowAlign (Kim et al. 2025, arXiv:2505.23145): inversion-free editing =
+# FlowEdit + a source-consistency TERMINAL-POINT regularizer, with two optional
+# spectral twists. Shared verbatim by the demo's FlowAlign tab and the e43 harness.
+# ---------------------------------------------------------------------------
+FA_SBN_MODES = ["off", "band power", "mag", "phase", "both"]
+
+
+def gauss_lowpass(pipe, vd_packed, cutoff, renorm):
+    """Gaussian radial low-pass of a PACKED latent/velocity. cutoff in [0,1] (normalized
+    radius); cutoff>=1 is passthrough. Real radially-symmetric mask -> stays real."""
+    if cutoff >= 1.0:
+        return vd_packed
+    from latent_spectral_ops import radial_norm
+    lat = unpack(pipe, vd_packed).float()
+    rn = radial_norm(FH, FW, lat.device)
+    mask = torch.exp(-(rn / max(cutoff, 1e-3)) ** 2)
+    out = torch.fft.ifft2(torch.fft.fft2(lat) * mask).real
+    if renorm:
+        out = out * (lat.norm() / out.norm().clamp_min(1e-8))
+    return pack(pipe, out.to(vd_packed.dtype))
+
+
+def vel_sbn(pipe, vp, v_ref, mode, cut, strength):
+    """Spectrally clamp the CFG velocity `vp` toward reference `v_ref` (=v(pt,c_src)) in the
+    low radial band [0,cut]. vp, v_ref PACKED; unpack -> op -> repack. mode=="off"/cut<=0 is
+    passthrough. Reuses the E37 velocity-SBN ops + the low-band phase lock above."""
+    if mode == "off" or cut <= 0.0:
+        return vp
+    import velocity_spectral_ops as VEL
+    a = unpack(pipe, vp).float()
+    r = unpack(pipe, v_ref).float()
+    if mode in ("band power", "both"):
+        a = VEL.bandpower_match_band(a, r, 0.0, cut, strength)
+    elif mode == "mag":
+        a = VEL.mag_transplant_band(a, r, 0.0, cut, strength)
+    if mode in ("phase", "both"):
+        a = band_phase_keep(a, r, 0.0, cut)
+    return pack(pipe, a.to(vp.dtype))
+
+
+@torch.no_grad()
+def flowalign(pipe, x0_packed, C_src, C_tar, sig, seed, g, w, zeta,
+              sbn_mode="off", sbn_cut=0.0, sbn_strength=1.0,
+              term_start_cut=1.0, term_end_cut=1.0, term_renorm=False):
+    """FlowAlign on FLUX with the two spectral twists. Defaults (sbn off, term cuts=1.0)
+    reproduce plain FlowAlign; C_tar==C_src reproduces the source exactly (identity gate).
+    C_src/C_tar = (pe, ppe) cuda tensors. 3 velocity forwards/step. Returns PACKED latent."""
+    steps = len(sig) - 1
+    eps = torch.randn(x0_packed.shape, generator=torch.Generator("cuda").manual_seed(seed),
+                      device="cuda").float()
+    xt = x0_packed.clone()
+    for i in range(steps):
+        frac = i / max(steps - 1, 1)
+        cutoff = term_start_cut + (term_end_cut - term_start_cut) * frac   # anneal low -> high
+        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
+        qt = (1 - s_hi) * x0_packed + s_hi * eps                # forward-diffused source
+        pt = xt + qt - x0_packed                                # == x_tar
+        v_pt_src = flux_velocity(pipe, pt, s_hi, C_src[0], C_src[1], g)
+        v_pt_tar = flux_velocity(pipe, pt, s_hi, C_tar[0], C_tar[1], g)
+        vp = v_pt_src + w * (v_pt_tar - v_pt_src)               # CFG, source prompt as negative
+        vp = vel_sbn(pipe, vp, v_pt_src, sbn_mode, sbn_cut, sbn_strength)
+        vq = flux_velocity(pipe, qt, s_hi, C_src[0], C_src[1], g)
+        term = (qt - s_hi * vq) - (pt - s_hi * vp)             # E[q0|qt] - E[p0|pt]
+        term = gauss_lowpass(pipe, term, cutoff, term_renorm)
+        xt = xt + (s_lo - s_hi) * (vp - vq) + zeta * term
+    return xt

@@ -1457,17 +1457,8 @@ _FE_INTRO_MD = (
 
 
 def _gauss_lowpass(vd_packed, cutoff, renorm):
-    """Gaussian radial low-pass of a packed velocity-delta. cutoff in [0,1] (normalized
-    radius); cutoff>=1 is passthrough. Real & radially-symmetric mask -> stays Hermitian/real."""
-    if cutoff >= 1.0:
-        return vd_packed
-    lat = unpack(PIPE, vd_packed).float()              # (1,16,128,128)
-    rn = L.radial_norm(_FH, _FW, lat.device)           # normalized radius [0,1]
-    mask = torch.exp(-(rn / max(cutoff, 1e-3)) ** 2)
-    out = torch.fft.ifft2(torch.fft.fft2(lat) * mask).real
-    if renorm:
-        out = out * (lat.norm() / out.norm().clamp_min(1e-8))
-    return pack(PIPE, out.to(vd_packed.dtype))
+    """Gaussian radial low-pass of a packed velocity-delta (shared with the FlowAlign tab)."""
+    return _ic.gauss_lowpass(PIPE, vd_packed, cutoff, renorm)
 
 
 @torch.no_grad()
@@ -1563,6 +1554,130 @@ def _flowedit_tab():
               seed, steps, guidance]
     go.click(run_flowedit, inputs, [out_base, out_edit, desc])
     _save_load_ui("flowedit", names, inputs, out_base, out_edit)
+
+
+# ---------------------------------------------------------------------------
+# FlowAlign (Kim et al. 2025, arXiv:2505.23145): FlowEdit + a source-consistency
+# TERMINAL-POINT regularizer. Per step (x_src==qt, x_tar==pt):
+#   qt = (1-σ)·x0 + σ·eps ;  pt = xt + qt - x0
+#   vp = v(pt,c_src) + w·(v(pt,c_tgt) - v(pt,c_src))    # CFG, SOURCE prompt as negative
+#   vq = v(qt,c_src)
+#   xt += (σ_next-σ)·(vp - vq)  +  ζ·(E[q0|qt] - E[p0|pt])      with E[·|x]=x-σ·v
+# Two experimental spectral twists over plain FlowAlign (both = identity at defaults):
+#   (1) SBN on the CFG reference: clamp vp's low radial band toward v(pt,c_src), taming
+#       high-w structural over-editing while keeping the semantic push (idea: reduce the
+#       effective w spectrally instead of globally).  -> _vel_sbn
+#   (2) spectral / annealed terminal point: band-limit the consistency vector before
+#       adding it (low bands early -> high later), reusing _gauss_lowpass.
+# Left = plain FlowAlign; right = your variant.
+
+_FA_INTRO_MD = (
+    "**FlowAlign.** Inversion-free editing = FlowEdit **plus** a source-consistency term at the "
+    "*terminal* (clean) point. Per step it forms the CFG velocity `vp = v(pt,c_src) + w·(v(pt,c_tgt) "
+    "− v(pt,c_src))` (the **source** prompt is the CFG negative), integrates `vp − v(qt,c_src)`, and "
+    "adds `ζ·(E[q0|qt] − E[p0|pt])` where `E[·|x]=x−σ·v` is the predicted clean latent — pulling the "
+    "edit's clean estimate toward the source's. Upload a real image (or leave empty to generate the "
+    "source from its prompt).\n\n"
+    "**Experimental knobs (both off ⇒ plain FlowAlign):** "
+    "**(1) SBN on the CFG reference** — spectrally clamp `vp`'s low radial band `[0,cut]` toward the "
+    "reference `v(pt,c_src)` (`band power`/`mag` power-match, `phase` low-band phase-lock, `both`), "
+    "reducing the effective `w` only where structure lives. "
+    "**(2) annealed terminal point** — low-pass the consistency vector with a gaussian whose cutoff "
+    "anneals `start→end` over steps (coarse source-consistency early, fine detail freed later). "
+    "**Left** = plain FlowAlign; **right** = your variant.")
+
+FA_SBN_MODES = _ic.FA_SBN_MODES   # ["off", "band power", "mag", "phase", "both"]
+
+
+def run_flowalign(src_prompt, tar_prompt, real_img, w, zeta, sbn_mode, sbn_cut, sbn_strength,
+                  term_start_cut, term_end_cut, term_renorm, seed, steps, gbase):
+    if MODEL["kind"] != "flux":
+        return None, None, _FLUX_ONLY_NOTE
+    if not (src_prompt or "").strip():
+        return None, None, "enter the source prompt"
+    if not (tar_prompt or "").strip():
+        return None, None, "enter the target prompt"
+    try:
+        seed, steps = int(seed), int(steps)
+        w, zeta, gbase = float(w), float(zeta), float(gbase)
+        sbn_cut, sbn_strength = float(sbn_cut), float(sbn_strength)
+        term_start_cut, term_end_cut = float(term_start_cut), float(term_end_cut)
+        peS, ppeS, _ = _encode_cached(src_prompt)
+        peT, ppeT, _ = _encode_cached(tar_prompt)
+        C_src = (peS.cuda(), ppeS.cuda())
+        C_tar = (peT.cuda(), ppeT.cuda())
+        sig = flux_sigmas(PIPE, steps)
+        gids = _gids(PIPE, gbase)
+        if real_img is not None:
+            x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
+        else:                                            # 1024px source from the prompt itself
+            x0 = pack(PIPE, _final_latent(C_src[0], C_src[1], seed, steps, gbase, 1024))
+        # baseline (left) = plain FlowAlign; depends on the editing-determining inputs only
+        base_key = ("flowalign", src_prompt, tar_prompt, _img_key(real_img), seed, steps,
+                    round(w, 3), round(zeta, 4), round(gbase, 3))
+        base = cached_baseline(base_key, lambda: decode_latent(unpack(PIPE, _ic.flowalign(
+            PIPE, x0, C_src, C_tar, sig, seed, gids, w, zeta)).float()))
+        edited = decode_latent(unpack(PIPE, _ic.flowalign(
+            PIPE, x0, C_src, C_tar, sig, seed, gids, w, zeta,
+            sbn_mode, sbn_cut, sbn_strength, term_start_cut, term_end_cut,
+            bool(term_renorm))).float())
+        desc = (f"FlowAlign · w {w:.1f} · ζ {zeta:.3f} · flux-guidance {gbase:.1f} · "
+                f"SBN[{sbn_mode}] cut {sbn_cut:.2f} str {sbn_strength:.2f} · "
+                f"terminal cutoff {term_start_cut:.2f}→{term_end_cut:.2f} "
+                f"renorm {'on' if term_renorm else 'off'}")
+        return base, edited, desc
+    except Exception as e:
+        return None, None, f"error: {e}"
+
+
+def _flowalign_tab():
+    import gradio as gr
+    with gr.Accordion("How it works  ·  what the knobs mean", open=False):
+        gr.Markdown(_FA_INTRO_MD)
+    with gr.Row():
+        with gr.Column(scale=1):
+            src_prompt = gr.Textbox(label="Source prompt (describes the image)",
+                                    value="a photograph of a cat sitting on a sofa")
+            tar_prompt = gr.Textbox(label="Target prompt",
+                                    value="a photograph of a dog sitting on a sofa")
+            real_img = gr.Image(label="Real image (optional)", type="pil")
+            with gr.Row():
+                w = gr.Slider(1.0, 15.0, value=5.0, step=0.5, label="w (CFG, src negative)",
+                              info="Edit strength; source prompt is the CFG negative.")
+                zeta = gr.Slider(0.0, 0.05, value=0.01, step=0.001, label="ζ (terminal consistency)",
+                                 info="Source-consistency weight at the clean point (0 = FlowEdit).")
+            gr.Markdown("**Twist 1 — SBN on the CFG reference** *(tame structural over-editing)*")
+            with gr.Row():
+                sbn_mode = gr.Dropdown(FA_SBN_MODES, value="off", label="SBN mode",
+                                       info="Clamp vp's low band toward v(pt,c_src).")
+                sbn_cut = gr.Slider(0.0, 0.6, value=0.2, step=0.01, label="SBN cut (low band)",
+                                    info="Upper edge of the clamped low radial band.")
+                sbn_strength = gr.Slider(0.0, 1.0, value=1.0, step=0.05, label="SBN strength",
+                                         info="Blend vp's power toward the reference (band/mag).")
+            gr.Markdown("**Twist 2 — annealed terminal point** *(coarse-to-fine consistency)*")
+            with gr.Row():
+                term_start_cut = gr.Slider(0.02, 1.0, value=1.0, step=0.01, label="terminal start cut",
+                                           info="Low-pass cutoff of the consistency vector at step 0.")
+                term_end_cut = gr.Slider(0.02, 1.0, value=1.0, step=0.01, label="terminal end cut",
+                                         info="Cutoff at the last step (both 1.0 = plain FlowAlign).")
+            term_renorm = gr.Checkbox(value=False, label="preserve terminal-vector energy",
+                                      info="Rescale the filtered consistency vector to full magnitude.")
+            with gr.Row():
+                seed = gr.Number(value=0, precision=0, label="seed")
+                steps = gr.Slider(4, 28, value=MODEL["steps"], step=1, label="steps")
+            gbase = gr.Slider(1.0, 4.0, value=1.0, step=0.5, label="flux guidance (base embed)",
+                              info="Distilled guidance embed for the base velocity; w is applied on top.")
+            go = gr.Button("Generate", variant="primary")
+        with gr.Column(scale=2):
+            out_base, out_edit = _image_pair("FlowAlign · plain",
+                                              "FlowAlign · spectral variant", "pair_flowalign")
+            desc = gr.Markdown()
+    names = ["src_prompt", "tar_prompt", "real_img", "w", "zeta", "sbn_mode", "sbn_cut",
+             "sbn_strength", "term_start_cut", "term_end_cut", "term_renorm", "seed", "steps", "gbase"]
+    inputs = [src_prompt, tar_prompt, real_img, w, zeta, sbn_mode, sbn_cut, sbn_strength,
+              term_start_cut, term_end_cut, term_renorm, seed, steps, gbase]
+    go.click(run_flowalign, inputs, [out_base, out_edit, desc])
+    _save_load_ui("flowalign", names, inputs, out_base, out_edit)
 
 
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_runs")
@@ -1695,6 +1810,8 @@ def build_ui():
                 _invert_tab()
             with gr.TabItem("FlowEdit"):
                 _flowedit_tab()
+            with gr.TabItem("FlowAlign"):
+                _flowalign_tab()
     return demo
 
 
