@@ -315,9 +315,137 @@ def _montage(recs, n=4):
         print(f"[e41] wrote {mp} (source|vanilla|etadefault|ours)", flush=True)
 
 
-def run_analyze(args):
-    recs = [json.load(open(os.path.join(ITEMS, f)))
+def _load_recs():
+    return [json.load(open(os.path.join(ITEMS, f)))
             for f in sorted(os.listdir(ITEMS)) if f.endswith(".json")]
+
+
+# ---------------------------------------------------------------------------
+# correlate: do cheap source-image features predict the calibration-optimal knob?
+# (offline feasibility gate before training a feature->knob predictor; no rendering)
+# ---------------------------------------------------------------------------
+def _fft_feats(img, lo=0.15, hi=0.25):
+    """Spectral descriptors of a grayscale source (normalized radius in [0,1])."""
+    g = np.asarray(img.convert("L").resize((256, 256)), np.float32) / 255.0
+    p = np.abs(np.fft.fftshift(np.fft.fft2(g - g.mean()))) ** 2
+    n = g.shape[0]
+    yy, xx = np.mgrid[0:n, 0:n] - n / 2
+    r = np.sqrt(xx ** 2 + yy ** 2) / (n / 2)            # 0 (DC) .. ~1 (Nyquist)
+    tot = p.sum() + 1e-12
+    # radial 1/f slope: log power vs log radius
+    m = (r > 0) & (r <= 1.0)
+    slope = float(np.polyfit(np.log(r[m]), np.log(p[m] + 1e-12), 1)[0])
+    return {"fft_slope": slope,
+            "fft_hf_ratio": float(p[r > hi].sum() / (p[r <= hi].sum() + 1e-12)),
+            "fft_lowband_frac": float(p[r <= lo].sum() / tot)}
+
+
+def _dino_feats(dino, img):
+    """Structural descriptors from the source DINO self-similarity matrix."""
+    s = sm._dino_self_sim(dino, img).float().cpu().numpy()
+    off = s[~np.eye(s.shape[0], dtype=bool)]
+    ev = np.clip(np.linalg.eigvalsh(s), 0, None)
+    q = ev / (ev.sum() + 1e-12)
+    effrank = float(np.exp(-(q * np.log(q + 1e-12)).sum()))
+    return {"dino_offdiag_mean": float(off.mean()),
+            "dino_offdiag_std": float(off.std()),
+            "dino_effrank": effrank}
+
+
+def run_correlate(args):
+    from scipy.stats import spearmanr, kruskal
+    recs = _load_recs()
+    if not recs:
+        print("[e41] no item records; run calibrate first", flush=True)
+        return
+    dino = None
+    try:
+        dino = sm.load_dino("cuda" if torch.cuda.is_available() else "cpu")
+    except Exception as e:
+        print(f"[e41] DINO unavailable ({e}); FFT + prompt_distance only", flush=True)
+
+    fft_keys = ["fft_slope", "fft_hf_ratio", "fft_lowband_frac"]
+    dino_keys = ["dino_offdiag_mean", "dino_offdiag_std", "dino_effrank"] if dino else []
+    feat_keys = fft_keys + dino_keys + ["prompt_distance"]
+    knobs = ["cut", "strength", "interval_end", "phase_hi"]
+    feats = {k: [] for k in feat_keys}
+    kvals = {k: [] for k in knobs}
+    modes = []
+    for r in recs:
+        sp = _stem(r["key"]) + "_source.png"
+        if not os.path.exists(sp):
+            continue
+        img = Image.open(sp)
+        f = _fft_feats(img)
+        if dino:
+            f.update(_dino_feats(dino, img))
+        f["prompt_distance"] = r.get("prompt_distance")
+        bp = r["best_params"]
+        for k in feat_keys:
+            feats[k].append(f[k])
+        for k in knobs:
+            kvals[k].append(bp[k])
+        modes.append(bp["mode"])
+    n = len(modes)
+    print(f"\n[e41][correlate] {n} images | feature families: "
+          f"FFT({len(fft_keys)}) DINO({len(dino_keys)}) prompt_distance(1)\n", flush=True)
+
+    # Spearman: features x continuous knobs
+    hdr = "feature".ljust(18) + "".join(k.ljust(16) for k in knobs)
+    print(hdr); print("-" * len(hdr))
+    for fk in feat_keys:
+        row = fk.ljust(18)
+        for kk in knobs:
+            rho, p = spearmanr(feats[fk], kvals[kk])
+            star = "*" if p < 0.05 else " "
+            row += f"{rho:+.2f}{star}(p{p:.2f})".ljust(16)
+        print(row)
+    print("\n* = p<0.05. Spearman rho in [-1,1]; |rho|>~0.2 over n=140 is the signal floor.\n")
+
+    # categorical mode: per-mode feature means + Kruskal-Wallis across the 3 groups
+    uniq = sorted(set(modes))
+    print("mode association (per-mode feature mean | Kruskal-Wallis p):")
+    print("feature".ljust(18) + "".join(m.ljust(10) for m in uniq) + "KW-p")
+    for fk in feat_keys:
+        groups = [[feats[fk][i] for i in range(n) if modes[i] == m] for m in uniq]
+        try:
+            kwp = kruskal(*groups).pvalue
+        except Exception:
+            kwp = float("nan")
+        means = "".join(f"{np.mean(gp):+.2f}".ljust(10) for gp in groups)
+        print(fk.ljust(18) + means + f"{kwp:.3f}")
+
+    # sanity: prompt_distance vs lock window (small prompt move => longer clamp => higher iend)
+    rho, _ = spearmanr(feats["prompt_distance"], kvals["interval_end"])
+    print(f"\n[sanity] spearman(prompt_distance, interval_end) = {rho:+.2f} "
+          f"(expect <0: small prompt move => lock harder)\n")
+
+    # scatter grid: features (rows) x knobs (cols), colored by mode
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    cmap = {m: c for m, c in zip(uniq, ["C0", "C1", "C2"])}
+    cols = [cmap[m] for m in modes]
+    fig, axes = plt.subplots(len(feat_keys), len(knobs),
+                             figsize=(4 * len(knobs), 3 * len(feat_keys)))
+    for i, fk in enumerate(feat_keys):
+        for j, kk in enumerate(knobs):
+            ax = axes[i, j]
+            ax.scatter(feats[fk], kvals[kk], c=cols, s=12, alpha=0.7)
+            rho, _ = spearmanr(feats[fk], kvals[kk])
+            ax.set_title(f"rho={rho:+.2f}", fontsize=8)
+            if j == 0:
+                ax.set_ylabel(fk, fontsize=8)
+            if i == len(feat_keys) - 1:
+                ax.set_xlabel(kk, fontsize=8)
+    fig.tight_layout()
+    out = os.path.join(OUT, "correlate.png")
+    fig.savefig(out, dpi=110)
+    print(f"[e41] wrote {out}", flush=True)
+
+
+def run_analyze(args):
+    recs = _load_recs()
     if not recs:
         print("[e41] no item records; run calibrate first", flush=True)
         return
@@ -438,7 +566,8 @@ def run_verify(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", default="calibrate", help="verify | calibrate | analyze")
+    ap.add_argument("--part", default="calibrate",
+                    help="verify | calibrate | analyze | correlate")
     ap.add_argument("--n_per_type", type=int, default=14)
     ap.add_argument("--trials", type=int, default=N_TRIALS)
     ap.add_argument("--num", type=int, default=0, help="cap #images (after sharding)")
@@ -456,6 +585,8 @@ def main():
             run_calibrate(args)
         elif part == "analyze":
             run_analyze(args)
+        elif part == "correlate":
+            run_correlate(args)
 
 
 if __name__ == "__main__":
