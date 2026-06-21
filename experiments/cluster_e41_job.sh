@@ -22,14 +22,15 @@ pip install --quiet --no-input \
 python -c "import torch; assert torch.cuda.is_available(); print('[e41] gpu', torch.cuda.get_device_name(0))"
 
 SHARD="${1:-0/1}"; shift || true
+PART="${PART:-calibrate}"        # calibrate | gridsweep | bandit ...
 
 echo "[e41] verify (dancers regression + eta controller) ..."
 python e41_calibrate.py --part verify || echo "[e41] WARN: verify failed (non-fatal)"
 
-echo "[e41] smoke gate: 2 images, 3 trials (throwaway results dir) ..."
-CN_RESULTS=/tmp/e41_smoke python e41_calibrate.py --part calibrate \
+echo "[e41] smoke gate ($PART): 2 images (throwaway results dir) ..."
+CN_RESULTS=/tmp/e41_smoke python e41_calibrate.py --part "$PART" \
     --shard "$SHARD" --num 2 --trials 3 "$@" || { echo "[e41] SMOKE FAILED"; exit 1; }
 
-echo "[e41] full shard $SHARD ..."
-python e41_calibrate.py --part calibrate --shard "$SHARD" "$@"
-echo "[e41] done shard $SHARD"
+echo "[e41] full shard $SHARD ($PART) ..."
+python e41_calibrate.py --part "$PART" --shard "$SHARD" "$@"
+echo "[e41] done shard $SHARD ($PART)"

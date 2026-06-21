@@ -203,6 +203,156 @@ def run_calibrate(args):
 
 
 # ---------------------------------------------------------------------------
+# Phase A: global knob via full grid rerun (one fixed knob set for all images)
+# ---------------------------------------------------------------------------
+GRID_ITEMS = os.path.join(OUT, "items_grid")
+
+
+def _global_grid():
+    """Fixed knob grid swept identically on every image, to pick ONE global knob.
+    phase_hi fixed (weakest effect in the correlation gate)."""
+    grid = []
+    for mode in ("phase", "sbn", "adain"):
+        for cut in (0.15, 0.3, 0.45):
+            for strength in (0.0, 0.5, 1.0):
+                for iend in (0.2, 0.4):
+                    grid.append({"mode": mode, "cut": cut, "strength": strength,
+                                 "interval_end": iend, "phase_hi": 0.2})
+    return grid
+
+
+def _knob_id(p):
+    return "|".join(f"{k}={p[k]}" for k in
+                    ("mode", "cut", "strength", "interval_end", "phase_hi"))
+
+
+def gridsweep_image(pipe, met, item, b, grid, args):
+    key, src_img = item["key"], item["src_img"]
+    src_p, edit_p = item["src_prompt"], item["edit_prompt"]
+    stem = os.path.join(GRID_ITEMS, key.replace("/", "_"))
+    if os.path.exists(stem + ".json") and not args.force:
+        print(f"[e41] {key}: grid cached, skip", flush=True)
+        return
+    peS, ppeS = ic.encode_prompt(pipe, src_p)
+    peE, ppeE = ic.encode_prompt(pipe, edit_p)
+    x0 = ic.pack(pipe, ic.vae_encode(pipe.vae, src_img))
+    x_noise, traj = ic.rf_invert(pipe, peS, ppeS, x0, b["sig"], b["g_inv"])
+    vanilla = _edit(pipe, b, peE, ppeE, x_noise)                       # eta=0, knobs off
+    base_cd = sm.clip_directional(met["clip"], src_img, vanilla, src_p, edit_p)
+
+    out = []
+    for p in grid:
+        window = (0, max(0, round(p["interval_end"] * (STEPS - 1))))
+        img = _edit(pipe, b, peE, ppeE, x_noise, traj=traj, mode=p["mode"], cut=p["cut"],
+                    strength=p["strength"], window=window, idx=b["idx"], M=b["M"],
+                    cen_k=b["cen_k"], phase_band=(0.0, p["phase_hi"]))
+        out.append({"params": p,
+                    "struct": sm.structure_distance(met["dino"], src_img, img),
+                    "clipdir": sm.clip_directional(met["clip"], src_img, img, src_p, edit_p)})
+    rec = {"key": key, "edit_type": item["edit_type"], "src_prompt": src_p,
+           "edit_prompt": edit_p, "base_clipdir": base_cd, "grid": out}
+    os.makedirs(GRID_ITEMS, exist_ok=True)
+    tmp = stem + ".json.tmp"
+    json.dump(rec, open(tmp, "w"), indent=2)
+    os.replace(tmp, stem + ".json")
+    best = min(out, key=lambda g: g["struct"])
+    print(f"[e41] {key}: grid done ({len(out)} pts) best struct={best['struct']:.4f} "
+          f"@ {_knob_id(best['params'])} base={base_cd:.4f}", flush=True)
+
+
+def run_gridsweep(args):
+    from e7_flux_phase import load_flux
+    from piebench import load_piebench
+    items = load_piebench(args.n_per_type)
+    if args.shard:
+        i, n = (int(x) for x in args.shard.split("/"))
+        items = items[i::n]
+        print(f"[e41] grid shard {i}/{n}: {len(items)} items", flush=True)
+    if args.num:
+        items = items[: args.num]
+    grid = _global_grid()
+    print(f"[e41] global grid: {len(grid)} knobs x {len(items)} images", flush=True)
+    pipe = load_flux(args.mem)
+    met = sm.load_metrics("cuda")
+    b = _build(pipe)
+    for it in items:
+        try:
+            gridsweep_image(pipe, met, it, b, grid, args)
+        except Exception as e:
+            print(f"[e41] {it['key']}: GRID ERROR {e}", flush=True)
+
+
+def run_gridpick(args):
+    """Aggregate the grid sweep -> pick the single global knob with the best mean struct
+    subject to mean editability >= vanilla, and overlay it on the RF-inv eta Pareto."""
+    grecs = [json.load(open(os.path.join(GRID_ITEMS, f)))
+             for f in sorted(os.listdir(GRID_ITEMS)) if f.endswith(".json")] \
+        if os.path.isdir(GRID_ITEMS) else []
+    if not grecs:
+        print("[e41] no grid records; run --part gridsweep first", flush=True)
+        return
+    n = len(grecs)
+    by_knob = {}                       # knob_id -> {"p":params, "struct":[], "feas":[]}
+    for r in grecs:
+        base = r["base_clipdir"]
+        for g in r["grid"]:
+            kid = _knob_id(g["params"])
+            d = by_knob.setdefault(kid, {"p": g["params"], "struct": [], "cd": [], "feas": []})
+            d["struct"].append(g["struct"])
+            d["cd"].append(g["clipdir"])
+            d["feas"].append(int(g["clipdir"] >= base))
+    rows = []
+    for kid, d in by_knob.items():
+        rows.append({"kid": kid, "p": d["p"], "struct": float(np.mean(d["struct"])),
+                     "cd": float(np.mean(d["cd"])), "feas": float(np.mean(d["feas"]))})
+    base_mean = float(np.mean([r["base_clipdir"] for r in grecs]))
+    feasible = [r for r in rows if r["cd"] >= base_mean]
+    pick = min(feasible or rows, key=lambda r: r["struct"])
+    rows.sort(key=lambda r: r["struct"])
+
+    print(f"\n[e41][gridpick] {n} images, {len(rows)} global knobs. "
+          f"vanilla mean clipdir (feasibility bar) = {base_mean:.4f}\n", flush=True)
+    print("rank  struct   clipdir  feas%  knob")
+    for i, r in enumerate(rows[:12]):
+        mark = " <= PICK" if r["kid"] == pick["kid"] else ""
+        print(f"{i:>3}  {r['struct']:.4f}  {r['cd']:.4f}  {100*r['feas']:4.0f}  "
+              f"{r['kid']}{mark}")
+    print(f"\n[e41] GLOBAL KNOB: {pick['kid']}\n"
+          f"      mean struct={pick['struct']:.4f}  clipdir={pick['cd']:.4f}  "
+          f"feasible={100*pick['feas']:.0f}%", flush=True)
+
+    # overlay on the RF-inv eta frontier (from the original per-image calibrate records)
+    recs = _load_recs()
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(6, 5))
+    if recs:
+        etas, cd, st = _agg_eta_curve(recs)
+        if cd:
+            ax.plot(cd, st, "-o", color="#444", label="RF-inv mean eta curve")
+            for e, x, y in zip(etas, cd, st):
+                ax.annotate(f"η={e:.1f}", (x, y), fontsize=7)
+        vmean = (_mean([r["metrics"]["vanilla"]["clipdir"] for r in recs]),
+                 _mean([r["metrics"]["vanilla"]["struct"] for r in recs]))
+        omean = (_mean([r["metrics"]["ours"]["clipdir"] for r in recs]),
+                 _mean([r["metrics"]["ours"]["struct"] for r in recs]))
+        ax.scatter(*vmean, s=120, marker="s", color="gray", edgecolor="k",
+                   zorder=6, label="vanilla (η=0)")
+        ax.scatter(*omean, s=150, marker="*", color="orange", edgecolor="k",
+                   zorder=6, label="ours per-image ORACLE")
+    ax.scatter([pick["cd"]], [pick["struct"]], s=170, marker="*", color="crimson",
+               edgecolor="k", zorder=7, label="ours GLOBAL knob")
+    ax.set_xlabel("CLIP directional (editability) ->")
+    ax.set_ylabel("DINO struct distance (lower better)")
+    ax.set_title(f"E41: global knob vs RF-inv eta frontier ({n} images)")
+    ax.legend(fontsize=8)
+    p = os.path.join(OUT, "aggregate_pareto_global.png")
+    fig.savefig(p, dpi=120, bbox_inches="tight")
+    print(f"[e41] wrote {p}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
 def _mean(vals):
@@ -567,7 +717,7 @@ def run_verify(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", default="calibrate",
-                    help="verify | calibrate | analyze | correlate")
+                    help="verify | calibrate | analyze | correlate | gridsweep | gridpick")
     ap.add_argument("--n_per_type", type=int, default=14)
     ap.add_argument("--trials", type=int, default=N_TRIALS)
     ap.add_argument("--num", type=int, default=0, help="cap #images (after sharding)")
@@ -587,6 +737,10 @@ def main():
             run_analyze(args)
         elif part == "correlate":
             run_correlate(args)
+        elif part == "gridsweep":
+            run_gridsweep(args)
+        elif part == "gridpick":
+            run_gridpick(args)
 
 
 if __name__ == "__main__":
