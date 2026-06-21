@@ -11,6 +11,7 @@ export TORCH_HOME=/storage/malnick/torch_hub_cache       # persist the DINO hub 
 export CN_DANCERS=/storage/malnick/colorful-noise/experiments/saved_runs/dancers
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # reduce fragmentation OOMs
 cd /storage/malnick/colorful-noise/experiments
 
 echo "[e41] installing deps ..."
