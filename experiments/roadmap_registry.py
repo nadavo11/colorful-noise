@@ -1,6 +1,7 @@
 """Single source of truth for the research roadmap (docs/roadmap/).
 
-This file describes the research *vectors* (threads) and every experiment E0-E31:
+This file describes the research *vectors* (threads) and every experiment E0-E41
+(E3 was never run; E33/E34 are proposed-only; E41 is a live run):
 what each one asked, what we found, whether the direction is alive or a dead end,
 and how to proceed. `make_roadmap.py` reads this and regenerates the HTML site.
 
@@ -309,7 +310,7 @@ EXPERIMENTS = [
      "result": "Flux's distilled guidance makes the high-CFG regime odd; full scored run pending.",
      "verdict": "The contest is FIDELITY, not adherence -- motivates the SD3.5 port.",
      "nxt": "Re-run on a true-CFG model, SD3.5 (E17).",
-     "script": "experiments/e16_baselines.py", "doc": None, "results": "e16", "image": None},
+     "script": "experiments/e16_baselines.py", "doc": None, "results": None, "image": None},
     {"id": "E17", "title": "SD3.5 port (true CFG): SBN vs CFG-Zero* + CompBench harness", "thread": "spectral-power",
      "models": "SD3.5-medium", "status": "pending",
      "motivation": "Flux's distilled guidance is odd; port the methods to a true-CFG model.",
@@ -385,7 +386,7 @@ EXPERIMENTS = [
                "token phase ~ identity.",
      "verdict": "Token-frequency bands are real and editable; merging two spectra is not the win.",
      "nxt": "Make it a continuous knob and characterise each band (E30).",
-     "script": "experiments/e24_text_spectral.py", "doc": "EXPERIMENT_24.md", "results": "e24", "image": None},
+     "script": "experiments/e24_text_spectral.py", "doc": "EXPERIMENT_24.md", "results": None, "image": None},
     # ---- seed steering (dead end) -----------------------------------------
     {"id": "E25", "title": "Seed-alignment pilot: bias the seed toward the prompt (SD1.5)", "thread": "seed",
      "models": "SD1.5", "status": "dead-end",
@@ -473,7 +474,7 @@ EXPERIMENTS = [
                 "high band carries the binding effect.",
      "nxt": "Strengthen with longer object phrases (more bins) / larger N for presence significance; then "
             "the TI (E33) and channel-axis (E34) follow-ups.",
-     "script": "experiments/e32_object_freq.py", "doc": "EXPERIMENT_32.md", "results": "e32", "image": None},
+     "script": "experiments/e32_object_freq.py", "doc": "EXPERIMENT_32.md", "results": None, "image": None},
     {"id": "E33", "title": "Textual inversion of an object, then frequency-control its span (proposed)",
      "thread": "text-freq", "models": "SDXL / SD1.5 (TI tooling safer than Flux)", "status": "pending",
      "motivation": "Learn an embedding for a pseudo-token <obj> from a few images, then boost/cut the "
@@ -510,7 +511,7 @@ EXPERIMENTS = [
      "verdict": "Toolkit mapped on SD1.5: phase carries content (cross-arch confirm of E30); per-object/lerp "
                 "are do-little-harm, most band surgery degrades.",
      "nxt": "Lift the phase>mag + high-vs-low findings back to Flux; feeds E33/E34.",
-     "script": "experiments/e35_op_sweep.py", "doc": "EXPERIMENT_35.md", "results": "e35", "image": None},
+     "script": "experiments/e35_op_sweep.py", "doc": "EXPERIMENT_35.md", "results": None, "image": None},
 
     {"id": "E37", "title": "Velocity spectral normalization (CFG velocity → cfg=1 amplitude, SD3.5)",
      "thread": "spectral-power", "models": "SD3.5-medium", "status": "mapped",
@@ -531,4 +532,49 @@ EXPERIMENTS = [
      "nxt": "Multi-seed (n=4) + high-band cut sweep + band-amplify/late-window + official Mask2Former scorer; DPG-Bench.",
      "script": "experiments/e37_geneval.py", "doc": "EXPERIMENT_37.md",
      "results": "e37", "image": None},
+
+    {"id": "E38", "title": "Frequency DIRECTION of CFG — paired magnitude + phase along the trajectory (FLUX.1-dev)",
+     "thread": "spectral-power", "models": "FLUX.1-dev", "status": "pending",
+     "motivation": "E7 found cfg=1 vs 3.5 latents differ mainly in POWER while the *marginal* phase stats look "
+                   "identical — but a uniform marginal histogram does NOT mean phase is untouched. Same prompt+seed "
+                   "makes the two latents point-wise comparable, so ask the PAIRED question: does raising cfg rotate "
+                   "each Fourier coefficient's phase in a coherent, band-specific way (a real phase direction a "
+                   "histogram would miss), or are the rotations random?",
+     "method": "cfg ∈ {1.0,3.5,7.0}, same 10 prompts/seed, full per-step latent trajectory. Per radial band: "
+               "magnitude direction = d log-power/d cfg (LS slope); phase coherence = magnitude-weighted "
+               "|Σ w_k r_k|/Σ w_k (1 = every coeff rotates the same angle, ~1/√N = random); dominant rotation angle. "
+               "Binned early/mid/late.",
+     "result": "Run artifacts were not persisted from the cluster — no saved results to report.",
+     "verdict": "OPEN — code complete, outputs not saved; rerun needed to settle whether CFG has a coherent per-band phase direction.",
+     "nxt": "Rerun on cluster and persist results/e38; if a phase direction exists, fold it into the velocity-normalization line (E37).",
+     "script": "experiments/e38_cfg_direction.py", "doc": None, "results": None, "image": None},
+
+    {"id": "E39", "title": "Spectral band-AdaIN — soft-radial-band magnitude (mean+std) knob in the sampler",
+     "thread": "style", "models": "FLUX.1-dev (interactive demo)", "status": "mapped",
+     "motivation": "Generalize E18's Fourier-AdaIN and the E8/E23 SBN into one sampler-side operator (outside the "
+                   "network) that rewrites per-band magnitude toward a chosen source while reusing content phase — a "
+                   "pure frequency knob, orthogonal to the network's semantic AdaLN.",
+     "method": "Soft radial Gaussian-ring bands forming a partition of unity (∑ m_k = 1); per band normalize |V| by "
+               "mask-weighted moments and rewrite to the source's mean AND std; reuse content phase; restore the "
+               "self-conjugate bins so ifft.real loses ~1e-8. Exposed as a single-pass self-AdaIN (global / 3-band) "
+               "in the Spectral AdaIN demo tab via adain_affine.",
+     "result": "Operator verified real (~1e-8 round-trip) and interactive; lives in the demo tab, no batch metrics saved.",
+     "verdict": "A clean soft-band magnitude knob (mean+std) generalizing SBN+AdaIN; works as a live frequency dial, not yet benchmarked.",
+     "nxt": "Quantify vs E18/E23 on adherence/fidelity; exercise the learned BandSchedule.",
+     "script": "experiments/e39_spectral_adain.py", "doc": "EXPERIMENT_39.md", "results": None, "image": None},
+
+    {"id": "E40", "title": "RF inversion + trajectory-matched low-band spectral clamp (real-image editing, FLUX)",
+     "thread": "style", "models": "FLUX.1-dev", "status": "active",
+     "motivation": "Edit a real image with FLUX while preserving structure under an aggressive edit prompt. Improve on "
+                   "BandLock (E21/E22), which clamps to a single FIXED source latent x0, by clamping to the σ-aligned "
+                   "inversion *trajectory* instead.",
+     "method": "RF-invert backwards (σ:0→1) under the source caption, recording traj[i] at every σ node; regenerate "
+               "forward (σ:1→0) under the edit prompt; at each step clamp the latent's low band [0,cut] toward traj[i] "
+               "at the matching σ. Three modes reuse repo primitives — sbn (per-band power), phase (power + low-band "
+               "phase lock), adain (mean+std).",
+     "result": "σ-aligned trajectory reference keeps coarse layout while the high band follows the edit (default sbn "
+               "cut=0.25, strength=0.5). Interactive in the RF inversion demo tab; no saved results/ dir.",
+     "verdict": "Trajectory-matched low-band clamp preserves structure where fixed-x0 BandLock (E21/E22) drifted; current live demo feature.",
+     "nxt": "Quantify the structure/edit trade-off across cut/strength and the three modes; metricize vs E21/E22.",
+     "script": "experiments/e40_spectral_invert.py", "doc": "EXPERIMENT_40.md", "results": None, "image": None},
 ]
