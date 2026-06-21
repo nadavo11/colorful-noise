@@ -1099,3 +1099,72 @@ the invert tab. (Ongoing: pushing structure preservation further.)
 
 **Artifacts.** `experiments/e40_spectral_invert.py` (`--part gen,analyze`), invert tab in
 `experiments/spectral_demo.py`. Outputs to `results/e40/`: per-source strips + `index.html`.
+
+## E41 — Calibrating the RF-inversion spectral-clamp edit vs a fair RF-inv baseline (Flux)
+
+**Method.** Factor E40's RF-invert + low-band spectral-clamp edit out of the demo into
+`invert_core` and add an RF-inversion **eta** controller (`v += eta*(v_target−v)`) as a true
+baseline. `struct_metrics.py` = DINO self-similarity structure distance + CLIP-directional +
+masked background PSNR/LPIPS. Stratified ~140-image **PIE-Bench++** loader (with masks).
+`e41_calibrate.py` runs an Optuna TPE **per-image** active calibration (minimise DINO struct
+s.t. CLIP-dir ≥ vanilla) plus a fixed 54-point **global**-knob grid, both placed on the RF-inv
+eta Pareto frontier. Self-gating sharded RunAI orchestration (`cluster_e41_job.sh`).
+
+**Key result.** Ran on runai (140 PIE-Bench imgs). Ours beats **vanilla RF-inversion** on every
+metric (DINO struct **0.162 vs 0.199**, LPIPS **0.50 vs 0.60**, CLIP-dir **0.140 vs 0.123**). At
+**matched editability** vs the full eta sweep it is ~tied (gap ~0, wins 31/63) and edits beyond
+RF-inv's eta range on 77/140. A single grid-picked global knob sits near the per-image oracle.
+
+**Verdict.** The low-band spectral-clamp edit is a legitimate RF-inversion-class editor — beats
+vanilla RF-inv and ties the eta frontier at matched editability — but ties rather than wins, so
+preserving structure *more* needs another handle (→ E42, E43).
+
+**Artifacts.** `experiments/e41_calibrate.py`, `struct_metrics.py`, `piebench.py`,
+`invert_core.py`; `cluster_e41_job.sh` / `submit_e41.sh`. Outputs to `results/e41/`.
+
+## E42 — DINOv2-structure-gated spectral clamp (Flux)
+
+**Method.** Gate E41's uniform low-band clamp by a **DINOv2 saliency map** — lock the background
+hard, free the foreground: `lat = G·clamped + (1−G)·current`, `G ∈ [0,1]` (worktree
+`e42-dino-gate`, cluster job `e42h`). 30 PIE-Bench images, fixed dancers config; scored with
+`struct_metrics`.
+
+**Key result.** Ran on runai. **More editability but worse structure** vs the global clamp:
+CLIP-dir 0.105→0.118 (wins 19/30) but DINO struct **0.187→0.199** (wins only 5/30), LPIPS/DSSIM
+also worse (~25–27/30). It's **structural, not tuning**: a gate in [0,1] can only *relax* the
+global lock, never strengthen it, so no ≤1 spatial gate beats a full low-band lock on structure.
+
+**Verdict.** **NO-GO** for "preserve structure more." To preserve structure *more* you must
+*strengthen* the clamp where structure lives (widen band / add steps), from a partial-clamp
+baseline with headroom. The structure win instead arrives inversion-free in E43.
+
+**Artifacts.** Worktree `e42-dino-gate` (not merged to main); `struct_metrics.py`. Cluster job
+`e42h`.
+
+## E43 — FlowAlign on FLUX + spectral terminal-point variants (Flux)
+
+**Method.** Port **FlowAlign** (arXiv:2505.23145 = inversion-free FlowEdit + a source-consistency
+TERMINAL-POINT term, CFG with the **source** prompt as the negative) to FLUX in
+`invert_core.flowalign` — shared by the demo's FlowAlign tab and the `e43_flowalign.py` harness
+(3 velocity forwards/step). Two spectral twists, both **identity at defaults**: (1) **SBN on the
+CFG reference** — clamp the CFG velocity `vp`'s low radial band toward `v(pt,c_src)`, modes
+band-power / mag / **phase** / both (reuses E37 `velocity_spectral_ops`); (2) **annealed terminal
+point** — low-pass the consistency vector coarse→fine over steps. Small qualitative sweep: 3
+scenes × `w ∈ {5,7,10}`, 28 steps; scored with `struct_metrics` (DINO struct, CLIP-directional,
+LPIPS). Identity gate: `C_tar==C_src` must reproduce the source.
+
+**Key result.** Ran on runai. Identity gate holds (recon struct ~0.003–0.005). **`sbn_phase`
+(low-band phase-lock, cut=0.2) beats plain FlowAlign on all 3 scenes at every w** — roughly
+*halves* DINO structure distance (e.g. **0.056 vs 0.124**) while *raising* CLIP-directional (mean
+ΔStruct −0.055…−0.061, ΔClip +0.037…+0.085). `sbn_bp` wins 2/3 (3/3 at w=10); the annealed
+terminal point is a null. The job's automatic GOAL gate reports **PASS** (4 winning
+config×variant settings).
+
+**Verdict.** First editing lever that preserves structure **more** than the baseline *without* an
+editability cost — low-band phase-lock of the CFG velocity strictly beats FLUX-FlowAlign on both
+axes. (8-step smoke is misleading — sbn_phase there collapses CLIP; need ≥28 steps.)
+
+**Artifacts.** `experiments/e43_flowalign.py`, `invert_core.flowalign`, FlowAlign tab in
+`experiments/spectral_demo.py`; `cluster_e43_job.sh` (smoke→identity gate→w-sweep→GOAL gate).
+Outputs to `results/e43_w5|w7|w10/`: per-scene strips + `index.html`. See
+`docs/experiment-reports/EXPERIMENT_43.md`.

@@ -531,4 +531,62 @@ EXPERIMENTS = [
      "nxt": "Multi-seed (n=4) + high-band cut sweep + band-amplify/late-window + official Mask2Former scorer; DPG-Bench.",
      "script": "experiments/e37_geneval.py", "doc": "EXPERIMENT_37.md",
      "results": "e37", "image": None},
+
+    {"id": "E41", "title": "Calibrating the RF-inversion spectral-clamp edit vs a fair RF-inv (eta) baseline",
+     "thread": "style", "models": "FLUX.1-dev", "status": "mapped",
+     "motivation": "E40 gave RF-inversion + a low-band velocity spectral clamp as a real-image editor, but with "
+                   "hand-set global knobs and no fair RF-inversion baseline. Can per-image calibration match/beat "
+                   "RF-inversion at EQUAL editability, and does one global knob suffice?",
+     "method": "Factor the RF-invert + spectral-clamp edit out of the demo into invert_core (+ an RF-inversion eta "
+               "controller v+=eta*(v_target-v) for a true baseline). struct_metrics.py = DINO self-similarity "
+               "structure distance + CLIP-directional + masked BG PSNR/LPIPS. Stratified ~140-image PIE-Bench++ "
+               "loader (with masks). Optuna TPE per-image active calibration (min DINO struct s.t. CLIP-dir >= "
+               "vanilla) plus a fixed 54-point global-knob grid, both placed on the RF-inv eta Pareto frontier. "
+               "Self-gating sharded RunAI orchestration.",
+     "result": "Ran on runai (140 PIE-Bench imgs). Beats VANILLA RF-inversion on every metric (DINO struct 0.162 "
+               "vs 0.199, LPIPS 0.50 vs 0.60, CLIP-dir 0.140 vs 0.123). At matched editability vs the full eta "
+               "sweep it is ~tied (gap ~0, wins 31/63) and edits beyond RF-inv's eta range on 77/140. A single "
+               "grid-picked global knob sits near the per-image oracle -> a deployable fair-comparison point.",
+     "verdict": "The low-band spectral-clamp edit is a legitimate RF-inversion-class editor: strictly beats vanilla "
+                "RF-inv and ties the eta frontier at matched editability, with a usable global knob.",
+     "nxt": "Tie at matched editability => need structure headroom: gate the clamp by structure (E42), or drop "
+            "inversion entirely for FlowEdit/FlowAlign (E43).",
+     "script": "experiments/e41_calibrate.py", "doc": None, "results": "e41", "image": None},
+
+    {"id": "E42", "title": "DINOv2-structure-gated spectral clamp (lock background, free foreground)",
+     "thread": "style", "models": "FLUX.1-dev", "status": "dead-end",
+     "motivation": "E41's clamp locks the WHOLE low band uniformly. Can a DINOv2 saliency gate preserve structure "
+                   "MORE by locking the background hard while freeing the foreground to edit?",
+     "method": "Gate E41's low-band clamp by a DINOv2 saliency map: lat = G*clamped + (1-G)*current, G in [0,1] "
+               "(worktree e42-dino-gate, cluster job e42h). 30 PIE-Bench images, fixed dancers config; scored with "
+               "struct_metrics (DINO struct / CLIP-dir / LPIPS / DSSIM).",
+     "result": "Ran on runai. More editability but WORSE structure vs the global clamp: CLIP-dir 0.105->0.118 "
+               "(wins 19/30) but DINO struct 0.187->0.199 (wins only 5/30), LPIPS/DSSIM also worse (~25-27/30). "
+               "Structural, not tuning: a gate in [0,1] can only RELAX the global lock, never strengthen it, so no "
+               "<=1 spatial gate can beat a full low-band lock on structure.",
+     "verdict": "NO-GO for 'preserve structure more'. To preserve structure MORE you must STRENGTHEN the clamp where "
+                "structure lives (gate able to widen band / add steps), starting from a partial-clamp baseline.",
+     "nxt": "Abandon the gate-down approach; the structure win instead comes from inversion-free FlowAlign (E43).",
+     "script": None, "doc": None, "results": None, "image": None},
+
+    {"id": "E43", "title": "FlowAlign on FLUX + spectral terminal-point variants",
+     "thread": "style", "models": "FLUX.1-dev", "status": "active",
+     "motivation": "FlowAlign (arXiv:2505.23145) = inversion-free FlowEdit + a source-consistency TERMINAL-POINT "
+                   "term, CFG with the source prompt as the negative. Can a spectral twist on it beat plain "
+                   "FlowAlign on structure preservation WITHOUT losing edit adherence?",
+     "method": "Port FlowAlign to FLUX in invert_core.flowalign (shared by the demo's FlowAlign tab + the e43 "
+               "harness, 3 velocity forwards/step). Two twists, both identity at defaults: (1) SBN on the CFG "
+               "reference -- clamp the CFG velocity vp's low radial band toward v(pt,c_src), modes band-power / mag "
+               "/ phase / both (reuses E37 velocity_spectral_ops); (2) annealed terminal point -- low-pass the "
+               "consistency vector coarse->fine over steps. Small qualitative sweep: 3 scenes x w in {5,7,10}, "
+               "28 steps; scored with struct_metrics (DINO struct, CLIP-directional, LPIPS).",
+     "result": "Ran on runai. Identity gate holds (recon struct ~0.003-0.005). sbn_phase (low-band phase-lock, "
+               "cut=0.2) BEATS plain FlowAlign on all 3 scenes at every w -- roughly halves DINO structure distance "
+               "(e.g. 0.056 vs 0.124) while RAISING CLIP-directional (mean dStruct -0.055..-0.061, dClip "
+               "+0.037..+0.085). sbn_bp wins 2/3 (3/3 at w=10); annealed terminal point is a null.",
+     "verdict": "First editing lever that preserves structure MORE than the baseline without an editability cost: "
+                "low-band phase-lock of the CFG velocity strictly beats FLUX-FlowAlign on structure AND editability.",
+     "nxt": "Confirm on the full 700-image PIE-Bench set (+ masks for BG-PSNR/BG-LPIPS); SD3.5 port; sweep "
+            "sbn_cut / phase strength to map the structure/editability frontier.",
+     "script": "experiments/e43_flowalign.py", "doc": "EXPERIMENT_43.md", "results": None, "image": None},
 ]
