@@ -1,0 +1,11 @@
+{
+  "eid": "E41",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e41_calibrate.py",
+  "results_dir": "e41",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

@@ -68,4 +68,18 @@ def save_grid(rows, row_labels, col_labels, out_path, thumb=320):
             sheet.paste(im.resize((thumb, thumb)), (label_w + j * (thumb + pad), y))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     sheet.save(out_path)
+
+
+def data_uri(path, max_px=1600, quality=85):
+    """Read an image and return a base64 data: URI (downscaled JPEG), so a page
+    can embed it and stay self-contained. Keep this name/signature stable."""
+    import base64
+    from io import BytesIO
+    im = Image.open(path).convert("RGB")
+    if max(im.size) > max_px:
+        r = max_px / max(im.size)
+        im = im.resize((round(im.width * r), round(im.height * r)))
+    buf = BytesIO()
+    im.save(buf, "JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
     return out_path

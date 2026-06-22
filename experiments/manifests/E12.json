@@ -1,0 +1,11 @@
+{
+  "eid": "E12",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e12_phase_dist.py",
+  "results_dir": "e12",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

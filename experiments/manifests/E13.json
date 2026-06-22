@@ -1,0 +1,11 @@
+{
+  "eid": "E13",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e13_phase_mag_swap.py",
+  "results_dir": "e13",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

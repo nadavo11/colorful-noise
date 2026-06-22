@@ -1,5 +1,11 @@
 # Explainer rewrite standard (+ a reusable prompt)
 
+> **Note (2026-06):** the per-experiment HTML generators (`eNN_site.py` / `--part site`) are
+> **retired** — the navigable site is now the registry-driven roadmap (`docs/roadmap/`, generated
+> from `experiments/roadmap_registry.py`). This standard now applies to the **markdown** report
+> (`docs/experiment-reports/EXPERIMENT_NN.md`); the HTML-generator mechanics below are kept only as
+> historical reference.
+
 Most experiment reports (the per-experiment `results/eNN/index.html` and the top-level
 `EXPERIMENT_NN.md`) were written results-first: a wall of image strips, then bare metric
 tables, with the variant names (`notch_lo`, `mag_only`, `band_swap`, …) never defined. That is
@@ -23,7 +29,7 @@ unreadable to anyone who didn't write the code.
 
 **Mechanics learned on E30/E31 (reuse these):**
 - Build the HTML in the experiment's own `_site()` (or a `eNN_site.py`); embed images as base64
-  via `from e27_site import data_uri` so the page is one portable file.
+  via `from common import data_uri` so the page is one portable file.
 - Add a **model-free `--part site`** that loads `results/eNN/report.json` and re-templates the
   page **without loading any model or re-scoring** (all numbers already live in `report.json`).
   This makes the page rebuildable anywhere and is how you regenerate after editing the explainer.
@@ -39,7 +45,7 @@ unreadable to anyone who didn't write the code.
 
 > Rewrite experiment **E\<NN\>**'s explainer — both `EXPERIMENT_<NN>.md` and the HTML report
 > generator (`experiments/e<NN>_*.py`'s `_site()`, or `e<NN>_site.py`) — to the project's
-> explainer standard in `experiments/EXPLAINER_STANDARD.md`. Use `experiments/e29_site.py` +
+> explainer standard in `docs/methods/EXPLAINER_STANDARD.md`. Use `experiments/e29_site.py` +
 > `EXPERIMENT_29.md` (and the E30/E31 versions) as the template.
 >
 > First read the driver `experiments/e<NN>_*.py` and `EXPERIMENT_<NN>.md` and extract: every
@@ -57,7 +63,7 @@ unreadable to anyone who didn't write the code.
 >    strips under one heading).
 > 5. End with **Caveats & next** and **Reproduce**.
 >
-> In the generator, embed images as base64 (`from e27_site import data_uri`), reuse the E30 CSS
+> In the generator, embed images as base64 (`from common import data_uri`), reuse the E30 CSS
 > (`.tldr/.look/.read/.cav`, glossary `dl`, `td.pos` highlight), and **add a model-free
 > `--part site`** that rebuilds `index.html` from `results/e<NN>/report.json` + cached strips
 > with no model load. The `.md` and the HTML must tell the same story and define the same terms.

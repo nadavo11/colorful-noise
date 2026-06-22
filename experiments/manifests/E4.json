@@ -1,0 +1,11 @@
+{
+  "eid": "E4",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e4_zero_snr.py",
+  "results_dir": "e4",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

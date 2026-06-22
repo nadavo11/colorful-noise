@@ -1,0 +1,11 @@
+{
+  "eid": "E8",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e8_psd_clamp.py",
+  "results_dir": "e8",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

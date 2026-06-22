@@ -481,7 +481,7 @@ def _site(report, parts=None):
     Pure templating from `report` (= results/e30/report.json) + the saved strips on disk;
     loads no model and re-scores nothing, so the page rebuilds anywhere (`--part site`)."""
     try:
-        from e27_site import data_uri  # base64 embed -> portable single file
+        from common import data_uri  # base64 embed -> portable single file
     except Exception:
         data_uri = None
 

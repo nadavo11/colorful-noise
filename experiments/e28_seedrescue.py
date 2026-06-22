@@ -95,13 +95,10 @@ def bvqa_full(bvqa, prompt, img):
 
 
 def run_site():
-    """Rebuild results/e28/index.html from report.json + cached figures. Loads NO model and
-    re-scores nothing (all numbers already live in report.json), so it runs anywhere."""
-    from e28_site import build
-    if build() is None:
-        print("[e28] --part site: no results/e28/report.json yet (regeneration BLOCKED until a "
-              "run exists). index.html left as-is; generate first with: "
-              "python experiments/e28_seedrescue.py", flush=True)
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e28] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 def main():

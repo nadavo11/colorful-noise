@@ -1,6 +1,7 @@
 """Single source of truth for the research roadmap (docs/roadmap/).
 
-This file describes the research *vectors* (threads) and every experiment E0-E31:
+This file describes the research *vectors* (threads) and every experiment E0-E43
+(E3 was never run; E33/E34 are proposed-only):
 what each one asked, what we found, whether the direction is alive or a dead end,
 and how to proceed. `make_roadmap.py` reads this and regenerates the HTML site.
 
@@ -259,7 +260,7 @@ EXPERIMENTS = [
                "the unguided field is spectrally *weaker* than real.",
      "verdict": "CFG inflates low-freq power above natural -- the fact SBN clamps back.",
      "nxt": "Target the REAL spectrum instead of the cfg=1 proxy (E23).",
-     "script": "experiments/e10_cfg_spectral.py", "doc": "EXPERIMENT_10.md", "results": "e10", "image": None},
+     "script": "experiments/e10_cfg_spectral.py", "doc": "docs/experiment-reports/EXPERIMENT_10.md", "results": "e10", "image": None},
     {"id": "E11", "title": "Cheap colour/contrast correction of SBN outputs", "thread": "spectral-power",
      "models": "FLUX.1-dev", "status": "done",
      "motivation": "SBN clamps power but can shift palette/contrast; fix it cheaply post-hoc.",
@@ -309,7 +310,7 @@ EXPERIMENTS = [
      "result": "Flux's distilled guidance makes the high-CFG regime odd; full scored run pending.",
      "verdict": "The contest is FIDELITY, not adherence -- motivates the SD3.5 port.",
      "nxt": "Re-run on a true-CFG model, SD3.5 (E17).",
-     "script": "experiments/e16_baselines.py", "doc": None, "results": "e16", "image": None},
+     "script": "experiments/e16_baselines.py", "doc": "docs/experiment-reports/EXPERIMENT_16.md", "results": None, "image": None},
     {"id": "E17", "title": "SD3.5 port (true CFG): SBN vs CFG-Zero* + CompBench harness", "thread": "spectral-power",
      "models": "SD3.5-medium", "status": "pending",
      "motivation": "Flux's distilled guidance is odd; port the methods to a true-CFG model.",
@@ -318,7 +319,7 @@ EXPERIMENTS = [
      "result": "Backend + harness written and reused downstream; results/e17 run pending.",
      "verdict": "The SD3.5 base camp for the style + benchmark work.",
      "nxt": "Run the scored conditions; feed real-SBN target into SD3.5 VAE space (E23).",
-     "script": "experiments/e17_sd35_compare.py", "doc": "EXPERIMENT_17.md", "results": "e17", "image": None},
+     "script": "experiments/e17_sd35_compare.py", "doc": "docs/experiment-reports/EXPERIMENT_17.md", "results": "e17", "image": None},
     # ---- style -------------------------------------------------------------
     {"id": "E18", "title": "Offline two-image spectral recombination (AdaIN-in-Fourier)", "thread": "style",
      "models": "SD3.5 / Flux VAE", "status": "mapped",
@@ -328,7 +329,7 @@ EXPERIMENTS = [
                "it ~halves the spectral distance to a painting -- but transfers tone, not strokes.",
      "verdict": "AdaIN-in-Fourier = real spectral *tone/palette* transfer; VAE-dependent (SD3.5).",
      "nxt": "Do it generation-time (E19).",
-     "script": "experiments/e18_spectral_recombine.py", "doc": "EXPERIMENT_18.md", "results": "e18", "image": None},
+     "script": "experiments/e18_spectral_recombine.py", "doc": "docs/experiment-reports/EXPERIMENT_18.md", "results": "e18", "image": None},
     {"id": "E19", "title": "Generation-time spectral style transfer", "thread": "style",
      "models": "SD3.5-medium", "status": "pending",
      "motivation": "Generate a content prompt while clamping its spectrum toward a style image.",
@@ -336,7 +337,7 @@ EXPERIMENTS = [
      "result": "Model-free preflight passes (strength=0 == SBN); gen/score needs the SD3.5 run.",
      "verdict": "Headline of the style thread; code-complete, awaiting cluster.",
      "nxt": "Run gen/score; add hybrid / morph / two-prompt modes (operators exist).",
-     "script": "experiments/e19_spectral_style.py", "doc": "EXPERIMENT_18.md", "results": "e19", "image": None},
+     "script": "experiments/e19_spectral_style.py", "doc": "docs/experiment-reports/EXPERIMENT_18.md", "results": "e19", "image": None},
     {"id": "E20", "title": "Spectral warm-start (skip the beginning of generation)", "thread": "style",
      "models": "SD3.5-medium", "status": "pending",
      "motivation": "If low-band phase locks in early, can we inject it and skip early steps?",
@@ -345,7 +346,7 @@ EXPERIMENTS = [
      "result": "Phase-convergence lock-in metric + oracle ceiling built; full gen run pending.",
      "verdict": "Warm-start is plausible (low band locks first); needs the timing run.",
      "nxt": "Measure real step savings vs the oracle ceiling.",
-     "script": "experiments/e20_warmstart.py", "doc": "EXPERIMENT_20.md", "results": "e20", "image": None},
+     "script": "experiments/e20_warmstart.py", "doc": "docs/experiment-reports/EXPERIMENT_20.md", "results": "e20", "image": None},
     {"id": "E21", "title": "RF-inversion frequency-band editing (SD3.5) -- gate fails", "thread": "style",
      "models": "SD3.5-medium", "status": "dead-end",
      "motivation": "Edit a real photo: invert to noise, regenerate under a new prompt, lock source bands.",
@@ -353,7 +354,7 @@ EXPERIMENTS = [
      "result": "Reconstruction GATE fails: RF inversion on SD3.5 drifts; editing is moot until it holds.",
      "verdict": "RF inversion on SD3.5 is unreliable -- pivot to a model where DDIM inversion works.",
      "nxt": "Redo on SDXL with DDIM inversion (E22).",
-     "script": "experiments/e21_spectral_edit.py", "doc": "EXPERIMENT_21.md", "results": "e21", "image": None},
+     "script": "experiments/e21_spectral_edit.py", "doc": "docs/experiment-reports/EXPERIMENT_21.md", "results": "e21", "image": None},
     {"id": "E22", "title": "DDIM-inversion frequency-band editing (SDXL pivot)", "thread": "style",
      "models": "SDXL", "status": "mapped",
      "motivation": "E21 stalled on inversion; SDXL (eps-pred) inverts reliably with DDIM.",
@@ -362,7 +363,7 @@ EXPERIMENTS = [
                "but trades down edit strength; power-lock fails to hold layout.",
      "verdict": "A real structure<->edit frontier; phase-lock = composition, power-lock != layout.",
      "nxt": "Tune the lock/strength dials; try anisotropic bands for true strokes.",
-     "script": "experiments/e22_ddim_edit.py", "doc": "EXPERIMENT_22.md", "results": "e22", "image": None},
+     "script": "experiments/e22_ddim_edit.py", "doc": "docs/experiment-reports/EXPERIMENT_22.md", "results": "e22", "image": None},
     # ---- spectral-power payoff --------------------------------------------
     {"id": "E23", "title": "Real-image spectral target (“real-SBN”)", "thread": "spectral-power",
      "models": "FLUX.1-dev", "status": "active",
@@ -374,7 +375,7 @@ EXPERIMENTS = [
                "init-noise shaping fails.",
      "verdict": "The live payoff of the SBN line -- real-photo target is the right one.",
      "nxt": "Bake a fixed per-channel correction curve; confirm B-VQA adherence; port to SD3.5 VAE.",
-     "script": "experiments/e23_real_sbn.py", "doc": "EXPERIMENT_23.md", "results": "e23", "image": None},
+     "script": "experiments/e23_real_sbn.py", "doc": "docs/experiment-reports/EXPERIMENT_23.md", "results": "e23", "image": None},
     # ---- text-frequency ----------------------------------------------------
     {"id": "E24", "title": "Token-axis FFT on the TEXT conditioning (FNet-motivated)", "thread": "text-freq",
      "models": "FLUX.1-dev", "status": "mapped",
@@ -385,7 +386,7 @@ EXPERIMENTS = [
                "token phase ~ identity.",
      "verdict": "Token-frequency bands are real and editable; merging two spectra is not the win.",
      "nxt": "Make it a continuous knob and characterise each band (E30).",
-     "script": "experiments/e24_text_spectral.py", "doc": "EXPERIMENT_24.md", "results": "e24", "image": None},
+     "script": "experiments/e24_text_spectral.py", "doc": "docs/experiment-reports/EXPERIMENT_24.md", "results": None, "image": None},
     # ---- seed steering (dead end) -----------------------------------------
     {"id": "E25", "title": "Seed-alignment pilot: bias the seed toward the prompt (SD1.5)", "thread": "seed",
      "models": "SD1.5", "status": "dead-end",
@@ -394,7 +395,7 @@ EXPERIMENTS = [
      "result": "A gentle, do-no-harm palette/composition lever -- but only a lever, not a fix.",
      "verdict": "Latent-mode is the gentlest variant; effect is mild.",
      "nxt": "Scale up on SDXL + DPG-Bench and sweep cost (E26).",
-     "script": "experiments/e25_seedalign.py", "doc": "EXPERIMENT_26.md", "results": "e25", "image": None},
+     "script": "experiments/e25_seedalign.py", "doc": "docs/experiment-reports/EXPERIMENT_26.md", "results": "e25", "image": None},
     {"id": "E26", "title": "Seed-alignment on SDXL + DPG-Bench + step sweep", "thread": "seed",
      "models": "SDXL", "status": "dead-end",
      "motivation": "Does the seed lever hold up at 1024px on a real adherence benchmark?",
@@ -402,7 +403,7 @@ EXPERIMENTS = [
      "result": "Break-even at best -- N=1 (barely touched) is as good as heavier optimisation.",
      "verdict": "More seed optimisation does not buy more adherence.",
      "nxt": "Distil to a single reusable direction (E27).",
-     "script": "experiments/e26_seedalign_sdxl.py", "doc": "EXPERIMENT_26.md", "results": "e26", "image": None},
+     "script": "experiments/e26_seedalign_sdxl.py", "doc": "docs/experiment-reports/EXPERIMENT_26.md", "results": "e26", "image": None},
     {"id": "E27", "title": "A single “concept direction” in the seed (CLIP->latent pullback)", "thread": "seed",
      "models": "SDXL", "status": "dead-end",
      "motivation": "Replace per-prompt optimisation with one additive seed direction.",
@@ -410,7 +411,7 @@ EXPERIMENTS = [
      "result": "Anchor-independent but too blunt; iterative use shifts palette, not composition.",
      "verdict": "A single direction is too coarse for compositional control.",
      "nxt": "Run the decisive regime test on hard compositional failures (E28).",
-     "script": "experiments/e27_seeddir.py", "doc": "EXPERIMENT_27.md", "results": "e27", "image": None},
+     "script": "experiments/e27_seeddir.py", "doc": "docs/experiment-reports/EXPERIMENT_27.md", "results": "e27", "image": None},
     {"id": "E28", "title": "Does seed-biasing RESCUE dropped compositional elements?", "thread": "seed",
      "models": "SDXL", "status": "dead-end",
      "motivation": "The decisive test: on CompBench failures, does seed-bias recover missing elements?",
@@ -418,7 +419,7 @@ EXPERIMENTS = [
      "result": "Seed-bias LOSES to re-roll (seed-dependent recovery .57 vs .43/.29) and breaks passers.",
      "verdict": "Seed-as-adherence is a DEAD END; best-of-N + a picker wins.",
      "nxt": "Stop; the residue (seed->output determinism) feeds E29.",
-     "script": "experiments/e28_seedrescue.py", "doc": "EXPERIMENT_28.md", "results": "e28", "image": None},
+     "script": "experiments/e28_seedrescue.py", "doc": "docs/experiment-reports/EXPERIMENT_28.md", "results": "e28", "image": None},
     # ---- phase: the diffusion map -----------------------------------------
     {"id": "E29", "title": "Phase inheritance: does the seed's phase fix the output's?", "thread": "phase",
      "models": "SD1.5", "status": "mapped",
@@ -429,7 +430,7 @@ EXPERIMENTS = [
                "~0); CFG erodes it most in low-freq bands; transplant confirms causality (follow ~0.66).",
      "verdict": "The seed fixes the WHOLE output spectrum at low CFG -- not a phase-specific channel.",
      "nxt": "Repeat on Flux/SD3.5 (rectified flow) for architecture-independence.",
-     "script": "experiments/e29_phase_inherit.py", "doc": "EXPERIMENT_29.md", "results": "e29", "image": None},
+     "script": "experiments/e29_phase_inherit.py", "doc": "docs/experiment-reports/EXPERIMENT_29.md", "results": "e29", "image": None},
     # ---- text-frequency follow-ups ----------------------------------------
     {"id": "E30", "title": "Continuous text-frequency control & extraction", "thread": "text-freq",
      "models": "FLUX.1-dev", "status": "mapped",
@@ -442,7 +443,7 @@ EXPERIMENTS = [
                "blending still loses to literally writing 'A and B' (concat B-VQA 0.85 vs merges ~0).",
      "verdict": "Spectrum characterised and structured, but blending is descriptive, not a better control knob.",
      "nxt": "Optional VQAScore corroboration; structure understood, no new control lever here.",
-     "script": "experiments/e30_text_freq_control.py", "doc": "EXPERIMENT_30.md", "results": "e30", "image": None},
+     "script": "experiments/e30_text_freq_control.py", "doc": "docs/experiment-reports/EXPERIMENT_30.md", "results": "e30", "image": None},
     {"id": "E31", "title": "Real-image editing via FlowEdit + frequency-surgery conditioning", "thread": "text-freq",
      "models": "FLUX.1-dev", "status": "dead-end",
      "motivation": "Use token-frequency surgery as the target conditioning inside inversion-free editing.",
@@ -454,7 +455,7 @@ EXPERIMENTS = [
                "too weak to redirect the flow.",
      "verdict": "Token-frequency surgery does not drive inversion-free editing; can't out-edit a plain prompt swap.",
      "nxt": "Closes the text-freq editing route; latent-band editing (E22) remains the usable handle.",
-     "script": "experiments/e31_flowedit_freq.py", "doc": "EXPERIMENT_31.md", "results": "e31", "image": None},
+     "script": "experiments/e31_flowedit_freq.py", "doc": "docs/experiment-reports/EXPERIMENT_31.md", "results": "e31", "image": None},
     {"id": "E32", "title": "Per-object token-frequency control on two-object prompts", "thread": "text-freq",
      "models": "FLUX.1-dev", "status": "mapped",
      "motivation": "E30's band gain is global; can we boost/cut ONE object's frequencies and have it be "
@@ -473,7 +474,7 @@ EXPERIMENTS = [
                 "high band carries the binding effect.",
      "nxt": "Strengthen with longer object phrases (more bins) / larger N for presence significance; then "
             "the TI (E33) and channel-axis (E34) follow-ups.",
-     "script": "experiments/e32_object_freq.py", "doc": "EXPERIMENT_32.md", "results": "e32", "image": None},
+     "script": "experiments/e32_object_freq.py", "doc": "docs/experiment-reports/EXPERIMENT_32.md", "results": None, "image": None},
     {"id": "E33", "title": "Textual inversion of an object, then frequency-control its span (proposed)",
      "thread": "text-freq", "models": "SDXL / SD1.5 (TI tooling safer than Flux)", "status": "pending",
      "motivation": "Learn an embedding for a pseudo-token <obj> from a few images, then boost/cut the "
@@ -483,7 +484,7 @@ EXPERIMENTS = [
                "E32's span-windowed band_gain.",
      "result": "—", "verdict": "—",
      "nxt": "Implement after E32 reports; pick SDXL/SD1.5 for mature TI tooling.",
-     "script": None, "doc": "EXPERIMENT_32.md", "results": None, "image": None},
+     "script": None, "doc": "docs/experiment-reports/EXPERIMENT_32.md", "results": None, "image": None},
     {"id": "E34", "title": "Channel-axis (D=4096) interpretability of the text embedding (proposed)",
      "thread": "text-freq", "models": "FLUX.1-dev", "status": "pending",
      "motivation": "Which CHANNELS of the T5 embedding own which attributes (identity/color/texture/style), "
@@ -494,7 +495,7 @@ EXPERIMENTS = [
                "Composes with E32 span masking for per-object x per-channel edits.",
      "result": "—", "verdict": "—",
      "nxt": "Implement after E32; complements the frequency knob with a channel knob.",
-     "script": None, "doc": "EXPERIMENT_32.md", "results": None, "image": None},
+     "script": None, "doc": "docs/experiment-reports/EXPERIMENT_32.md", "results": None, "image": None},
     {"id": "E35", "title": "Token-frequency operator sweep on SD1.5 (scenarios x operators x params)",
      "thread": "text-freq", "models": "SD1.5", "status": "mapped",
      "motivation": "Systematically characterise the WHOLE token-freq operator toolkit: per operator x "
@@ -510,7 +511,7 @@ EXPERIMENTS = [
      "verdict": "Toolkit mapped on SD1.5: phase carries content (cross-arch confirm of E30); per-object/lerp "
                 "are do-little-harm, most band surgery degrades.",
      "nxt": "Lift the phase>mag + high-vs-low findings back to Flux; feeds E33/E34.",
-     "script": "experiments/e35_op_sweep.py", "doc": "EXPERIMENT_35.md", "results": "e35", "image": None},
+     "script": "experiments/e35_op_sweep.py", "doc": "docs/experiment-reports/EXPERIMENT_35.md", "results": None, "image": None},
 
     {"id": "E37", "title": "Velocity spectral normalization (CFG velocity → cfg=1 amplitude, SD3.5)",
      "thread": "spectral-power", "models": "SD3.5-medium", "status": "mapped",
@@ -529,8 +530,53 @@ EXPERIMENTS = [
      "verdict": "Touch only the HIGH band: high-freq velocity normalization toward cfg=1 is "
                 "free-to-beneficial; low/full bands erode compositional adherence.",
      "nxt": "Multi-seed (n=4) + high-band cut sweep + band-amplify/late-window + official Mask2Former scorer; DPG-Bench.",
-     "script": "experiments/e37_geneval.py", "doc": "EXPERIMENT_37.md",
+     "script": "experiments/e37_geneval.py", "doc": "docs/experiment-reports/EXPERIMENT_37.md",
      "results": "e37", "image": None},
+
+    {"id": "E38", "title": "Frequency DIRECTION of CFG — paired magnitude + phase along the trajectory (FLUX.1-dev)",
+     "thread": "spectral-power", "models": "FLUX.1-dev", "status": "pending",
+     "motivation": "E7 found cfg=1 vs 3.5 latents differ mainly in POWER while the *marginal* phase stats look "
+                   "identical — but a uniform marginal histogram does NOT mean phase is untouched. Same prompt+seed "
+                   "makes the two latents point-wise comparable, so ask the PAIRED question: does raising cfg rotate "
+                   "each Fourier coefficient's phase in a coherent, band-specific way (a real phase direction a "
+                   "histogram would miss), or are the rotations random?",
+     "method": "cfg ∈ {1.0,3.5,7.0}, same 10 prompts/seed, full per-step latent trajectory. Per radial band: "
+               "magnitude direction = d log-power/d cfg (LS slope); phase coherence = magnitude-weighted "
+               "|Σ w_k r_k|/Σ w_k (1 = every coeff rotates the same angle, ~1/√N = random); dominant rotation angle. "
+               "Binned early/mid/late.",
+     "result": "Run artifacts were not persisted from the cluster — no saved results to report.",
+     "verdict": "OPEN — code complete, outputs not saved; rerun needed to settle whether CFG has a coherent per-band phase direction.",
+     "nxt": "Rerun on cluster and persist results/e38; if a phase direction exists, fold it into the velocity-normalization line (E37).",
+     "script": "experiments/e38_cfg_direction.py", "doc": None, "results": None, "image": None},
+
+    {"id": "E39", "title": "Spectral band-AdaIN — soft-radial-band magnitude (mean+std) knob in the sampler",
+     "thread": "style", "models": "FLUX.1-dev (interactive demo)", "status": "mapped",
+     "motivation": "Generalize E18's Fourier-AdaIN and the E8/E23 SBN into one sampler-side operator (outside the "
+                   "network) that rewrites per-band magnitude toward a chosen source while reusing content phase — a "
+                   "pure frequency knob, orthogonal to the network's semantic AdaLN.",
+     "method": "Soft radial Gaussian-ring bands forming a partition of unity (∑ m_k = 1); per band normalize |V| by "
+               "mask-weighted moments and rewrite to the source's mean AND std; reuse content phase; restore the "
+               "self-conjugate bins so ifft.real loses ~1e-8. Exposed as a single-pass self-AdaIN (global / 3-band) "
+               "in the Spectral AdaIN demo tab via adain_affine.",
+     "result": "Operator verified real (~1e-8 round-trip) and interactive; lives in the demo tab, no batch metrics saved.",
+     "verdict": "A clean soft-band magnitude knob (mean+std) generalizing SBN+AdaIN; works as a live frequency dial, not yet benchmarked.",
+     "nxt": "Quantify vs E18/E23 on adherence/fidelity; exercise the learned BandSchedule.",
+     "script": "experiments/e39_spectral_adain.py", "doc": "docs/experiment-reports/EXPERIMENT_39.md", "results": None, "image": None},
+
+    {"id": "E40", "title": "RF inversion + trajectory-matched low-band spectral clamp (real-image editing, FLUX)",
+     "thread": "style", "models": "FLUX.1-dev", "status": "active",
+     "motivation": "Edit a real image with FLUX while preserving structure under an aggressive edit prompt. Improve on "
+                   "BandLock (E21/E22), which clamps to a single FIXED source latent x0, by clamping to the σ-aligned "
+                   "inversion *trajectory* instead.",
+     "method": "RF-invert backwards (σ:0→1) under the source caption, recording traj[i] at every σ node; regenerate "
+               "forward (σ:1→0) under the edit prompt; at each step clamp the latent's low band [0,cut] toward traj[i] "
+               "at the matching σ. Three modes reuse repo primitives — sbn (per-band power), phase (power + low-band "
+               "phase lock), adain (mean+std).",
+     "result": "σ-aligned trajectory reference keeps coarse layout while the high band follows the edit (default sbn "
+               "cut=0.25, strength=0.5). Interactive in the RF inversion demo tab; no saved results/ dir.",
+     "verdict": "Trajectory-matched low-band clamp preserves structure where fixed-x0 BandLock (E21/E22) drifted; current live demo feature.",
+     "nxt": "Quantify the structure/edit trade-off across cut/strength and the three modes; metricize vs E21/E22.",
+     "script": "experiments/e40_spectral_invert.py", "doc": "docs/experiment-reports/EXPERIMENT_40.md", "results": None, "image": None},
 
     {"id": "E41", "title": "Calibrating the RF-inversion spectral-clamp edit vs a fair RF-inv (eta) baseline",
      "thread": "style", "models": "FLUX.1-dev", "status": "mapped",
@@ -588,7 +634,27 @@ EXPERIMENTS = [
                 "low-band phase-lock of the CFG velocity strictly beats FLUX-FlowAlign on structure AND editability.",
      "nxt": "Confirm on the full 700-image PIE-Bench set (+ masks for BG-PSNR/BG-LPIPS); SD3.5 port; sweep "
             "sbn_cut / phase strength to map the structure/editability frontier.",
-     "script": "experiments/e43_flowalign.py", "doc": "EXPERIMENT_43.md", "results": None, "image": None},
+     "script": "experiments/e43_flowalign.py", "doc": "docs/experiment-reports/EXPERIMENT_43.md", "results": None, "image": None},
+
+    {"id": "E44", "title": "Apples-to-apples FlowAlign reproduction (+ ours) on PIE-Bench (SD3-medium)",
+     "thread": "style", "models": "SD3-medium (official FlowAlign)", "status": "active",
+     "motivation": "Validate the E43 win rigorously: first REPRODUCE FlowAlign's published PIE-Bench table on "
+                   "SD3-medium with their official code (hard gate), then port our spectral phase-clamp into the "
+                   "SAME SD3 FlowAlign loop and show lower Structure Distance at matched edited-CLIP.",
+     "method": "Official SD3FlowAlign sampler + official PnPInversion metrics (Structure Distance, bg-masked "
+               "PSNR/LPIPS/MSE/SSIM, whole + edited CLIP) on PIE-Bench (cached HF++ variant, RLE masks; CLIP forced "
+               "to ViT-base-patch16 to match the paper). Curve-based win criterion: sweep CFG ω∈{5,7.5,10,13.5} and "
+               "compare struct-dist vs edited-CLIP curves (Fig 3a). HP tuned on a disjoint Emu-Edit subset.",
+     "result": "In progress. Foundation smoke (bicycle, cfg13.5) PASS; 20-img mini pipeline PASS with numbers in "
+               "PIE-Bench range (struct 12.4e-3, bgPSNR 28.2, CLIP-edit 22.1, ~9s/edit). Reproduction target from "
+               "arXiv App. E (cfg10, SD3.0): FlowAlign struct 0.028 / bgPSNR 25.5 / CLIP-edit 22.0. Full "
+               "{5,7.5,10,13.5}×700 sweep running on runai.",
+     "verdict": "IN PROGRESS — reproduction gate not yet cleared; target numbers in hand, cfg sweep running with "
+                "base16-CLIP analyze. (Then port sbn_phase into the official SD3 loop.)",
+     "nxt": "Land on FlowAlign's Fig-3a curve at cfg10/700, then port the E43 sbn_phase clamp into the official SD3 "
+            "FlowAlign loop and compare curves at matched edited-CLIP.",
+     "script": "experiments/e44_flowalign_repro.py", "doc": "docs/experiment-reports/EXPERIMENT_44.md",
+     "results": "e44", "image": None},
 
     {"id": "E45", "title": "FlowAlign on LTX-Video + spatiotemporal phase op (temporal video editing)",
      "thread": "style", "models": "LTX-Video", "status": "active",
@@ -627,4 +693,34 @@ EXPERIMENTS = [
             "perceptual flicker metric (source-flow warp is confounded by the edited object). The phase op's honest "
             "value is structure preservation -- evaluate THAT on a real-video edit benchmark.",
      "script": "experiments/e45_ltx_flowalign.py", "doc": None, "results": None, "image": None},
+
+    {"id": "E46", "title": "Seed-phase fast editing -- 0-NFE phase prior vs SDEdit",
+     "thread": "seed", "models": "SDXL", "status": "dead-end",
+     "motivation": "Inversion editors pay many NFE; FlowEdit/FlowAlign cost >2 NFE/step; SDEdit is cheap but "
+                   "unreliable. Transplant the source's FFT PHASE (where structure lives) into a fresh seed for "
+                   "~0 NFE, then run one fast generation toward the target -- can a free phase prior make SDEdit "
+                   "reliable (phase=structure, fresh magnitude=editability)?",
+     "method": "SDXL. Source low-band phase on a white seed (phase_swap_2d), scored DINO-struct x CLIP-directional. "
+               "Derivations: averaging noised copies -> phase(x0) exactly (loop dominated); 100% pass is empty "
+               "(q(x_T) indep of x0); whitening phase == destroying structure (same axis); OOD-ness is phase "
+               "coherence, not the spectrum. Probes: P0 reconstruction mechanism; P1 editing frontier (8 SDXL-gen "
+               "sources, recipes A=phase-noise SDEdit, B=structured seed) vs vanilla SDEdit; P2 full-band phase "
+               "(Cfull) + phase-normalize (Cnorm); P3 three OOD escapes -- gamma phase-whiten, timestep injection, "
+               "colored amplitude -- and soft (gamma-blended) timestep injection. PIE-Bench deferred to cluster.",
+     "result": "P0: seed low-band phase controls layout (phaseB beats white 12/12 seed pairs; exact pose/arrangement "
+               "transfer) -- mechanism REAL. P1: neither recipe beats vanilla (A over-locks, editability collapses; "
+               "B Pareto-dominated; 0/8 wins). P2: Cfull preserves WORSE than low-band (white-amp + full image phase "
+               "= OOD fringing); Cnorm = e^{i.phi_src}.conj(Z) ~ white Gaussian == a random seed. P3: gamma is a "
+               "smooth structure<->edit knob (fringing grows with gamma); timestep injection is CLEAN/on-manifold and "
+               "structure 0.082 BEATS vanilla 0.093 but over-clamps (edit dies); colored amplitude = rainbow "
+               "artifacts (amp must stay white); soft injection (gamma=0.3) best+clean struct 0.081 but editability "
+               "caps ~0, never reaching vanilla +0.090.",
+     "verdict": "KILL the seed-phase EDITING direction -- 4th confirmation of the E41 frontier-trap: every variant "
+                "traces a structure<->editability frontier at-or-inside vanilla SDEdit's, because x0-carry is a "
+                "strictly better/cheaper structural anchor than any phase transplant. Mechanism (seed low-band phase "
+                "controls layout; clean timestep injection beats vanilla on structure) is REAL and KEPT.",
+     "nxt": "Only useful where there is NO x0 to carry (layout-conditioned T2I / cross-modal structure transfer). "
+            "If revisited: matched-editability vanilla-strength sweep; confirm P1 on official PIE-Bench (cluster).",
+     "script": "experiments/e46_seedphase.py", "doc": "docs/experiment-reports/EXPERIMENT_46.md",
+     "results": None, "image": None},
 ]

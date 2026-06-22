@@ -46,9 +46,5 @@ say "GPU idle sustained — starting expanded freqctrl run"
 python e9_freqctrl.py --seeds 5 2>&1 | tee -a "$LOG"
 rc=${PIPESTATUS[0]}
 if [ "$rc" -ne 0 ]; then say "e9_freqctrl.py FAILED (rc=$rc) — not rebuilding site"; exit "$rc"; fi
-say "freqctrl run done — rebuilding site (standalone)"
-
-python make_e9_site.py --standalone 2>&1 | tee -a "$LOG"
-rc=${PIPESTATUS[0]}
-say "site rebuild rc=$rc — watcher complete"
-exit "$rc"
+say "freqctrl run done — per-experiment site retired; see docs/roadmap/ (regen: python experiments/make_roadmap.py)"
+exit 0

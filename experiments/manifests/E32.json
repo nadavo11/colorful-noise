@@ -1,0 +1,10 @@
+{
+  "eid": "E32",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e32_object_freq.py",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

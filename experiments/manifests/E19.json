@@ -1,0 +1,11 @@
+{
+  "eid": "E19",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e19_spectral_style.py",
+  "results_dir": "e19",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

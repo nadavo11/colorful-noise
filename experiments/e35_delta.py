@@ -92,7 +92,7 @@ def main(out):
     perobj, merge = goal_tables(raw)
 
     try:
-        from e27_site import data_uri
+        from common import data_uri
     except Exception:
         data_uri = None
 

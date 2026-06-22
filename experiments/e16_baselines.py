@@ -19,7 +19,7 @@ Methods (all training-free, no retraining):
                   representing NAG's GOAL on Flux-dev; NAG's attention-space
                   normalization mainly helps few-step sampling, so at 28 steps the
                   native negative-prompt path is the relevant proxy (see
-                  FIDELITY_BASELINES.md).
+                  docs/methods/FIDELITY_BASELINES.md).
   gen_seg      -- SEG (Smoothed Energy Guidance, NeurIPS'24): guide away from a
                   prediction whose image-token self-attention queries are Gaussian
                   -blurred. Implemented as true-CFG where the negative branch shares

@@ -1,0 +1,11 @@
+{
+  "eid": "E23",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e23_real_sbn.py",
+  "results_dir": "e23",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

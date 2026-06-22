@@ -479,7 +479,7 @@ _SCHEMATIC_SVG = '''
 
 def _site(report):
     try:
-        from e27_site import data_uri
+        from common import data_uri
     except Exception:
         data_uri = None
 

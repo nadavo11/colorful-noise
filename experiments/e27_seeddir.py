@@ -135,13 +135,10 @@ def oom_retry(fn, *args, tries=6, wait=30, **kw):
 
 # ---- site (model-free) -------------------------------------------------------
 def run_site():
-    """Rebuild results/e27/index.html from report.json + cached grids. Loads NO model and
-    re-scores nothing (all numbers already live in report.json), so it runs anywhere."""
-    from e27_site import build
-    if build() is None:
-        print("[e27] --part site: no results/e27/report.json yet (regeneration BLOCKED until a "
-              "run exists). index.html left as-is; generate first with: "
-              "python experiments/e27_seeddir.py", flush=True)
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e27] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 # ---- main --------------------------------------------------------------------

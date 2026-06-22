@@ -1,0 +1,11 @@
+{
+  "eid": "E9",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e9_bandnorm_classes.py",
+  "results_dir": "e9",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}
