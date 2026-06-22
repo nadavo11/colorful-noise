@@ -25,8 +25,29 @@ RESULTS = os.environ.get("CN_RESULTS") or os.path.join(HERE, "results")
 
 sys.path.insert(0, HERE)
 from roadmap_registry import THREADS, EXPERIMENTS, STATUSES  # noqa: E402
+from manifest import load_all  # noqa: E402
 
 THREAD_BY_ID = {t["id"]: t for t in THREADS}
+MANIFESTS = load_all()
+
+
+def manifest_note(e):
+    """One-line provenance from the per-run manifest. Drift = a scripted experiment
+    with no manifest at all (added but never logged). Backfilled manifests are the
+    accepted historical record, not drift. Returns (text, is_drift)."""
+    m = MANIFESTS.get(e["id"])
+    if not m:
+        if e.get("script"):
+            return ("run not logged (no manifest)", True)
+        return (None, False)
+    if m.get("source") == "backfill":
+        return ("backfilled — no run metrics", False)
+    bits = [f"logged {m.get('logged')}"]
+    if m.get("git_commit"):
+        bits.append(f"@ {m['git_commit']}")
+    if m.get("metrics"):
+        bits.append(", ".join(f"{k}={v}" for k, v in list(m["metrics"].items())[:4]))
+    return (" · ".join(bits), False)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,9 +282,15 @@ def exp_card(e, of):
              f"<a href='{esc(dlink)}'>{esc(dname)}</a>"]
     if rlink:
         links.append(f"<a href='{esc(rlink)}'>results ↗</a>")
+    if e["id"] in MANIFESTS:
+        mpath = "experiments/manifests/" + e["id"] + ".json"
+        links.append(f"<a href='{esc(rel(mpath, of))}'>manifest</a>")
+    note, drift = manifest_note(e)
     rows = [("Asks", e.get("motivation")), ("Method", e.get("method")),
             ("Result", e.get("result")), ("Verdict", e.get("verdict")),
             ("Next", e.get("nxt"))]
+    if note:
+        rows.append(("⚠ Drift" if drift else "Logged", note))
     dl = "".join(f"<dt>{esc(k)}</dt><dd>{esc(v)}</dd>" for k, v in rows if v)
     fig = image_tag(e.get("image"), of)
     return (f"<div class=exp style='--c:{STATUSES.get(e['status'],('','#666'))[1]}'>"
@@ -307,10 +334,14 @@ def build_table():
         links.append(f"<a href='{esc(dlink)}'>doc</a>")
         if rlink:
             links.append(f"<a href='{esc(rlink)}'>↗</a>")
+        if e["id"] in MANIFESTS:
+            links.append(f"<a href='{esc(rel('experiments/manifests/' + e['id'] + '.json', of))}'>m</a>")
+        _, drift = manifest_note(e)
+        drift_tag = " <span class=cap>⚠ run not logged</span>" if drift else ""
         rows.append(
             f"<tr data-thread='{esc(e['thread'])}' data-status='{esc(e['status'])}'>"
             f"<td class=c><b>{esc(e['id'])}</b></td>"
-            f"<td>{esc(e['title'])}<br><span class=cap>{esc(e.get('verdict'))}</span></td>"
+            f"<td>{esc(e['title'])}<br><span class=cap>{esc(e.get('verdict'))}</span>{drift_tag}</td>"
             f"<td><a href='thread-{esc(e['thread'])}.html'>{esc(t['title'])}</a></td>"
             f"<td class=c>{esc(e.get('models'))}</td>"
             f"<td class=c>{pill(e['status'])}</td>"
@@ -321,7 +352,7 @@ def build_table():
           "r.style.display=((!th||r.dataset.thread==th)&&(!st||r.dataset.status==st))?'':'none';});}"
           "</script>")
     body = (
-        "<h1>All experiments (E0–E31)</h1>"
+        "<h1>All experiments</h1>"
         "<div class=controls>"
         f"<label>Thread <select id=ft onchange=flt()><option value=''>all</option>{threads_opt}</select></label>"
         f"<label>Status <select id=fs onchange=flt()><option value=''>all</option>{status_opt}</select></label>"
@@ -387,6 +418,52 @@ def build_glossary():
 
 
 # --------------------------------------------------------------------------- #
+# coverage check (drift detector)
+# --------------------------------------------------------------------------- #
+def _scripts_on_disk():
+    """Experiment numbers that have at least one e<N>_*.py driver in experiments/."""
+    import re
+    nums = {}
+    for fn in os.listdir(HERE):
+        m = re.match(r"e(\d+)_.*\.py$", fn)
+        if m:
+            nums.setdefault(int(m.group(1)), []).append(fn)
+    return nums
+
+
+def check_coverage():
+    """Report drift between the registry, the scripts on disk, and the manifests.
+    Returns the number of actionable problems (unregistered drivers / stale paths)."""
+    reg_nums = {enum(e["id"]): e for e in EXPERIMENTS}
+    disk = _scripts_on_disk()
+    problems = 0
+
+    unregistered = sorted(n for n in disk if n not in reg_nums)
+    if unregistered:
+        problems += len(unregistered)
+        print("DRIFT — driver(s) on disk with no registry entry:")
+        for n in unregistered:
+            print(f"  E{n}: {', '.join(sorted(disk[n]))}")
+
+    stale = [(e["id"], e["script"]) for e in EXPERIMENTS
+             if e.get("script") and not os.path.exists(os.path.join(REPO, e["script"]))]
+    if stale:
+        problems += len(stale)
+        print("DRIFT — registry script path does not exist:")
+        for eid, sp in stale:
+            print(f"  {eid}: {sp}")
+
+    no_manifest = [e["id"] for e in EXPERIMENTS if e.get("script") and e["id"] not in MANIFESTS]
+    if no_manifest:
+        print(f"NOTE — scripted experiments with no manifest: {', '.join(no_manifest)}")
+
+    if not problems:
+        print(f"[roadmap] coverage OK — {len(reg_nums)} registry entries, "
+              f"{len(disk)} numbered drivers on disk, no drift.")
+    return problems
+
+
+# --------------------------------------------------------------------------- #
 def main():
     os.makedirs(OUT, exist_ok=True)
     written = []
@@ -414,4 +491,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--check" in sys.argv:
+        sys.exit(1 if check_coverage() else 0)
     main()

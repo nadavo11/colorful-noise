@@ -1,0 +1,11 @@
+{
+  "eid": "E15",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e15_phase_clusters.py",
+  "results_dir": "e15",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

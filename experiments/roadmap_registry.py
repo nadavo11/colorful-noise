@@ -635,4 +635,68 @@ EXPERIMENTS = [
      "nxt": "Confirm on the full 700-image PIE-Bench set (+ masks for BG-PSNR/BG-LPIPS); SD3.5 port; sweep "
             "sbn_cut / phase strength to map the structure/editability frontier.",
      "script": "experiments/e43_flowalign.py", "doc": "docs/experiment-reports/EXPERIMENT_43.md", "results": None, "image": None},
+
+    {"id": "E44", "title": "Apples-to-apples FlowAlign reproduction (+ ours) on PIE-Bench (SD3-medium)",
+     "thread": "style", "models": "SD3-medium (official FlowAlign)", "status": "active",
+     "motivation": "Validate the E43 win rigorously: first REPRODUCE FlowAlign's published PIE-Bench table on "
+                   "SD3-medium with their official code (hard gate), then port our spectral phase-clamp into the "
+                   "SAME SD3 FlowAlign loop and show lower Structure Distance at matched edited-CLIP.",
+     "method": "Official SD3FlowAlign sampler + official PnPInversion metrics (Structure Distance, bg-masked "
+               "PSNR/LPIPS/MSE/SSIM, whole + edited CLIP) on PIE-Bench (cached HF++ variant, RLE masks; CLIP forced "
+               "to ViT-base-patch16 to match the paper). Curve-based win criterion: sweep CFG ω∈{5,7.5,10,13.5} and "
+               "compare struct-dist vs edited-CLIP curves (Fig 3a). HP tuned on a disjoint Emu-Edit subset.",
+     "result": "In progress. Foundation smoke (bicycle, cfg13.5) PASS; 20-img mini pipeline PASS with numbers in "
+               "PIE-Bench range (struct 12.4e-3, bgPSNR 28.2, CLIP-edit 22.1, ~9s/edit). Reproduction target from "
+               "arXiv App. E (cfg10, SD3.0): FlowAlign struct 0.028 / bgPSNR 25.5 / CLIP-edit 22.0. Full "
+               "{5,7.5,10,13.5}×700 sweep running on runai.",
+     "verdict": "IN PROGRESS — reproduction gate not yet cleared; target numbers in hand, cfg sweep running with "
+                "base16-CLIP analyze. (Then port sbn_phase into the official SD3 loop.)",
+     "nxt": "Land on FlowAlign's Fig-3a curve at cfg10/700, then port the E43 sbn_phase clamp into the official SD3 "
+            "FlowAlign loop and compare curves at matched edited-CLIP.",
+     "script": "experiments/e44_flowalign_repro.py", "doc": "docs/experiment-reports/EXPERIMENT_44.md",
+     "results": "e44", "image": None},
+
+    {"id": "E45", "title": "FlowAlign on LTX-Video — temporal consistency + 3D spectral phase",
+     "thread": "style", "models": "LTX-Video", "status": "active",
+     "motivation": "Extend the FlowAlign editing line (E43) from images to video: does FlowAlign on LTX-Video reduce "
+                   "temporal flicker vs the paper's frame-by-frame editing, and does a 3D (spatiotemporal) spectral "
+                   "phase clamp help further?",
+     "method": "Port FlowAlign to LTX-Video; compare to a frame-by-frame editing baseline on flicker; add a 3D "
+               "spatiotemporal spectral phase-clamp variant. Script lives on an unmerged worktree (not in main yet).",
+     "result": "FlowAlign on LTX video gives ~46× less flicker than the paper's frame-by-frame approach. The 3D phase "
+               "clamp adds a consistency edge but trades some editability.",
+     "verdict": "KEEP — FlowAlign is dramatically more temporally consistent than frame-by-frame on LTX video; 3D "
+                "phase further stabilises at an editability cost.",
+     "nxt": "Quantify the consistency/editability trade-off of the 3D phase clamp; merge the worktree script and add a manifest.",
+     "script": None, "doc": None, "results": None, "image": None},
+
+    {"id": "E46", "title": "Seed-phase fast editing -- 0-NFE phase prior vs SDEdit",
+     "thread": "seed", "models": "SDXL", "status": "dead-end",
+     "motivation": "Inversion editors pay many NFE; FlowEdit/FlowAlign cost >2 NFE/step; SDEdit is cheap but "
+                   "unreliable. Transplant the source's FFT PHASE (where structure lives) into a fresh seed for "
+                   "~0 NFE, then run one fast generation toward the target -- can a free phase prior make SDEdit "
+                   "reliable (phase=structure, fresh magnitude=editability)?",
+     "method": "SDXL. Source low-band phase on a white seed (phase_swap_2d), scored DINO-struct x CLIP-directional. "
+               "Derivations: averaging noised copies -> phase(x0) exactly (loop dominated); 100% pass is empty "
+               "(q(x_T) indep of x0); whitening phase == destroying structure (same axis); OOD-ness is phase "
+               "coherence, not the spectrum. Probes: P0 reconstruction mechanism; P1 editing frontier (8 SDXL-gen "
+               "sources, recipes A=phase-noise SDEdit, B=structured seed) vs vanilla SDEdit; P2 full-band phase "
+               "(Cfull) + phase-normalize (Cnorm); P3 three OOD escapes -- gamma phase-whiten, timestep injection, "
+               "colored amplitude -- and soft (gamma-blended) timestep injection. PIE-Bench deferred to cluster.",
+     "result": "P0: seed low-band phase controls layout (phaseB beats white 12/12 seed pairs; exact pose/arrangement "
+               "transfer) -- mechanism REAL. P1: neither recipe beats vanilla (A over-locks, editability collapses; "
+               "B Pareto-dominated; 0/8 wins). P2: Cfull preserves WORSE than low-band (white-amp + full image phase "
+               "= OOD fringing); Cnorm = e^{i.phi_src}.conj(Z) ~ white Gaussian == a random seed. P3: gamma is a "
+               "smooth structure<->edit knob (fringing grows with gamma); timestep injection is CLEAN/on-manifold and "
+               "structure 0.082 BEATS vanilla 0.093 but over-clamps (edit dies); colored amplitude = rainbow "
+               "artifacts (amp must stay white); soft injection (gamma=0.3) best+clean struct 0.081 but editability "
+               "caps ~0, never reaching vanilla +0.090.",
+     "verdict": "KILL the seed-phase EDITING direction -- 4th confirmation of the E41 frontier-trap: every variant "
+                "traces a structure<->editability frontier at-or-inside vanilla SDEdit's, because x0-carry is a "
+                "strictly better/cheaper structural anchor than any phase transplant. Mechanism (seed low-band phase "
+                "controls layout; clean timestep injection beats vanilla on structure) is REAL and KEPT.",
+     "nxt": "Only useful where there is NO x0 to carry (layout-conditioned T2I / cross-modal structure transfer). "
+            "If revisited: matched-editability vanilla-strength sweep; confirm P1 on official PIE-Bench (cluster).",
+     "script": "experiments/e46_seedphase.py", "doc": "docs/experiment-reports/EXPERIMENT_46.md",
+     "results": None, "image": None},
 ]

@@ -1,0 +1,11 @@
+{
+  "eid": "E7",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e7_flux_phase.py",
+  "results_dir": "e7",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

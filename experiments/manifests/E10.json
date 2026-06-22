@@ -1,0 +1,11 @@
+{
+  "eid": "E10",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e10_cfg_spectral.py",
+  "results_dir": "e10",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

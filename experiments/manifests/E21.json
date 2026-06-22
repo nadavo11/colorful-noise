@@ -1,0 +1,11 @@
+{
+  "eid": "E21",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e21_spectral_edit.py",
+  "results_dir": "e21",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}
