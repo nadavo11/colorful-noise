@@ -314,17 +314,125 @@ def run_gen(args):
     recon_l1 = float(np.abs(src_frames[:n].astype(float) - recon[:n].astype(float)).mean() / 255.0)
     print(f"[gen] identity-gate recon L1 = {recon_l1:.4f}", flush=True)
 
-    # baseline edit (plain FlowAlign, sbn off) -- the number to beat
-    xe = flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed, args.w, args.zeta, Fl, Hl, Wl)
-    decode_save(xe, "baseline")
-    print("[gen] baseline edit done", flush=True)
+    # edit conditions: plain FlowAlign baseline (sbn off) + 2D/3D phase over an sbn_cut sweep.
+    # baseline = the number to beat; phase2d ~ paper's frame-by-frame control; phase3d = our bet.
+    cuts = [float(c) for c in str(args.cuts).split(",") if c]
+    conds = {"baseline": ("off", 0.0)}
+    for cut in cuts:
+        conds[f"phase2d_c{cut}"] = ("phase2d", cut)
+        conds[f"phase3d_c{cut}"] = ("phase3d", cut)
+    for name, (mode, cut) in conds.items():
+        if os.path.exists(os.path.join(OUT, f"{name}.mp4")):
+            continue
+        xe = flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed, args.w, args.zeta,
+                             Fl, Hl, Wl, sbn_mode=mode, sbn_cut=cut)
+        decode_save(xe, name)
+        print(f"[gen] edit {name} done", flush=True)
 
     import json
     with open(os.path.join(OUT, "gen_report.json"), "w") as f:
         json.dump({"scene": key, "src": src, "tgt": tgt, "recon_l1": recon_l1,
-                   "params": {"steps": args.steps, "frames": args.frames, "size": args.size,
-                              "w": args.w, "zeta": args.zeta}}, f, indent=2)
+                   "conds": list(conds), "params": {"steps": args.steps, "frames": args.frames,
+                   "size": args.size, "w": args.w, "zeta": args.zeta, "cuts": cuts}}, f, indent=2)
     print("[gen] DONE", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Metric bundle: DINO structure-dist + CLIP-directional (per-frame, averaged) +
+# RAFT warp-error (temporal flicker), global and edited-region-masked.
+# ---------------------------------------------------------------------------
+def _load_raft():
+    from torchvision.models.optical_flow import raft_small, Raft_Small_Weights
+    w = Raft_Small_Weights.DEFAULT
+    return raft_small(weights=w).eval().cuda(), w.transforms()
+
+
+def _warp(img, flow):
+    """img (1,3,H,W), flow (1,2,H,W) -> img sampled at x+flow (align frame t+1 to t)."""
+    _, _, H, W = img.shape
+    yy, xx = torch.meshgrid(torch.arange(H, device=img.device), torch.arange(W, device=img.device),
+                            indexing="ij")
+    gx = (xx + flow[0, 0]) / (W - 1) * 2 - 1
+    gy = (yy + flow[0, 1]) / (H - 1) * 2 - 1
+    grid = torch.stack([gx, gy], -1)[None]
+    return torch.nn.functional.grid_sample(img, grid, align_corners=True, padding_mode="border")
+
+
+@torch.no_grad()
+def warp_error(raft, src_frames, edit_frames, tau=0.1):
+    """Flow from the SOURCE clip (true motion); warp the EDIT frames and measure residual
+    flicker. Returns (global, masked) mean-squared warp error; mask = edited region."""
+    model, tf = raft
+    def t(f):  # (H,W,3) uint8 -> (1,3,H,W) [0,1] cuda
+        return torch.from_numpy(f).float().permute(2, 0, 1)[None].cuda() / 255.0
+    n = min(len(src_frames), len(edit_frames))
+    g_errs, m_errs = [], []
+    for i in range(n - 1):
+        s0, s1 = t(src_frames[i]), t(src_frames[i + 1])
+        e0, e1 = t(edit_frames[i]), t(edit_frames[i + 1])
+        a, b = tf(s0, s1)
+        flow = model(a, b)[-1]                                  # forward flow s_i -> s_{i+1}
+        warped = _warp(e1, flow)
+        resid = (warped - e0).pow(2).mean(1, keepdim=True)      # (1,1,H,W)
+        mask = ((e0 - s0).abs().mean(1, keepdim=True) > tau).float()   # edited region at frame i
+        g_errs.append(float(resid.mean()))
+        m_errs.append(float((resid * mask).sum() / (mask.sum() + 1e-6)))
+    return float(np.mean(g_errs)), float(np.mean(m_errs))
+
+
+def run_analyze(args):
+    import json
+    import imageio.v3 as iio
+    from PIL import Image
+    from struct_metrics import load_dino, load_clip, structure_distance, clip_directional
+    rp = os.path.join(OUT, "gen_report.json")
+    rep = json.load(open(rp))
+    src, tgt = rep["src"], rep["tgt"]
+    src_frames = iio.imread(os.path.join(OUT, "source.mp4"))
+    dino, clip = load_dino("cuda"), load_clip()
+    raft = _load_raft()
+
+    def pil(a):
+        return Image.fromarray(a).convert("RGB")
+    out = {}
+    for cond in rep["conds"]:
+        p = os.path.join(OUT, f"{cond}.mp4")
+        if not os.path.exists(p):
+            continue
+        ed = iio.imread(p)
+        n = min(len(src_frames), len(ed))
+        sd = np.mean([structure_distance(dino, pil(ed[i]), pil(src_frames[i])) for i in range(n)])
+        cd = np.mean([clip_directional(clip, pil(src_frames[i]), pil(ed[i]), src, tgt) for i in range(n)])
+        wg, wm = warp_error(raft, src_frames, ed)
+        out[cond] = {"struct_dist": float(sd), "clip_dir": float(cd),
+                     "warp_global": wg, "warp_masked": wm}
+        print(f"[an] {cond:16s} struct={sd:.4f} clip={cd:+.4f} warpG={wg:.5f} warpM={wm:.5f}", flush=True)
+
+    rep["metrics"] = out
+    json.dump(rep, open(rp, "w"), indent=2)
+
+    # GOAL: a phase variant beats baseline on struct-dist AND edited-region warp-error,
+    # holding CLIP-directional within tol. warp-masked is the headline (the paper's gap).
+    base = out.get("baseline", {})
+    wins = []
+    for cond, m in out.items():
+        if cond == "baseline":
+            continue
+        if (m["struct_dist"] < base["struct_dist"] and m["warp_masked"] < base["warp_masked"]
+                and m["clip_dir"] >= base["clip_dir"] - args.clip_tol):
+            wins.append((cond, m))
+    print("\n[goal] baseline: "
+          f"struct={base.get('struct_dist'):.4f} warpM={base.get('warp_masked'):.5f} "
+          f"clip={base.get('clip_dir'):+.4f}", flush=True)
+    if wins:
+        print(f"[goal] PASS ({len(wins)} variants beat baseline on struct+masked-warp, clip held):", flush=True)
+        for cond, m in wins:
+            print(f"[goal]   {cond}: struct={m['struct_dist']:.4f} (Δ{m['struct_dist']-base['struct_dist']:+.4f}) "
+                  f"warpM={m['warp_masked']:.5f} (Δ{m['warp_masked']-base['warp_masked']:+.5f}) "
+                  f"clip={m['clip_dir']:+.4f}", flush=True)
+    else:
+        print("[goal] NO winner; inspect results/e45/*.mp4 + gen_report.json", flush=True)
+    print("[an] DONE", flush=True)
 
 
 def main():
@@ -336,12 +444,16 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--w", type=float, default=10.0)        # FlowAlign CFG (paper default)
     ap.add_argument("--zeta", type=float, default=0.01)     # FlowAlign source-consistency (paper)
+    ap.add_argument("--cuts", default="0.2,0.35")           # sbn_cut sweep for the phase ops
+    ap.add_argument("--clip_tol", type=float, default=0.01)  # editability tolerance vs baseline
     args = ap.parse_args()
     for part in args.part.split(","):
         if part == "smoke":
             run_smoke(args)
         elif part == "gen":
             run_gen(args)
+        elif part == "analyze":
+            run_analyze(args)
         else:
             print(f"[e45] part '{part}' not implemented yet", flush=True)
 

@@ -1,12 +1,13 @@
 #!/bin/bash
 # Run:AI entrypoint for E45 (FlowAlign on LTX-Video + spectral phase op).
 # Files staged on the PVC via rsync (the /storage checkout is not git; image has no git).
-# STAGE 1 (this script): run FlowAlign-on-LTX `gen` -> IDENTITY GATE (C_tar==C_src must
-# reproduce the source clip: recon L1 small). Validates the velocity/pack/sigma plumbing
-# independent of the edit. Also produces the plain-FlowAlign baseline edit (number to beat).
+# STAGE 2/3 (this script): gen (identity recon + plain-FlowAlign baseline + 2D/3D phase sweep)
+# -> IDENTITY GATE -> analyze (metric bundle: DINO struct-dist + CLIP-directional + RAFT
+# warp-error global & edited-region-masked) -> GOAL gate (a phase variant beats baseline on
+# struct + masked-warp while holding CLIP-directional). 49 frames -> 7 latent temporal bins.
 #
 # Submit (new CLI):
-#   ~/.runai/bin/runai training standard submit e45-ltx-s1 -p avidan -g 1 --large-shm \
+#   ~/.runai/bin/runai training standard submit e45-ltx-s2 -p avidan -g 1 --large-shm \
 #     -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
 #     --existing-pvc claimname=storage,path=/storage --command -- \
 #     bash /storage/malnick/colorful-noise/experiments/cluster_e45_job.sh
@@ -22,10 +23,11 @@ pip install --quiet --no-input \
     sentencepiece protobuf imageio imageio-ffmpeg
 python -c "import torch; print('[job] torch',torch.__version__,'cuda',torch.cuda.is_available()); assert torch.cuda.is_available(), 'CUDA NOT AVAILABLE'; print('[job] gpu',torch.cuda.get_device_name(0))"
 python -c "from diffusers import LTXPipeline; print('[job] LTXPipeline import OK')"
+python -c "import torchvision; from torchvision.models.optical_flow import raft_small; print('[job] torchvision',torchvision.__version__,'RAFT OK')"
 
-# --- S1: FlowAlign-on-LTX gen (identity recon + baseline edit) ---
-echo "[job] ===== S1: FlowAlign-on-LTX gen ====="
-python e45_ltx_flowalign.py --part gen --steps 24 --frames 25 --size 256 --w 10 --zeta 0.01
+# --- S2/S3: gen (identity recon + baseline + 2D/3D phase sweep) ---
+echo "[job] ===== S2/S3: FlowAlign-on-LTX gen (sweep) ====="
+python e45_ltx_flowalign.py --part gen --steps 24 --frames 49 --size 256 --w 10 --zeta 0.01 --cuts 0.2,0.35
 
 # --- IDENTITY GATE: C_tar==C_src must reproduce the source clip ---
 echo "[job] ===== GATE: identity reconstruction ====="
@@ -40,6 +42,10 @@ print(f"[gate] identity recon L1 = {l1}")
 if l1 is None or l1 > 0.10:
     print("[gate] FAIL: FlowAlign-on-LTX did not reproduce the source (plumbing broken)")
     sys.exit(1)
-print("[gate] PASS: FlowAlign-on-LTX reconstructs the source; baseline edit is meaningful")
+print("[gate] PASS: FlowAlign-on-LTX reconstructs the source")
 PY
-echo "[job] S1 done -- source/recon/baseline mp4s in experiments/results/e45/"
+
+# --- ANALYZE + GOAL: metric bundle, phase vs baseline ---
+echo "[job] ===== ANALYZE: metric bundle + GOAL ====="
+python e45_ltx_flowalign.py --part analyze
+echo "[job] S2/S3 done -- mp4s + gen_report.json in experiments/results/e45/"
