@@ -66,6 +66,88 @@ def band_t_field(H, W, cut, t_high, device):
                        torch.as_tensor(float(t_high), device=device))
 
 
+def two_band_t_field(H, W, cut, t_low, t_high, device):
+    """Per-frequency t with an independent low-band fraction: t_low inside [0,cut],
+    t_high outside. t_low>0 whitens low-band phase a little to free the edit."""
+    r = radial_norm(H, W, device)
+    return torch.where(r <= cut, torch.as_tensor(float(t_low), device=device),
+                       torch.as_tensor(float(t_high), device=device))
+
+
+def spectral_phase_geodesic(x_std, x0, eps, tau):
+    """Keep x_std's MAGNITUDE (the proper SDEdit energy spectrum) but replace its phase
+    with a geodesic blend from source phase toward noise phase by `tau` (scalar or (H,W)).
+
+    x_std = scheduler.add_noise(x0, eps, t) is real -> its spectrum is Hermitian, so its
+    self-conjugate bins are real; restoring them keeps ifft(.).real exact. tau=0 -> pure
+    source phase at the correct energy; tau=1 -> white phase; band tau -> per-frequency."""
+    H, W = x0.shape[-2:]
+    Xs = torch.fft.fft2(x_std.float())
+    phi0 = torch.fft.fft2(x0.float()).angle()
+    phie = torch.fft.fft2(eps.float()).angle()
+    d = torch.remainder(phie - phi0 + math.pi, 2 * math.pi) - math.pi
+    t_ = tau if torch.is_tensor(tau) else torch.as_tensor(float(tau), device=x0.device)
+    Xout = torch.polar(Xs.abs(), phi0 + t_ * d)
+    _restore_self_conj(Xout, Xs, H, W)
+    return torch.fft.ifft2(Xout).real.to(x0.dtype)
+
+
+def sdedit_phase_geodesic(x_std, target_phase, tau):
+    """Rotate the SDEdit latent's phase a fraction `tau` toward `target_phase`, keeping its
+    magnitude (the strength-s energy). tau=0 -> x_std unchanged (== plain SDEdit). Apples-to-
+    apples: the geodesic is the ONLY change on top of standard SDEdit@s."""
+    H, W = x_std.shape[-2:]
+    Xs = torch.fft.fft2(x_std.float())
+    phi_s = Xs.angle()
+    d = torch.remainder(target_phase - phi_s + math.pi, 2 * math.pi) - math.pi
+    t_ = tau if torch.is_tensor(tau) else torch.as_tensor(float(tau), device=x_std.device)
+    Xout = torch.polar(Xs.abs(), phi_s + t_ * d)
+    _restore_self_conj(Xout, Xs, H, W)
+    return torch.fft.ifft2(Xout).real.to(x_std.dtype)
+
+
+def sdedit_geodesic(img2img, src_img, prompt, strength, steps, guid, gen, tau, toward="source"):
+    """SDEdit@strength + a geodesic perturbation of the noised latent's phase toward the clean
+    SOURCE phase ('source' = structure-restore) or the WHITE noise phase ('white' = edit-boost).
+    tau=0 recovers plain SDEdit exactly. Patches the scheduler's add_noise for this call only."""
+    sched = img2img.scheduler
+    orig = sched.add_noise
+
+    def patched(original_samples, noise, timesteps):
+        x_std = orig(original_samples, noise, timesteps)
+        ref = original_samples if toward == "source" else noise
+        target = torch.fft.fft2(ref.float()).angle()
+        return sdedit_phase_geodesic(x_std, target, tau)
+
+    sched.add_noise = patched
+    try:
+        return img2img(prompt=prompt, image=src_img, strength=strength,
+                       num_inference_steps=steps, guidance_scale=guid,
+                       generator=gen).images[0]
+    finally:
+        sched.add_noise = orig
+
+
+def spectral_geodesic_sdedit(img2img, src_img, prompt, strength, steps, guid, gen, tau):
+    """SDEdit@strength, but the initial noised latent's phase is replaced by the geodesic
+    `spectral_phase_geodesic` (magnitude = proper SDEdit energy). Patches the scheduler's
+    add_noise for this call only; the pipeline supplies x0 (encoded image) and eps."""
+    sched = img2img.scheduler
+    orig = sched.add_noise
+
+    def patched(original_samples, noise, timesteps):
+        x_std = orig(original_samples, noise, timesteps)
+        return spectral_phase_geodesic(x_std, original_samples, noise, tau)
+
+    sched.add_noise = patched
+    try:
+        return img2img(prompt=prompt, image=src_img, strength=strength,
+                       num_inference_steps=steps, guidance_scale=guid,
+                       generator=gen).images[0]
+    finally:
+        sched.add_noise = orig
+
+
 def frontier_clip_at(vanilla_pts, struct):
     """Linear-interpolate the vanilla (struct->clip) frontier at a given struct level.
     vanilla_pts: list of (struct, clip). Returns the vanilla clip you'd get at `struct`."""
