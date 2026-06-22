@@ -57,6 +57,17 @@ PnPInversion metrics) end-to-end. Numbers in PIE-Bench range: struct=12.37e-3, b
 bgLPIPS=22.73e-3, bgMSE=19.14e-4, bgSSIM=96.29e-2, CLIP whole=24.34, CLIP edit=22.12.
 ~9s/edit on the RTX6000-Ada. `Bash(runai:*)` rule added; submitting myself.
 
-Verdict (P0 overall): IN PROGRESS — foundation + harness proven. Now running full 700-img CFG
-sweep {5,7.5,10,13.5} as e44-cfg5/cfg75/cfg10/cfg135 -> compare (edited-CLIP, bg-PSNR, struct)
-points to FlowAlign Fig-3a curve = the reproduction gate.
+REPRODUCTION TARGET (from arXiv LaTeX source, Appendix E, **CFG scale 10.0**, SD3.0):
+  | method   | Struct | bgPSNR | bgLPIPS | bgMSE | bgSSIM | CLIP-whole | CLIP-edit |
+  | FlowAlign| 0.028  | 25.50  | 0.053   | 0.004 | 0.879  | 25.28      | 22.00     |
+  | FlowEdit | 0.036  | 23.02  | 0.082   | 0.007 | 0.842  | 25.98      | 22.81     |
+  -> gate = e44-cfg10 (700) lands near the FlowAlign row (tol ~ few %, modulo subset noise).
+  Metric details: official PnPInversion eval code; NFE=33; **CLIP = ViT-base-patch16** (NOT PnP's
+  default large14). Harness analyze now overrides CLIP to base16 (--clip_model) to match.
+
+NOTE: mini (cfg7.5, 20img) showed BETTER source-consistency than their cfg10 table (struct 0.012
+vs 0.028, PSNR 28.2 vs 25.5) — expected direction (lower CFG = gentler edit) + 20-img noise +
+CLIP-model diff. Real check = cfg10/700 vs the table above.
+
+Verdict (P0 overall): IN PROGRESS — target numbers in hand; full sweep {5,7.5,10,13.5} running
+(e44-cfg5/cfg75/cfg10/cfg135). Gen saves PNGs (CLIP-agnostic); will re-run analyze w/ base16 CLIP.

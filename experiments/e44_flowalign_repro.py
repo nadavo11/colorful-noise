@@ -142,6 +142,11 @@ def run_analyze(args):
     with open(os.path.join(d, "meta.json")) as f:
         meta = json.load(f)
     mc = MetricsCalculator(args.device)
+    # FlowAlign reports CLIP with ViT-base-patch16 (paper App.; PnP default is large14).
+    # Match it so our CLIP numbers are on the same ruler as their table.
+    from torchmetrics.multimodal import CLIPScore
+    mc.clip_metric_calculator = CLIPScore(
+        model_name_or_path=args.clip_model).to(args.device)
 
     per_type, overall = {}, {m: [] for m in METRICS}
     rows = {}
@@ -208,5 +213,7 @@ if __name__ == "__main__":
     ap.add_argument("--n_per_type", type=int, default=0, help="0=all 700; >0=subset per category")
     ap.add_argument("--tag", default="cfg75")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--clip_model", default="openai/clip-vit-base-patch16",
+                    help="CLIP for the CLIP-score; base16 matches FlowAlign's paper")
     ap.add_argument("--ours", action="store_true", help="enable ported spectral clamp (added later)")
     main(ap.parse_args())
