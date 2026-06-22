@@ -52,5 +52,11 @@ black→rusty mountain-bike edit, background preserved, matches FlowAlign README
 now in shared cache. Env + gated download + official code all work on the cluster.
 (`results/e44_smoke/{source,edited}/bicycle.jpg`.)
 
-Verdict (P0 overall): IN PROGRESS — foundation proven; reproduction gate (700-img CFG sweep vs
-Fig-3a curve) still pending. Blocked on `Bash(runai:*)` allow-rule so I can submit --mini then --cfg.
+Mini (20 imgs, gen+analyze, cfg 7.5, RTX6000-Ada): **PASS** — pipeline (official edit -> official
+PnPInversion metrics) end-to-end. Numbers in PIE-Bench range: struct=12.37e-3, bgPSNR=28.18,
+bgLPIPS=22.73e-3, bgMSE=19.14e-4, bgSSIM=96.29e-2, CLIP whole=24.34, CLIP edit=22.12.
+~9s/edit on the RTX6000-Ada. `Bash(runai:*)` rule added; submitting myself.
+
+Verdict (P0 overall): IN PROGRESS — foundation + harness proven. Now running full 700-img CFG
+sweep {5,7.5,10,13.5} as e44-cfg5/cfg75/cfg10/cfg135 -> compare (edited-CLIP, bg-PSNR, struct)
+points to FlowAlign Fig-3a curve = the reproduction gate.
