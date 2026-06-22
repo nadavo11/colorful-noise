@@ -107,3 +107,46 @@ recon L1 = 0.0052 -> port is correct.
 Registered: roadmap_registry.py (E45) + EXPERIMENTS.md + regen site.
 Open (needs user): CFG-match the video edit to fbf's edit strength (w sweep) before claiming the
 frontier; real input clip instead of an LTX-generated source; higher-res latent for fine cut tuning.
+
+## Probe S7 (e45-ltx-levers) — Lever 1 (w-frontier) + Lever 2 (real clip @512)
+
+### Lever 1 — editability-vs-flicker frontier (video baseline vs paper fbf), 256px/25f
+| w    | video clip | video warpM | fbf clip | fbf warpM |
+|------|------------|-------------|----------|-----------|
+| 7.5  | 0.0398     | 0.00126     | 0.0735   | 0.03846   |
+| 10   | 0.0841     | 0.00140     | 0.1197   | 0.05183   |
+| 13.5 | 0.0511     | 0.00123     | 0.1421   | 0.07167   |
+| 18   | 0.0846     | 0.00186     | 0.1795   | 0.09712   |
+
+- Video warpM stays ~0.0012-0.0019 at EVERY w; fbf climbs 0.038 -> 0.097. Video editing dominates
+  the frontier: 20-50x less flicker throughout.
+- Video editability saturates ~+0.085 (can't reach fbf's +0.12-0.18) -- the video model + source
+  consistency edits more gently. Where editability is comparable (video@w18 +0.085 vs fbf@w7.5
+  +0.074), video has ~20x less flicker. So video beats the paper at matched edit strength, but
+  can't match the paper's MOST aggressive edits.
+- At w=13.5, phase3d cleanly beats baseline on ALL THREE (struct 0.151<0.159, clip
+  +0.0705>+0.0511, warp 0.00119<0.00123) -- encouraging but single-clip-noisy.
+
+### Lever 2 — real cockatoo clip @512 (white cockatoo -> colorful parrot)
+identity recon L1 = 0.0230 (real-clip VAE lossier but passes <0.10).
+| cond         | struct↓ | clip↑   | warpM↓  |
+|--------------|---------|---------|---------|
+| baseline     | 0.1670  | +0.1653 | 0.04186 |
+| phase2d_c0.2 | 0.1657  | +0.1604 | 0.04110 |
+| phase3d_c0.2 | 0.1639  | +0.1569 | 0.03635 |
+| fbf (paper)  | 0.1704  | +0.2260 | 0.06892 |
+
+- REAL footage actually flickers: baseline warpM 0.042 (vs ~0.001 on generated clips) -- real
+  detail+motion exercises the flicker problem the generated clip didn't.
+- phase3d REDUCES flicker -13% vs the video baseline (0.0364 vs 0.0419) + better structure, at a
+  small editability cost. The clearest support for the spatiotemporal hypothesis (and phase2d
+  helps less, as expected).
+- Video still beats fbf (1.6x less flicker), but the margin shrinks vs the 46x on generated clips.
+
+### LEVERS verdict
+- Lever 1: video editing DOMINATES the editability-vs-flicker frontier; the only thing the paper's
+  fbf does "more" is reach higher (flickery) edit strength.
+- Lever 2: on real footage that genuinely flickers, the 3D phase op delivers a measurable temporal
+  win (-13% warp) + structure edge -- the spatiotemporal hypothesis holds where it can be tested.
+Demo: `--model ltx` LTX Video FlowAlign tab added to spectral_demo.py (upload/generate, 2D/3D
+phase, baseline-vs-phase video). Validated through full LTX load under diffusers 0.38.

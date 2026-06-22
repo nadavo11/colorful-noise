@@ -605,12 +605,18 @@ EXPERIMENTS = [
                "0.052); FlowAlign-on-LTX video editing is ~0.0011 -- 46x less flicker. The 3D spatiotemporal phase "
                "op further cuts warp vs the video baseline (0.00112 vs 0.00140, -20%) while 2D per-frame does NOT; "
                "all phase variants improve DINO structure (~0.139 vs 0.149). Phase costs editability though "
-               "(CLIP +0.03 vs +0.084), coupled to the gain at every cut.",
-     "verdict": "Plan-faithful win: video editing removes the paper's frame-by-frame flicker (46x), and the 3D "
-                "phase op uniquely adds a temporal+structure edge -- confirming the spatiotemporal hypothesis -- at "
-                "an editability trade-off. The paper's temporal gap is an artifact of frame-by-frame image-model "
-                "editing, not intrinsic to FlowAlign.",
-     "nxt": "CFG-match the video edit to fbf's edit strength (w sweep) then re-test the frontier; use a real input "
-            "clip instead of an LTX-generated source; higher-res latent so the radial band tunes finely.",
+               "(CLIP +0.03 vs +0.084), coupled to the gain at every cut. LEVERS: a w-frontier (7.5/10/13.5/18) "
+               "shows video warpM stays ~0.0012-0.0019 at every w while fbf climbs 0.038->0.097 -- video dominates "
+               "the editability-vs-flicker frontier (video editability saturates ~+0.085, can't reach fbf's "
+               "+0.12-0.18). On a REAL clip @512 (cockatoo->parrot) the baseline genuinely flickers (warpM 0.042) "
+               "and phase3d cuts it -13% (0.0364 vs 0.0419) + better structure -- the clearest spatiotemporal win.",
+     "verdict": "Plan-faithful win: video editing removes the paper's frame-by-frame flicker (46x on generated, "
+                "1.6x on real footage) and DOMINATES the editability-vs-flicker frontier; on real footage that "
+                "actually flickers the 3D phase op gives a measurable temporal win (-13% warp) + structure edge, "
+                "confirming the spatiotemporal hypothesis. The paper's temporal gap is an artifact of frame-by-frame "
+                "image-model editing, not intrinsic to FlowAlign. Available in the demo (--model ltx).",
+     "nxt": "Quantify on a multi-clip real-video set (DAVIS) for significance; the video edit saturates ~+0.085 "
+            "CLIP -- push edit strength (schedule/zeta) without reintroducing flicker; map the phase frontier at "
+            "512px where the radial cut tunes finely.",
      "script": "experiments/e45_ltx_flowalign.py", "doc": None, "results": None, "image": None},
 ]

@@ -1203,3 +1203,14 @@ intrinsic to FlowAlign.**
 **Artifacts.** `experiments/e45_ltx_flowalign.py`, `cluster_e45_job.sh` (smoke→identity
 gate→sweep+FBF→goal), `experiments/e45_log.md` (probe log S0–S6). Outputs to `results/e45/`:
 `source/fbf/baseline/phase{2d,3d}_c*.mp4` + `gen_report.json`.
+
+**Levers (follow-up).** *Lever 1 — CFG-match frontier:* sweeping `w∈{7.5,10,13.5,18}`, the video
+edit's warp stays ~0.0012–0.0019 at every `w` while frame-by-frame climbs 0.038→0.097 — **video
+editing dominates the editability-vs-flicker frontier (20–50× less flicker)**. Video editability
+saturates ~+0.085 CLIP (can't reach fbf's +0.12–0.18; the video model edits more gently), so video
+beats the paper at matched edit strength but not at the paper's most aggressive edits. *Lever 2 —
+real clip @512 (cockatoo→parrot):* real footage genuinely flickers (baseline warp **0.042** vs
+~0.001 on generated), and **phase3d cuts it −13%** (0.0364 vs 0.0419) + better structure at a small
+editability cost — the clearest spatiotemporal win, where the hypothesis can actually be tested.
+**Demo:** `--model ltx` adds an *LTX Video FlowAlign* tab (upload or generate, 2D/3D phase,
+baseline-vs-phase video) — validated through a full LTX load under diffusers 0.38.
