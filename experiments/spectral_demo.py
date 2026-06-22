@@ -70,6 +70,14 @@ UNIVERSAL_REF = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "results", "e9", "universal_ref.pt")  # E9 universal cfg=1 band ref
 N_BINS = 24
 
+# Default real-image editing example: a PIE-Bench "change material" item (cat 7), a
+# material/texture edit that suits the spectral ops. Source/target prompts are the
+# PIE-Bench captions with the [edited-word] brackets stripped.
+PIEBENCH_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "assets", "piebench_golden_kitten.png")
+PIEBENCH_SRC = "a kitten"
+PIEBENCH_TGT = "a golden kitten sculpture"
+
 # In-memory cache for each tab's LEFT/baseline image, so tweaking only the method knobs
 # reuses the unchanged baseline. Key on the baseline-determining inputs (prompt/image/seed/
 # steps/guidance), NOT the method knobs (op/cut/strength/...). See cached_baseline callers.
@@ -1397,10 +1405,10 @@ def _invert_tab():
     with gr.Row():
         with gr.Column(scale=1):
             src_prompt = gr.Textbox(label="Source caption (describes the image)",
-                                    value="a photograph of a cat sitting on a sofa")
+                                    value=PIEBENCH_SRC)
             edit_prompt = gr.Textbox(label="Edit prompt",
-                                     value="a photograph of a dog sitting on a sofa")
-            real_img = gr.Image(label="Real image", type="pil")
+                                     value=PIEBENCH_TGT)
+            real_img = gr.Image(label="Real image", type="pil", value=PIEBENCH_IMG)
             mode = gr.Dropdown(["sbn", "phase", "adain"], value="sbn", label="Clamp mode")
             cut = gr.Slider(0.05, 0.95, value=0.25, step=0.01, label="cut (low-band cutoff)",
                             info="0 = DC/global … 1 = corner/fine. Lower = preserve only coarse structure.")
@@ -1526,10 +1534,10 @@ def _flowedit_tab():
     with gr.Row():
         with gr.Column(scale=1):
             src_prompt = gr.Textbox(label="Source prompt (describes the image)",
-                                    value="a photograph of a cat sitting on a sofa")
+                                    value=PIEBENCH_SRC)
             tar_prompt = gr.Textbox(label="Target prompt",
-                                    value="a photograph of a dog sitting on a sofa")
-            real_img = gr.Image(label="Real image (optional)", type="pil")
+                                    value=PIEBENCH_TGT)
+            real_img = gr.Image(label="Real image (optional)", type="pil", value=PIEBENCH_IMG)
             skip = gr.Slider(0.0, 0.5, value=0.0, step=0.01, label="skip (drop early steps)",
                              info="Fraction of the noisiest early steps to skip before editing.")
             with gr.Row():
@@ -1637,10 +1645,10 @@ def _flowalign_tab():
     with gr.Row():
         with gr.Column(scale=1):
             src_prompt = gr.Textbox(label="Source prompt (describes the image)",
-                                    value="a photograph of a cat sitting on a sofa")
+                                    value=PIEBENCH_SRC)
             tar_prompt = gr.Textbox(label="Target prompt",
-                                    value="a photograph of a dog sitting on a sofa")
-            real_img = gr.Image(label="Real image (optional)", type="pil")
+                                    value=PIEBENCH_TGT)
+            real_img = gr.Image(label="Real image (optional)", type="pil", value=PIEBENCH_IMG)
             with gr.Row():
                 w = gr.Slider(1.0, 15.0, value=5.0, step=0.5, label="w (CFG, src negative)",
                               info="Edit strength; source prompt is the CFG negative.")
