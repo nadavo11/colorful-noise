@@ -63,3 +63,28 @@ Findings:
 **Verdict: KILL the seed-phase EDITING direction (SDXL).** Third confirmation of the E41 pattern
 (spectral knob trades along the frontier, never beats vanilla). Mechanism (P0) is real but only useful
 where there is NO x0 to carry (pure layout-conditioned generation), not for image editing.
+
+## Probe 3 (chair) — three OOD escapes + the synthesis (1 image, 1 seed)
+vanilla = SDEdit @0.8 (struct 0.093 / clip +0.090). struct DOWN / clip_dir UP:
+
+Approach 1 -- gamma phase-whiten (slerp seed phase white<->image, e46_gamma.py):
+  g=0(white) 0.190/+0.105 | g0.25 0.179/+0.235 | g0.5 0.124/+0.062 | g0.75 0.133/+0.025 | g1(Cfull) 0.132/+0.037
+  -> smooth structure<->edit knob; fringing GROWS with g; best struct (g0.5) still > vanilla.
+Approach 2 -- timestep injection (white seed + low-band phase projected during window, e46_inject.py):
+  inj0-30 0.082/-0.090 | inj0-50 0.082/-0.079 | inj0-70 0.084/-0.065
+  -> CLEAN (on-manifold, NO fringing), structure BEATS vanilla (0.082<0.093), but hard clamp kills edit (clip<0).
+Approach 3 -- colored amplitude (image phase + 1/f amp, e46_coloramp.py):
+  beta0 0.133/+0.037 | beta-1(pink) 0.125/+0.052 | beta-2(red) 0.156/-0.002
+  -> FAIL: coloring amp = rainbow artifacts. Seed amplitude MUST stay white; OOD is purely phase.
+Synthesis -- SOFT timestep injection (Approach2 + gamma blend, e46_softinject.py, window 0-50%, cut0.2):
+  g0.3 0.081/+0.007 | g0.6 0.082/-0.068 | g1.0 0.083/-0.063
+  -> cleanest + best structure (0.081<0.093) but editability caps ~0; cannot reach vanilla +0.090.
+
+**Final verdict: KILL editing direction (4th E41 confirmation).** Seed/phase injection in every form
+(seed-bake, gamma, timestep, soft-timestep, colored-amp) traces a structure<->editability frontier that
+sits at-or-inside vanilla SDEdit's. x0-carry is a strictly better, cheaper structural anchor. Key derived
+facts: (a) averaging noised copies -> phase(x0) exactly, loop is dominated; (b) whitening the phase ==
+destroying the structure (they are the same axis; Cnorm proved it); (c) the seed amplitude must be white --
+the OOD-ness is the phase COHERENCE (a higher-order stat 2nd-order whitening can't touch); (d) timestep
+injection keeps the seed on-manifold and is the only clean route, but over-clamps. Mechanism (P0: seed
+low-band phase controls layout) is REAL and KEPT -- useful only where there is NO x0 to carry.

@@ -1168,3 +1168,38 @@ axes. (8-step smoke is misleading — sbn_phase there collapses CLIP; need ≥28
 `experiments/spectral_demo.py`; `cluster_e43_job.sh` (smoke→identity gate→w-sweep→GOAL gate).
 Outputs to `results/e43_w5|w7|w10/`: per-scene strips + `index.html`. See
 `docs/experiment-reports/EXPERIMENT_43.md`.
+
+## E46 — Seed-phase fast editing: 0-NFE phase prior vs SDEdit (SDXL)
+
+**Method.** Transplant the source's FFT **phase** (where the colored-noise line finds structure)
+into a fresh white seed for **~0 NFE**, then run one fast generation toward the target — can a free
+phase prior make SDEdit reliable? SDXL; structure = DINO self-similarity distance, editability =
+CLIP-directional. **Derivations:** averaging noised copies → `phase(x₀)` exactly (the loop is
+dominated); the 100% pass is information-theoretically empty (`q(x_T)⟂x₀`); **whitening the phase ==
+destroying the structure** (structure *is* cross-frequency phase coherence — the same axis); the
+OOD-ness is the phase coherence, a higher-order stat, not the (already-white) spectrum. Probes: P0
+reconstruction mechanism; P1 editing frontier (8 SDXL-gen sources) vs vanilla SDEdit; P2 full-band
+phase (`Cfull`) + phase-normalize (`Cnorm`); P3 three OOD escapes (γ phase-whiten / timestep
+injection / colored amplitude) + soft γ-blended timestep injection. PIE-Bench deferred to cluster.
+
+**Key result.** **P0:** seed low-band phase controls layout — `phaseB` beats a white seed on **12/12**
+seed pairs with exact pose/arrangement transfer (mechanism real). **P1:** neither recipe beats vanilla
+(A over-locks → edits fail; B Pareto-dominated; **0/8** wins). **P2:** `Cfull` preserves *worse* than
+low-band (white-amp + full image phase = OOD fringing); `Cnorm = e^{iφ_src}·conj(Z)` is a white
+Gaussian — i.e. **a random seed** (empirically confirms whitening = structure loss). **P3:** γ is a
+smooth structure↔edit knob (fringing grows with γ); **timestep injection is clean/on-manifold and its
+structure 0.082 beats vanilla 0.093** but over-clamps (edit dies); colored amplitude → rainbow
+artifacts (amplitude must stay white); soft injection (γ=0.3) gives the cleanest, best structure
+(0.081) but editability caps ~0, never reaching vanilla's +0.090.
+
+**Verdict.** **KILL the seed-phase editing direction — 4th confirmation of the E41 frontier-trap:**
+every variant traces a structure↔editability frontier that sits **at-or-inside vanilla SDEdit's**,
+because SDEdit's `x₀`-carry is a strictly better, cheaper structural anchor than any phase transplant.
+The **mechanism is real and kept** (seed low-band phase controls layout; clean timestep injection beats
+vanilla on structure) — valuable only where there is **no `x₀` to carry** (layout-conditioned T2I /
+cross-modal structure transfer).
+
+**Artifacts.** Worktree `e46-seedphase` (not merged): `experiments/e46_seedphase.py` (P0),
+`e46_probe1.py` (P1), `e46_chair.py` (P2), `e46_gamma.py` / `e46_inject.py` / `e46_coloramp.py` /
+`e46_softinject.py` (P3); probe log `experiments/e46_log.md`; grids under `experiments/results/e46*`.
+See `docs/experiment-reports/EXPERIMENT_46.md`.

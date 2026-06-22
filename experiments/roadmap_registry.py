@@ -669,4 +669,34 @@ EXPERIMENTS = [
                 "phase further stabilises at an editability cost.",
      "nxt": "Quantify the consistency/editability trade-off of the 3D phase clamp; merge the worktree script and add a manifest.",
      "script": None, "doc": None, "results": None, "image": None},
+
+    {"id": "E46", "title": "Seed-phase fast editing -- 0-NFE phase prior vs SDEdit",
+     "thread": "seed", "models": "SDXL", "status": "dead-end",
+     "motivation": "Inversion editors pay many NFE; FlowEdit/FlowAlign cost >2 NFE/step; SDEdit is cheap but "
+                   "unreliable. Transplant the source's FFT PHASE (where structure lives) into a fresh seed for "
+                   "~0 NFE, then run one fast generation toward the target -- can a free phase prior make SDEdit "
+                   "reliable (phase=structure, fresh magnitude=editability)?",
+     "method": "SDXL. Source low-band phase on a white seed (phase_swap_2d), scored DINO-struct x CLIP-directional. "
+               "Derivations: averaging noised copies -> phase(x0) exactly (loop dominated); 100% pass is empty "
+               "(q(x_T) indep of x0); whitening phase == destroying structure (same axis); OOD-ness is phase "
+               "coherence, not the spectrum. Probes: P0 reconstruction mechanism; P1 editing frontier (8 SDXL-gen "
+               "sources, recipes A=phase-noise SDEdit, B=structured seed) vs vanilla SDEdit; P2 full-band phase "
+               "(Cfull) + phase-normalize (Cnorm); P3 three OOD escapes -- gamma phase-whiten, timestep injection, "
+               "colored amplitude -- and soft (gamma-blended) timestep injection. PIE-Bench deferred to cluster.",
+     "result": "P0: seed low-band phase controls layout (phaseB beats white 12/12 seed pairs; exact pose/arrangement "
+               "transfer) -- mechanism REAL. P1: neither recipe beats vanilla (A over-locks, editability collapses; "
+               "B Pareto-dominated; 0/8 wins). P2: Cfull preserves WORSE than low-band (white-amp + full image phase "
+               "= OOD fringing); Cnorm = e^{i.phi_src}.conj(Z) ~ white Gaussian == a random seed. P3: gamma is a "
+               "smooth structure<->edit knob (fringing grows with gamma); timestep injection is CLEAN/on-manifold and "
+               "structure 0.082 BEATS vanilla 0.093 but over-clamps (edit dies); colored amplitude = rainbow "
+               "artifacts (amp must stay white); soft injection (gamma=0.3) best+clean struct 0.081 but editability "
+               "caps ~0, never reaching vanilla +0.090.",
+     "verdict": "KILL the seed-phase EDITING direction -- 4th confirmation of the E41 frontier-trap: every variant "
+                "traces a structure<->editability frontier at-or-inside vanilla SDEdit's, because x0-carry is a "
+                "strictly better/cheaper structural anchor than any phase transplant. Mechanism (seed low-band phase "
+                "controls layout; clean timestep injection beats vanilla on structure) is REAL and KEPT.",
+     "nxt": "Only useful where there is NO x0 to carry (layout-conditioned T2I / cross-modal structure transfer). "
+            "If revisited: matched-editability vanilla-strength sweep; confirm P1 on official PIE-Bench (cluster).",
+     "script": "experiments/e46_seedphase.py", "doc": "docs/experiment-reports/EXPERIMENT_46.md",
+     "results": None, "image": None},
 ]
