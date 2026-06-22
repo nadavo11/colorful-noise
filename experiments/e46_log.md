@@ -45,3 +45,21 @@ dominated (worse structure AND editability). Mechanism (P0) is real but redundan
 weaker than SDEdit's own x0-carry. Mirrors E41 (spectral knob trades along the frontier,
 doesn't beat it). PARK option: cut/strength frontier sweep for a matched-editability test
 before final KILL, but the editability collapse + E41 precedent make a win unlikely.
+
+## Probe 2 (chair debug) — full-band phase (Cfull) & phase-normalize (Cnorm) vs vanilla
+One image (wooden->metal chair), 1 seed. struct DOWN / clip_dir UP:
+  vanilla  0.093 / 0.090   (best structure, modest edit)
+  Cfull    0.133 / 0.040   (full image phase + white amp: locks structure but OOD fringing, weak edit)
+  Cnorm    0.190 / 0.190   (phi_src - phi_z: math -> fresh random seed; no structure, edit fires)
+
+Findings:
+- Cfull preserves structure WORSE than low-band, not better: full image phase on a flat (white)
+  amplitude is off-distribution in the high band -> color fringing DINO reads as structure loss.
+- Cnorm == random seed (subtracting an independent sample's phase re-randomizes: |z|e^{i(ph_src-ph_z)}
+  = e^{i ph_src} conj(Z) ~ white Gaussian). Confirms no structure transfer.
+- Seed-phase is a monotonic structure<->edit knob whose entire frontier sits INSIDE vanilla SDEdit's
+  (vanilla beats Cfull on both axes). x0-carry is a strictly better structural anchor than phase transplant.
+
+**Verdict: KILL the seed-phase EDITING direction (SDXL).** Third confirmation of the E41 pattern
+(spectral knob trades along the frontier, never beats vanilla). Mechanism (P0) is real but only useful
+where there is NO x0 to carry (pure layout-conditioned generation), not for image editing.
