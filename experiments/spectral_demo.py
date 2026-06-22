@@ -41,6 +41,8 @@ Run with uv (auto-builds/caches an env from the inline deps below, incl. a CUDA 
 #     "huggingface-hub==0.35.3",
 #     "gradio==5.9.1",
 #     "gradio_rangeslider==0.0.8",
+#     "imageio",
+#     "imageio-ffmpeg",
 # ]
 #
 # [[tool.uv.index]]
@@ -93,6 +95,7 @@ MODELS = {
                      "max_seq": 256, "steps": 28, "guidance": 4.5},
     "flux-dev":     {"repo": "black-forest-labs/FLUX.1-dev",     "kind": "flux", "max_seq": 512, "steps": 16, "guidance": 3.5},
     "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "kind": "flux", "max_seq": 256, "steps": 4,  "guidance": 3.5},
+    "ltx":          {"repo": "Lightricks/LTX-Video", "kind": "ltx", "max_seq": 128, "steps": 24, "guidance": 10.0},
 }
 MODEL = MODELS["sd3.5-medium"]         # overridden in __main__ from --model
 MODEL_NAME = "sd3.5-medium"            # the --model key, recorded in saved runs
@@ -235,6 +238,13 @@ PIPE = None
 
 
 def load_pipe():
+    if MODEL["kind"] == "ltx":
+        # LTX-Video (E45): FlowAlign on a real video model. Reuses the experiment's LTX core.
+        import e45_ltx_flowalign as ltxcore
+        pipe = ltxcore.load_ltx()
+        pipe.set_progress_bar_config(disable=True)
+        print(f"[demo] {REPO} loaded (LTX-Video, FlowAlign video tab)", flush=True)
+        return pipe
     if MODEL["kind"] == "sd3":
         # SD3.5-medium (2.5B) fits a 24GB GPU bf16 GPU-resident (transformer + T5-XXL +
         # CLIPx2 + VAE); real CFG, so v_uncond is available for the Velocity tab. (e17_sd35.)
@@ -1680,6 +1690,115 @@ def _flowalign_tab():
     _save_load_ui("flowalign", names, inputs, out_base, out_edit)
 
 
+# ---------------------------------------------------------------------------
+# LTX-Video FlowAlign tab (E45): inversion-free FlowAlign on a real video model,
+# with the low-band phase op (2D per-frame vs 3D spatiotemporal). Left = plain
+# FlowAlign; right = + phase op. Reuses the experiment's LTX core.
+# ---------------------------------------------------------------------------
+def _ltx_conform(video_path, size, frames):
+    """Real clip -> (F,H,W,3) uint8 at size x size, F = nearest 8k+1 <= frames (LTX needs it)."""
+    import imageio.v3 as iio
+    from PIL import Image
+    vid = np.asarray(iio.imread(video_path))
+    if vid.ndim == 3:
+        vid = vid[None]
+    vid = vid[..., :3]
+    n = max(((min(len(vid), frames) - 1) // 8) * 8 + 1, 9)
+    idx = np.linspace(0, len(vid) - 1, n).round().astype(int)
+    out = [np.asarray(Image.fromarray(vid[i]).convert("RGB").resize((size, size), Image.BICUBIC))
+           for i in idx]
+    return np.stack(out).astype(np.uint8)
+
+
+def run_ltx_video(mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta, sbn_cut,
+                  phase, frames, size, steps, seed):
+    import tempfile
+    import imageio.v3 as iio
+    import e45_ltx_flowalign as L
+    if MODEL["kind"] != "ltx":
+        return None, None, "**Relaunch with `--model ltx`** — this tab needs LTX-Video."
+    try:
+        pipe = PIPE
+        H = W = int(size)
+        frames = max(((int(frames) - 1) // 8) * 8 + 1, 9)
+        seed, steps = int(seed), int(steps)
+        if mode == "upload":
+            if not up_video:
+                return None, None, "Upload a clip, or switch Source to 'generate'."
+            src_frames = _ltx_conform(up_video, H, frames)
+            caption = src_caption.strip() or src_prompt
+        else:
+            g = pipe(prompt=src_prompt, num_frames=frames, height=H, width=W,
+                     num_inference_steps=steps, guidance_scale=3.0,
+                     generator=torch.Generator("cuda").manual_seed(seed), output_type="np")
+            src_frames = (np.asarray(g.frames[0]) * 255).round().astype(np.uint8)
+            caption = src_prompt
+        F = len(src_frames)
+        Fl = (F - 1) // pipe.vae_temporal_compression_ratio + 1
+        Hl, Wl = H // pipe.vae_spatial_compression_ratio, W // pipe.vae_spatial_compression_ratio
+        sig, ts = L.ltx_schedule(pipe, steps, Fl * Hl * Wl)
+        C_src, C_tar = L.ltx_encode_prompt(pipe, caption), L.ltx_encode_prompt(pipe, edit_prompt)
+        x0 = L.ltx_pack(pipe, L.ltx_encode(pipe, src_frames))
+
+        def edit(m, c):
+            xe = L.flowalign_video(pipe, x0, C_src, C_tar, sig, ts, seed, float(w), float(zeta),
+                                   Fl, Hl, Wl, sbn_mode=m, sbn_cut=float(c))
+            fr = L.ltx_decode(pipe, L.ltx_unpack(pipe, xe, Fl, Hl, Wl))
+            p = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+            iio.imwrite(p, fr, fps=8)
+            return p
+
+        base = edit("off", 0.0)
+        var = edit(phase, sbn_cut) if phase != "off" else base
+        desc = (f"FlowAlign·LTX · {F}f@{H}px · w {float(w):.1f} · ζ {float(zeta):.3f} · "
+                f"phase {phase}" + (f" cut {float(sbn_cut):.2f}" if phase != "off" else ""))
+        return base, var, desc
+    except Exception as e:
+        return None, None, f"error: {e}"
+
+
+def _ltx_video_tab():
+    import gradio as gr
+    gr.Markdown("**FlowAlign on LTX-Video (E45).** Inversion-free FlowAlign on a real video model. "
+                "The low-band **phase** op — `phase2d` (per-frame, ~the paper) vs `phase3d` "
+                "(spatiotemporal) — preserves structure; 3D also helps temporal coherence. "
+                "Left = plain FlowAlign · right = + phase op.")
+    if MODEL["kind"] != "ltx":
+        gr.Markdown("⚠️ This tab needs **LTX-Video** — relaunch with `--model ltx`.")
+    with gr.Row():
+        with gr.Column(scale=1):
+            mode = gr.Radio(["generate", "upload"], value="generate", label="Source")
+            up_video = gr.Video(label="Upload a clip (Source = 'upload')")
+            src_prompt = gr.Textbox(label="Source prompt (generate) / its caption",
+                                    value="a small toy car driving across a wooden table")
+            src_caption = gr.Textbox(label="Source caption (for an uploaded clip)", value="")
+            edit_prompt = gr.Textbox(label="Edit prompt",
+                                     value="a small toy tank driving across a wooden table")
+            with gr.Row():
+                w = gr.Slider(1.0, 18.0, value=10.0, step=0.5, label="w (CFG, src negative)")
+                zeta = gr.Slider(0.0, 0.05, value=0.01, step=0.001, label="ζ (terminal consistency)")
+            with gr.Row():
+                phase = gr.Dropdown(["off", "phase2d", "phase3d"], value="phase3d", label="phase op",
+                                    info="3D = spatiotemporal (couples frames); 2D = per-frame.")
+                sbn_cut = gr.Slider(0.0, 0.6, value=0.2, step=0.01, label="phase cut (low band)")
+            with gr.Row():
+                frames = gr.Slider(9, 49, value=25, step=8, label="frames (8k+1)")
+                size = gr.Dropdown([256, 384, 512], value=256, label="size (px)")
+            with gr.Row():
+                steps = gr.Slider(8, 30, value=24, step=1, label="steps")
+                seed = gr.Number(value=0, precision=0, label="seed")
+            go = gr.Button("Generate", variant="primary")
+        with gr.Column(scale=2):
+            with gr.Row():
+                out_base = gr.Video(label="FlowAlign · plain")
+                out_var = gr.Video(label="FlowAlign · + phase")
+            desc = gr.Markdown()
+    go.click(run_ltx_video,
+             [mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta, sbn_cut, phase,
+              frames, size, steps, seed],
+             [out_base, out_var, desc])
+
+
 SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_runs")
 
 
@@ -1812,6 +1931,8 @@ def build_ui():
                 _flowedit_tab()
             with gr.TabItem("FlowAlign"):
                 _flowalign_tab()
+            with gr.TabItem("LTX Video FlowAlign"):
+                _ltx_video_tab()
     return demo
 
 
@@ -1836,7 +1957,8 @@ if __name__ == "__main__":
     ap.add_argument("--model", choices=list(MODELS), default="sd3.5-medium",
                     help="which model to load; only this one goes on the GPU. "
                          "sd3.5-medium (default) = real CFG, for the Velocity tab; "
-                         "flux-dev / flux-schnell = the Token/Latent tabs.")
+                         "flux-dev / flux-schnell = the Token/Latent tabs; "
+                         "ltx = LTX-Video, for the LTX Video FlowAlign tab.")
     ap.add_argument("--port", type=int, default=7860, help="Gradio server port.")
     ap.add_argument("--share", action="store_true", help="create a public Gradio link.")
     a = ap.parse_args()
