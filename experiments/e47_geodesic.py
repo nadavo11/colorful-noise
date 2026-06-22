@@ -88,7 +88,7 @@ def main():
     ap.add_argument("--ts", type=float, nargs="+", default=[0.0, 0.25, 0.5, 0.75, 1.0])
     ap.add_argument("--cut", type=float, default=0.2)
     ap.add_argument("--t_high", type=float, nargs="+", default=[0.5, 1.0])
-    ap.add_argument("--steps", type=int, default=30)
+    ap.add_argument("--steps", type=int, default=17)   # FlowAlign 24GB sampling NFE budget
     ap.add_argument("--guid", type=float, default=5.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--img_size", type=int, default=1024)

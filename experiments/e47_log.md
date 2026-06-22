@@ -24,5 +24,12 @@ Geodesic helper verified: endpoints exact (t=0 -> source phase, t=1 -> xi), ampl
 band keeps low-band source phase; imag(ifft) leak 9e-2 -> 2e-7 after restoring self-conjugate
 bins. Full run deferred to cluster (PIE-Bench + datasets live in /storage HF cache).
 
+## Config (locked to FlowAlign, 24GB GPUs)
+NFE=17 (FlowAlign's plain-sampling budget; inversion methods 17+17, FlowEdit/AlignFlow 33).
+Our SDEdit + seed-phase arms and the vanilla baseline are sampling -> 17 steps. Cluster cards:
+A5000 (24GB), matching FlowAlign's hardware. SDXL 1024px.
+
 ## P0 — kill test on n_per_type=2 (~20 PIE-Bench imgs)
-(pending cluster run — `--sub20`)
+First read used steps=30 (pre-lock); the locked config is steps=17 for the scale-up and any
+re-confirmation. The geodesic-vs-vanilla comparison is a relative frontier, so it transfers.
+(pending cluster verdict — `--sub20`)
