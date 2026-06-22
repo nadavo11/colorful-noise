@@ -1695,21 +1695,6 @@ def _flowalign_tab():
 # with the low-band phase op (2D per-frame vs 3D spatiotemporal). Left = plain
 # FlowAlign; right = + phase op. Reuses the experiment's LTX core.
 # ---------------------------------------------------------------------------
-def _ltx_conform(video_path, size, frames):
-    """Real clip -> (F,H,W,3) uint8 at size x size, F = nearest 8k+1 <= frames (LTX needs it)."""
-    import imageio.v3 as iio
-    from PIL import Image
-    vid = np.asarray(iio.imread(video_path))
-    if vid.ndim == 3:
-        vid = vid[None]
-    vid = vid[..., :3]
-    n = max(((min(len(vid), frames) - 1) // 8) * 8 + 1, 9)
-    idx = np.linspace(0, len(vid) - 1, n).round().astype(int)
-    out = [np.asarray(Image.fromarray(vid[i]).convert("RGB").resize((size, size), Image.BICUBIC))
-           for i in idx]
-    return np.stack(out).astype(np.uint8)
-
-
 def run_ltx_video(mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta, sbn_cut,
                   phase, frames, size, steps, seed):
     import tempfile
@@ -1725,7 +1710,7 @@ def run_ltx_video(mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta,
         if mode == "upload":
             if not up_video:
                 return None, None, "Upload a clip, or switch Source to 'generate'."
-            src_frames = _ltx_conform(up_video, H, frames)
+            src_frames = L.ltx_conform(up_video, H, frames)
             caption = src_caption.strip() or src_prompt
         else:
             g = pipe(prompt=src_prompt, num_frames=frames, height=H, width=W,

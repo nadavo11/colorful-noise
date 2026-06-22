@@ -170,6 +170,22 @@ def ltx_decode(pipe, latent):
     return (out * 255).round().astype(np.uint8)
 
 
+def ltx_conform(video_path, size, frames):
+    """Real clip -> (F,H,W,3) uint8 at size x size, F = nearest 8k+1 <= frames (LTX needs it).
+    Accepts any imageio path incl. bundled samples like 'imageio:cockatoo.mp4'. Shared by the demo."""
+    import imageio.v3 as iio
+    from PIL import Image
+    vid = np.asarray(iio.imread(video_path))
+    if vid.ndim == 3:
+        vid = vid[None]
+    vid = vid[..., :3]
+    n = max(((min(len(vid), frames) - 1) // 8) * 8 + 1, 9)
+    idx = np.linspace(0, len(vid) - 1, n).round().astype(int)
+    out = [np.asarray(Image.fromarray(vid[i]).convert("RGB").resize((size, size), Image.BICUBIC))
+           for i in idx]
+    return np.stack(out).astype(np.uint8)
+
+
 def ltx_pack(pipe, lat):
     return pipe._pack_latents(lat, pipe.transformer_spatial_patch_size,
                               pipe.transformer_temporal_patch_size)
@@ -297,6 +313,10 @@ def run_gen(args):
     os.makedirs(OUT, exist_ok=True)
     pipe = load_ltx()
     key, src, tgt = SCENE
+    if args.src_caption:
+        src = args.src_caption                                   # real-clip source caption
+    if args.edit_prompt:
+        tgt = args.edit_prompt
     H = W = args.size
     Fl = (args.frames - 1) // pipe.vae_temporal_compression_ratio + 1
     Hl = H // pipe.vae_spatial_compression_ratio
@@ -306,12 +326,16 @@ def run_gen(args):
     C_src = ltx_encode_prompt(pipe, src)
     C_tar = ltx_encode_prompt(pipe, tgt)
 
-    # source clip: generated from the source prompt (the LTX demo asset for this probe)
+    # source clip: a real clip (--real_video, lever 2) or generated from the source prompt
     srcp = os.path.join(OUT, "source.mp4")
-    gen = pipe(prompt=src, num_frames=args.frames, height=H, width=W,
-               num_inference_steps=args.steps, guidance_scale=3.0,
-               generator=torch.Generator("cuda").manual_seed(args.seed), output_type="np")
-    src_frames = (np.asarray(gen.frames[0]) * 255).round().astype(np.uint8)
+    if args.real_video:
+        src_frames = ltx_conform(args.real_video, H, args.frames)
+        print(f"[gen] real source clip {args.real_video} -> {src_frames.shape}", flush=True)
+    else:
+        gen = pipe(prompt=src, num_frames=args.frames, height=H, width=W,
+                   num_inference_steps=args.steps, guidance_scale=3.0,
+                   generator=torch.Generator("cuda").manual_seed(args.seed), output_type="np")
+        src_frames = (np.asarray(gen.frames[0]) * 255).round().astype(np.uint8)
     iio.imwrite(srcp, src_frames, fps=8)
     x0 = ltx_pack(pipe, ltx_encode(pipe, src_frames))
     print(f"[gen] source clip {src_frames.shape}  latent-tokens={num_tokens}  packed={tuple(x0.shape)}", flush=True)
@@ -483,7 +507,14 @@ def main():
     ap.add_argument("--cuts", default="0.2,0.35")           # sbn_cut sweep for the phase ops
     ap.add_argument("--clip_tol", type=float, default=0.01)  # editability tolerance vs baseline
     ap.add_argument("--fbf", action="store_true")           # also run paper's frame-by-frame baseline
+    ap.add_argument("--out_tag", default="")                # suffix for results dir (per-w frontier runs)
+    ap.add_argument("--real_video", default="")             # lever 2: edit a real clip instead of generating
+    ap.add_argument("--src_caption", default="")            # source caption (real clip / override)
+    ap.add_argument("--edit_prompt", default="")            # edit prompt (override SCENE target)
     args = ap.parse_args()
+    if args.out_tag:
+        global OUT
+        OUT = f"{OUT}_{args.out_tag}"
     for part in args.part.split(","):
         if part == "smoke":
             run_smoke(args)
