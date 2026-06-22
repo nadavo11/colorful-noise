@@ -150,3 +150,23 @@ identity recon L1 = 0.0230 (real-clip VAE lossier but passes <0.10).
   win (-13% warp) + structure edge -- the spatiotemporal hypothesis holds where it can be tested.
 Demo: `--model ltx` LTX Video FlowAlign tab added to spectral_demo.py (upload/generate, 2D/3D
 phase, baseline-vs-phase video). Validated through full LTX load under diffusers 0.38.
+
+## Probe S8 (e45-ltx-compare) — DISTORTION DIAGNOSIS: it was resolution/aspect, not the algorithm
+User reported distorted output. Compared canonical FlowEdit (faithful: src_gs 1.5/tar_gs 3.5, n_max
+window, fresh noise + n_avg) vs my FlowAlign variants at LTX-native 704x480 landscape, 49f, 30 steps:
+  source, identity, flowedit, flowalign_hi_allsteps (w=10, all steps), flowalign_hi_window (+n_max),
+  flowalign_lo_window (+n_max, w=3).
+- At 704x480 ALL variants -- including my current w=10 all-steps FlowAlign -- render CLEAN and
+  temporally coherent (toy moves smoothly, stable background, no morphing). Verified by mid-frame +
+  5-frame time montages.
+- => The distortion in the earlier clips was RESOLUTION/ASPECT: 256x256 is too low-res for LTX
+  (blurry/artifacted), and 512x512 SQUASHED the portrait cockatoo (720x1280) into a square ->
+  stretched/distorted. LTX wants larger, non-square (landscape/portrait) frames.
+- Examined the port against canonical FlowEdit and still fixed real deviations (good practice, not
+  the main cause here): editing ALL steps vs the n_max window (skip high-noise early steps), one
+  fixed eps vs fresh per-step noise + n_avg. Added faithful `flowedit_video` baseline +
+  `flowalign_video(n_max, n_avg)` (defaults unchanged so prior runs reproduce).
+- CONSEQUENCE: the S2-S7 quantitative results (46x flicker, frontier, -13% cockatoo) were computed
+  on 256/512 square clips that were partly resolution-distorted -> directionally suggestive but
+  should be RE-RUN at 704x480 to be trustworthy. The qualitative story (video >> frame-by-frame on
+  temporal coherence; 3D phase preserves structure) is unaffected.
