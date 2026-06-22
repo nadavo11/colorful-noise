@@ -1696,7 +1696,7 @@ def _flowalign_tab():
 # FlowAlign; right = + phase op. Reuses the experiment's LTX core.
 # ---------------------------------------------------------------------------
 def run_ltx_video(mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta, sbn_cut,
-                  phase, frames, size, steps, seed):
+                  phase, frames, width, height, steps, seed):
     import tempfile
     import imageio.v3 as iio
     import e45_ltx_flowalign as L
@@ -1704,13 +1704,15 @@ def run_ltx_video(mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta,
         return None, None, "**Relaunch with `--model ltx`** — this tab needs LTX-Video."
     try:
         pipe = PIPE
-        H = W = int(size)
+        W, H = int(width), int(height)               # LTX-native, non-square (round to /32)
+        W, H = (W // 32) * 32, (H // 32) * 32
         frames = max(((int(frames) - 1) // 8) * 8 + 1, 9)
         seed, steps = int(seed), int(steps)
+        n_max = steps - max(2, round(0.15 * steps))   # skip the highest-noise early steps (canonical)
         if mode == "upload":
             if not up_video:
                 return None, None, "Upload a clip, or switch Source to 'generate'."
-            src_frames = L.ltx_conform(up_video, H, frames)
+            src_frames = L.ltx_conform(up_video, W, frames, H)
             caption = src_caption.strip() or src_prompt
         else:
             g = pipe(prompt=src_prompt, num_frames=frames, height=H, width=W,
@@ -1727,7 +1729,7 @@ def run_ltx_video(mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta,
 
         def edit(m, c):
             xe = L.flowalign_video(pipe, x0, C_src, C_tar, sig, ts, seed, float(w), float(zeta),
-                                   Fl, Hl, Wl, sbn_mode=m, sbn_cut=float(c))
+                                   Fl, Hl, Wl, sbn_mode=m, sbn_cut=float(c), n_max=n_max)
             fr = L.ltx_decode(pipe, L.ltx_unpack(pipe, xe, Fl, Hl, Wl))
             p = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
             iio.imwrite(p, fr, fps=8)
@@ -1760,18 +1762,20 @@ def _ltx_video_tab():
             edit_prompt = gr.Textbox(label="Edit prompt",
                                      value="a small toy tank driving across a wooden table")
             with gr.Row():
-                w = gr.Slider(1.0, 18.0, value=10.0, step=0.5, label="w (CFG, src negative)")
+                w = gr.Slider(1.0, 18.0, value=6.0, step=0.5, label="w (CFG, src negative)")
                 zeta = gr.Slider(0.0, 0.05, value=0.01, step=0.001, label="ζ (terminal consistency)")
             with gr.Row():
                 phase = gr.Dropdown(["off", "phase2d", "phase3d"], value="phase3d", label="phase op",
                                     info="3D = spatiotemporal (couples frames); 2D = per-frame.")
                 sbn_cut = gr.Slider(0.0, 0.6, value=0.2, step=0.01, label="phase cut (low band)")
             with gr.Row():
-                frames = gr.Slider(9, 49, value=25, step=8, label="frames (8k+1)")
-                size = gr.Dropdown([256, 384, 512], value=256, label="size (px)")
+                frames = gr.Slider(9, 97, value=49, step=8, label="frames (8k+1)")
+                steps = gr.Slider(8, 40, value=30, step=1, label="steps")
             with gr.Row():
-                steps = gr.Slider(8, 30, value=24, step=1, label="steps")
-                seed = gr.Number(value=0, precision=0, label="seed")
+                width = gr.Dropdown([512, 640, 704, 768, 832], value=704, label="width (px, /32)",
+                                    info="LTX wants larger, non-square frames; square low-res distorts.")
+                height = gr.Dropdown([320, 384, 448, 480, 512], value=480, label="height (px, /32)")
+            seed = gr.Number(value=0, precision=0, label="seed")
             go = gr.Button("Generate", variant="primary")
         with gr.Column(scale=2):
             with gr.Row():
@@ -1780,7 +1784,7 @@ def _ltx_video_tab():
             desc = gr.Markdown()
     go.click(run_ltx_video,
              [mode, up_video, src_prompt, src_caption, edit_prompt, w, zeta, sbn_cut, phase,
-              frames, size, steps, seed],
+              frames, width, height, steps, seed],
              [out_base, out_var, desc])
 
 

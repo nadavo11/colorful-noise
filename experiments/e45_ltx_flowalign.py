@@ -366,7 +366,9 @@ def run_gen(args):
         src = args.src_caption                                   # real-clip source caption
     if args.edit_prompt:
         tgt = args.edit_prompt
-    H = W = args.size
+    # LTX-native dims: prefer explicit --width/--height (landscape/portrait); --size = legacy square.
+    W = args.width if args.width else args.size
+    H = args.height if args.height else args.size
     Fl = (args.frames - 1) // pipe.vae_temporal_compression_ratio + 1
     Hl = H // pipe.vae_spatial_compression_ratio
     Wl = W // pipe.vae_spatial_compression_ratio
@@ -378,7 +380,7 @@ def run_gen(args):
     # source clip: a real clip (--real_video, lever 2) or generated from the source prompt
     srcp = os.path.join(OUT, "source.mp4")
     if args.real_video:
-        src_frames = ltx_conform(args.real_video, H, args.frames)
+        src_frames = ltx_conform(args.real_video, W, args.frames, H)
         print(f"[gen] real source clip {args.real_video} -> {src_frames.shape}", flush=True)
     else:
         gen = pipe(prompt=src, num_frames=args.frames, height=H, width=W,
