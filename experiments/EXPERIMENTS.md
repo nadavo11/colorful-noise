@@ -1026,7 +1026,7 @@ band $[\ell,h]$ and a step window: (1) **mag** — per-bin magnitude transplant
 $|V_w|\!\leftarrow\!|V_\varnothing|$ keeping $v_w$'s phase, blended by `strength`; (2) **band
 power** — per-band mean-power match toward $P(v_\varnothing)$ (the `psd_match`/SBN operator);
 (3) **band amplify/reduce** — band gain on $v_w$. Phase (layout/adherence) is preserved
-throughout; cost is two FFTs/step, no extra forward. Formalized in `VELOCITY_SPECTRAL_MATH.md`.
+throughout; cost is two FFTs/step, no extra forward. Formalized in `docs/methods/VELOCITY_SPECTRAL_MATH.md`.
 
 **Key results (GenEval, mag-only).** Ran the magnitude-transplant variant on GenEval (553
 prompts, n=1, 512px, w=4.5; SD3.5-medium, local A5000). Scorer = GenEval protocol with a
@@ -1045,8 +1045,8 @@ identity at strength 0, step-window gating). Demo **Velocity** tab on `spectral_
 
 **Artifacts.** `experiments/e37_geneval.py` (+ `geneval_score.py`, `geneval_data/`,
 `cluster_e37_geneval_job.sh`), `experiments/velocity_spectral_ops.py`,
-`experiments/VELOCITY_SPECTRAL_MATH.md`, the Velocity tab in `spectral_demo.py`. Deep writeup
-`EXPERIMENT_37.md`; example HTML via `e37_geneval.py --part site` (counting / color_attr).
+`docs/methods/VELOCITY_SPECTRAL_MATH.md`, the Velocity tab in `spectral_demo.py`. Deep writeup
+`docs/experiment-reports/EXPERIMENT_37.md`.
 Results (gitignored) in `results/e37_geneval/`.
 
 ---

@@ -24,7 +24,7 @@ Single-seed, so the +0.011 overall is within seed noise — but the per-tag patt
 - **Velocity spectral normalization (this op)** — inside the band `[lo,hi]` of the 2-D radial
   FFT, replace `|V_w|` with `|V_∅|` (keep `v_w`'s phase). This pulls the magnitude toward the
   natural cfg=1 envelope without disturbing the adherence-bearing phase. Scale-correct in one
-  pass because `v_∅` is the *same-step* field (see `experiments/VELOCITY_SPECTRAL_MATH.md`).
+  pass because `v_∅` is the *same-step* field (see `docs/methods/VELOCITY_SPECTRAL_MATH.md`).
 - **Conditions** — `baseline` (plain CFG); `mag_{full,top25,bot25}` = magnitude transplant on
   `[0,1]` / `[0.75,1]` / `[0,0.25]`. (A per-band-power `psd_match` variant exists but was dropped
   for this pass; mag-only matches the demo.)
