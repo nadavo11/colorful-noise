@@ -47,4 +47,10 @@ Recon results:
 - Reproduction blocker remaining: GPU runs via runai **only in the docker sandbox** (can't submit
   from here). Plan: build harness + hand off exact submit command.
 
-Verdict: TBD (harness build pending go-ahead).
+Foundation smoke (official run_edit.py, bicycle, cfg13.5/NFE33/seed123): **PASS** — clean
+black→rusty mountain-bike edit, background preserved, matches FlowAlign README fig. SD3.0-medium
+now in shared cache. Env + gated download + official code all work on the cluster.
+(`results/e44_smoke/{source,edited}/bicycle.jpg`.)
+
+Verdict (P0 overall): IN PROGRESS — foundation proven; reproduction gate (700-img CFG sweep vs
+Fig-3a curve) still pending. Blocked on `Bash(runai:*)` allow-rule so I can submit --mini then --cfg.
