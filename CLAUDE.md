@@ -30,3 +30,8 @@ worktree, set `script: None` in the registry and note the worktree in the method
 - Cross-cutting method/math notes (not tied to one experiment): `docs/methods/`.
 - Run records: `experiments/manifests/<eid>.json` (tracked, light). Heavy run artifacts stay in
   `results/` (gitignored) and are referenced from manifests by relative path.
+- Comparison runs default to the **frozen eval fixture** (`experiments/fixtures.py`):
+  `fixtures.canonical_prompts()` + `fixtures.SEEDS`, so experiments are comparable by
+  construction. Record `fixtures.FIXTURE_VERSION` in the run's manifest config. Headline
+  runs against a full benchmark use `fixtures.geneval_all()` / `compbench_prompts()` /
+  `dpg_prompts()`.
