@@ -597,7 +597,7 @@ def make_grids(g):
 
 def _site(summary, plots, grids_png):
     try:
-        from e27_site import data_uri
+        from common import data_uri
     except Exception:
         data_uri = None
 

@@ -305,7 +305,7 @@ def _site(report):
     Pure templating from `report` (= results/e31/report.json) + the saved strips; loads no
     model, so the page rebuilds anywhere (`--part site`)."""
     try:
-        from e27_site import data_uri
+        from common import data_uri
     except Exception:
         data_uri = None
 

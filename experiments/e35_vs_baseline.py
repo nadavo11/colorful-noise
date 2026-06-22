@@ -280,7 +280,7 @@ def main(out_dir, with_images):
         return sorted(rows, key=lambda r: r[1], reverse=True)
 
     try:
-        from e27_site import data_uri
+        from common import data_uri
     except Exception:
         data_uri = None
 
