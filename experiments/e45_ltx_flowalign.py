@@ -128,16 +128,220 @@ def run_smoke(args):
     print("[smoke] DONE", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# LTX plumbing for FlowAlign (shapes confirmed by the smoke: latent (1,128,F,H,W),
+# F=(frames-1)//8+1, H=W=size//32; latents_mean/std (128,); scaling_factor=1.0).
+# ---------------------------------------------------------------------------
+FRAME_RATE = 25
+
+
+def _latents_mean_std(vae):
+    mean = vae.latents_mean if hasattr(vae, "latents_mean") else vae.config.latents_mean
+    std = vae.latents_std if hasattr(vae, "latents_std") else vae.config.latents_std
+    mean = mean if torch.is_tensor(mean) else torch.tensor(mean)
+    std = std if torch.is_tensor(std) else torch.tensor(std)
+    return mean, std
+
+
+def ltx_encode(pipe, frames_np):
+    """(F,H,W,3) uint8 -> normalized latent (1,128,Fl,Hl,Wl) float32 on cuda."""
+    vae = pipe.vae
+    x = torch.from_numpy(frames_np).float() / 255.0
+    x = (x.permute(3, 0, 1, 2)[None] * 2 - 1).to(vae.device, vae.dtype)
+    with torch.no_grad():
+        z = vae.encode(x).latent_dist.mean
+    mean, std = _latents_mean_std(vae)
+    zn = pipe.__class__._normalize_latents(z, mean, std, vae.config.scaling_factor)
+    return zn.float()
+
+
+def ltx_decode(pipe, latent):
+    """normalized latent (1,128,Fl,Hl,Wl) -> (F,H,W,3) uint8."""
+    vae = pipe.vae
+    mean, std = _latents_mean_std(vae)
+    zd = pipe.__class__._denormalize_latents(latent, mean, std, vae.config.scaling_factor).to(vae.dtype)
+    with torch.no_grad():
+        try:
+            ts = torch.zeros(zd.shape[0], device=zd.device, dtype=zd.dtype)
+            out = vae.decode(zd, temb=ts, return_dict=False)[0]
+        except TypeError:
+            out = vae.decode(zd, return_dict=False)[0]
+    out = ((out.float() + 1) / 2).clamp(0, 1)[0].permute(1, 2, 3, 0).cpu().numpy()
+    return (out * 255).round().astype(np.uint8)
+
+
+def ltx_pack(pipe, lat):
+    return pipe._pack_latents(lat, pipe.transformer_spatial_patch_size,
+                              pipe.transformer_temporal_patch_size)
+
+
+def ltx_unpack(pipe, packed, Fl, Hl, Wl):
+    return pipe._unpack_latents(packed, Fl, Hl, Wl,
+                                pipe.transformer_spatial_patch_size,
+                                pipe.transformer_temporal_patch_size)
+
+
+def ltx_schedule(pipe, steps, num_tokens):
+    """LTX resolution-shifted sigma/timestep grid (mirrors the pipeline)."""
+    from diffusers.pipelines.ltx.pipeline_ltx import retrieve_timesteps
+    from diffusers.pipelines.flux.pipeline_flux import calculate_shift
+    cfg = pipe.scheduler.config
+    sigmas = np.linspace(1.0, 1.0 / steps, steps)
+    mu = calculate_shift(num_tokens, cfg.get("base_image_seq_len", 256),
+                         cfg.get("max_image_seq_len", 4096),
+                         cfg.get("base_shift", 0.5), cfg.get("max_shift", 1.15))
+    retrieve_timesteps(pipe.scheduler, steps, "cuda", None, sigmas=sigmas, mu=mu)
+    return pipe.scheduler.sigmas.float(), pipe.scheduler.timesteps.float()
+
+
+def ltx_encode_prompt(pipe, prompt):
+    pe, mask, _, _ = pipe.encode_prompt(prompt, do_classifier_free_guidance=False, device="cuda")
+    return pe.float(), mask
+
+
+@torch.no_grad()
+def ltx_velocity(pipe, packed_x, t, pe, mask, Fl, Hl, Wl):
+    rope = (pipe.vae_temporal_compression_ratio / FRAME_RATE,
+            pipe.vae_spatial_compression_ratio, pipe.vae_spatial_compression_ratio)
+    ts = t.expand(packed_x.shape[0]).to(pipe.dtype)
+    v = pipe.transformer(hidden_states=packed_x.to(pipe.dtype),
+                         encoder_hidden_states=pe.to(pipe.dtype), timestep=ts,
+                         encoder_attention_mask=mask, num_frames=Fl, height=Hl, width=Wl,
+                         rope_interpolation_scale=rope, return_dict=False)[0]
+    return v.float()
+
+
+# --- low-band PHASE-keep op: keep `out` magnitude, take `ref` phase inside a radial
+#     band. dims=("HW") -> per-frame 2D; dims=("FHW") -> spatiotemporal 3D. ---
+def _radial_norm(shape, dims, device):
+    grids = []
+    for d in dims:
+        f = torch.fft.fftfreq(shape[d], device=device)
+        view = [1] * len(shape); view[d] = shape[d]
+        grids.append(f.view(view))
+    r = sum(g ** 2 for g in grids).sqrt()
+    return r / r.max().clamp(min=1e-8)
+
+
+def band_phase_keep(out, ref, lo, hi, mode):
+    """out/ref: (1,128,Fl,Hl,Wl). mode 'phase2d' -> fft over (H,W); 'phase3d' -> (F,H,W)."""
+    dims = (-2, -1) if mode == "phase2d" else (-3, -2, -1)
+    r = _radial_norm(out.shape, [d % out.ndim for d in dims], out.device)
+    band = ((r >= lo) & (r <= hi)).float()
+    Fo = torch.fft.fftn(out.float(), dim=dims)
+    Fr = torch.fft.fftn(ref.float(), dim=dims)
+    phi = Fr.angle() * band + Fo.angle() * (1.0 - band)
+    mix = Fo.abs() * torch.exp(1j * phi)
+    # keep DC (freq 0 along every transformed dim) from `out`, in the FREQUENCY domain
+    idx = [slice(None)] * out.ndim
+    for d in dims:
+        idx[d % out.ndim] = 0
+    mix[tuple(idx)] = Fo[tuple(idx)]
+    return torch.fft.ifftn(mix, dim=dims).real.to(out.dtype)
+
+
+def vel_sbn_video(pipe, vp, vref, mode, cut, Fl, Hl, Wl):
+    """Apply the phase-keep on the CFG velocity's low band (our structure op)."""
+    if mode == "off":
+        return vp
+    a = ltx_unpack(pipe, vp, Fl, Hl, Wl)
+    r = ltx_unpack(pipe, vref, Fl, Hl, Wl)
+    a = band_phase_keep(a, r, 0.0, cut, mode)
+    return ltx_pack(pipe, a)
+
+
+@torch.no_grad()
+def flowalign_video(pipe, x0_packed, C_src, C_tar, sig, ts, seed, w, zeta,
+                    Fl, Hl, Wl, sbn_mode="off", sbn_cut=0.0):
+    """FlowAlign (arXiv:2505.23145) on LTX. Defaults (sbn off) = plain FlowAlign;
+    C_tar==C_src reproduces the source clip (identity gate). 3 velocity forwards/step."""
+    steps = len(sig) - 1
+    eps = torch.randn(x0_packed.shape, generator=torch.Generator("cuda").manual_seed(seed),
+                      device="cuda").float()
+    xt = x0_packed.clone()
+    for i in range(steps):
+        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
+        qt = (1 - s_hi) * x0_packed + s_hi * eps                 # forward-diffused source
+        pt = xt + qt - x0_packed                                 # == x_tar
+        v_pt_src = ltx_velocity(pipe, pt, ts[i], C_src[0], C_src[1], Fl, Hl, Wl)
+        v_pt_tar = ltx_velocity(pipe, pt, ts[i], C_tar[0], C_tar[1], Fl, Hl, Wl)
+        vp = v_pt_src + w * (v_pt_tar - v_pt_src)                # CFG, source prompt as negative
+        vp = vel_sbn_video(pipe, vp, v_pt_src, sbn_mode, sbn_cut, Fl, Hl, Wl)
+        vq = ltx_velocity(pipe, qt, ts[i], C_src[0], C_src[1], Fl, Hl, Wl)
+        term = (qt - s_hi * vq) - (pt - s_hi * vp)               # E[q0|qt] - E[p0|pt]
+        xt = xt + (s_lo - s_hi) * (vp - vq) + zeta * term
+    return xt
+
+
+# (key, source prompt, edit/target prompt) -- one LTX-generated demo clip for the probe.
+SCENE = ("rover", "a small toy car driving across a wooden table",
+         "a small toy tank driving across a wooden table")
+
+
+def run_gen(args):
+    import imageio.v3 as iio
+    os.makedirs(OUT, exist_ok=True)
+    pipe = load_ltx()
+    key, src, tgt = SCENE
+    H = W = args.size
+    Fl = (args.frames - 1) // pipe.vae_temporal_compression_ratio + 1
+    Hl = H // pipe.vae_spatial_compression_ratio
+    Wl = W // pipe.vae_spatial_compression_ratio
+    num_tokens = Fl * Hl * Wl
+    sig, ts = ltx_schedule(pipe, args.steps, num_tokens)
+    C_src = ltx_encode_prompt(pipe, src)
+    C_tar = ltx_encode_prompt(pipe, tgt)
+
+    # source clip: generated from the source prompt (the LTX demo asset for this probe)
+    srcp = os.path.join(OUT, "source.mp4")
+    gen = pipe(prompt=src, num_frames=args.frames, height=H, width=W,
+               num_inference_steps=args.steps, guidance_scale=3.0,
+               generator=torch.Generator("cuda").manual_seed(args.seed), output_type="np")
+    src_frames = (np.asarray(gen.frames[0]) * 255).round().astype(np.uint8)
+    iio.imwrite(srcp, src_frames, fps=8)
+    x0 = ltx_pack(pipe, ltx_encode(pipe, src_frames))
+    print(f"[gen] source clip {src_frames.shape}  latent-tokens={num_tokens}  packed={tuple(x0.shape)}", flush=True)
+
+    def decode_save(xe, name):
+        frames = ltx_decode(pipe, ltx_unpack(pipe, xe, Fl, Hl, Wl))
+        iio.imwrite(os.path.join(OUT, f"{name}.mp4"), frames, fps=8)
+        return frames
+
+    # identity gate: C_tar = C_src must reproduce the source clip
+    xe = flowalign_video(pipe, x0, C_src, C_src, sig, ts, args.seed, args.w, args.zeta, Fl, Hl, Wl)
+    recon = decode_save(xe, "recon")
+    n = min(len(src_frames), len(recon))
+    recon_l1 = float(np.abs(src_frames[:n].astype(float) - recon[:n].astype(float)).mean() / 255.0)
+    print(f"[gen] identity-gate recon L1 = {recon_l1:.4f}", flush=True)
+
+    # baseline edit (plain FlowAlign, sbn off) -- the number to beat
+    xe = flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed, args.w, args.zeta, Fl, Hl, Wl)
+    decode_save(xe, "baseline")
+    print("[gen] baseline edit done", flush=True)
+
+    import json
+    with open(os.path.join(OUT, "gen_report.json"), "w") as f:
+        json.dump({"scene": key, "src": src, "tgt": tgt, "recon_l1": recon_l1,
+                   "params": {"steps": args.steps, "frames": args.frames, "size": args.size,
+                              "w": args.w, "zeta": args.zeta}}, f, indent=2)
+    print("[gen] DONE", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", default="smoke")
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--frames", type=int, default=25)
     ap.add_argument("--size", type=int, default=256)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--w", type=float, default=10.0)        # FlowAlign CFG (paper default)
+    ap.add_argument("--zeta", type=float, default=0.01)     # FlowAlign source-consistency (paper)
     args = ap.parse_args()
     for part in args.part.split(","):
         if part == "smoke":
             run_smoke(args)
+        elif part == "gen":
+            run_gen(args)
         else:
             print(f"[e45] part '{part}' not implemented yet", flush=True)
 
