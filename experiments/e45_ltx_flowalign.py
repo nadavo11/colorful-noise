@@ -1,4 +1,4 @@
-"""E44: FlowAlign on LTX-Video + our spectral phase op, for temporally-coherent video editing.
+"""E45: FlowAlign on LTX-Video + our spectral phase op, for temporally-coherent video editing.
 
 Motivation. FlowAlign (arXiv:2505.23145) edits VIDEO frame-by-frame on an IMAGE model (SD3):
 the paper itself admits "temporal consistency for the edited object is limited, as no explicit
@@ -15,7 +15,7 @@ FlowAlign math is model-agnostic; this file ports the velocity/pack/VAE to LTX a
 FlowAlign loop body. Paper hyperparams: zeta=0.01, CFG w in [5,7.5,10,13.5] (default 10), 33 steps.
 
 Parts (--part): smoke (pipeline + VAE round-trip shape/const dump) ; gen ; analyze.
-Run:  uv run experiments/e44_ltx_flowalign.py --part smoke --steps 8
+Run:  uv run experiments/e45_ltx_flowalign.py --part smoke --steps 8
 """
 # /// script
 # requires-python = ">=3.10"
@@ -48,7 +48,7 @@ import numpy as np
 import torch
 
 MODEL = "Lightricks/LTX-Video"
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", "e44")
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", "e45")
 
 
 def load_ltx():
@@ -139,7 +139,7 @@ def main():
         if part == "smoke":
             run_smoke(args)
         else:
-            print(f"[e44] part '{part}' not implemented yet", flush=True)
+            print(f"[e45] part '{part}' not implemented yet", flush=True)
 
 
 if __name__ == "__main__":
