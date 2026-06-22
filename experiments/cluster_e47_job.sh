@@ -38,6 +38,8 @@ case "$STAGE" in
   --sub100)   python e47_geodesic.py --n_per_type 10 --steps 17 --method B   --tag sub100 ;;
   --sweepA)   python e47_geodesic.py --n_per_type 2  --steps 17 --method A   --tag sweepA ;;
   --sweepSDG) python e47_geodesic.py --n_per_type 2  --steps 17 --method sdg --tag sweepSDG ;;
+  --confA)    python e47_geodesic.py --n_per_type 10 --steps 17 --method A   --taus 0.125 0.25 0.375 --tag confA ;;
+  --confSDG)  python e47_geodesic.py --n_per_type 10 --steps 17 --method sdg --taus 0.125 0.25 0.375 --taus_white 0.5 --tag confSDG ;;
   *) echo "[job] unknown stage '$STAGE'"; exit 1 ;;
 esac
 echo "[job] stage $STAGE done"

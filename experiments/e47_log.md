@@ -60,6 +60,13 @@ phase at fixed 0.8 energy. **KEEP SDG-source; KILL A.** (1 image — needs PIE-B
 
 ## P4 — apples-to-apples PIE-Bench sweep (cluster, 17 steps, in-flight)
 Two parallel GPU jobs, n_per_type=2 (~20 imgs), each drawing the vanilla strength frontier +
-its tau-sweep at strength 0.8: `e47-sweepa` (method A) and `e47-sweepsdg` (SDG-source +
-SDG-white). Goal/kill: does any SDG (or A) point sit NW of the vanilla frontier across edit
-types? Decides E47's verdict. (pending — `--sweepA` / `--sweepSDG`)
+its tau-sweep at strength 0.8: `e47-sweepa` (method A) and `e47-sweepsdg` (SDG-source + white).
+Vanilla frontier: s0.5 0.088/+0.028 .. s0.7 0.109/+0.040 .. s0.8 0.127/+0.100 .. s0.9 0.145/+0.131.
+**BOTH light-tau (0.25) arms beat the frontier (first E47 breakout):**
+- A_t0.25 = 0.108/+0.065 -> at struct 0.108 vanilla gives only +0.040; **+0.025 margin (solid)**,
+  fills the Pareto gap between van s0.7 and s0.8. A_t0.5/0.75 lose.
+- sdg_src_t0.25 = 0.113/+0.056 -> beats interp +0.053 by +0.002 (**marginal, within noise**).
+  sdg_src_t0.5/0.75 and sdg_wht_t0.5 lose.
+Reversal vs the chair (there A over-locked, SDG won): over 20 real imgs A_t0.25 is the stronger.
+**KEEP light-tau A (and SDG, tentatively); confirming at n=100.** Conf jobs: `--confA` / `--confSDG`
+(taus 0.125/0.25/0.375). (n=100 verdict pending)
