@@ -1214,3 +1214,15 @@ real clip @512 (cockatoo→parrot):* real footage genuinely flickers (baseline w
 editability cost — the clearest spatiotemporal win, where the hypothesis can actually be tested.
 **Demo:** `--model ltx` adds an *LTX Video FlowAlign* tab (upload or generate, 2D/3D phase,
 baseline-vs-phase video) — validated through a full LTX load under diffusers 0.38.
+
+**Correction (distortion diagnosis + native-res rerun).** The S2–S7 clips were edited at 256/512
+**square** resolution, which distorts LTX (it wants larger, non-square frames). A faithful FlowEdit
+baseline and FlowAlign both render clean at native **704×480** — so the port is correct (identity
+recon ~0.005); the distortion was resolution, not a bug. **Re-running the headline numbers at
+native res reverses the temporal story:** toy@704×480 (generated) — video 7.1× less flicker than
+frame-by-frame and the phase op improves struct + editability (goal PASS); but **real
+cockatoo@448×768 portrait — the video baseline flickers *more* than frame-by-frame (warpM 0.039 vs
+0.029) and the phase op gives no temporal benefit.** The 46× flicker win and the 3D-phase temporal
+edge were **resolution artifacts**. Honest verdict: the temporal claims do **not** generalize to
+real footage; the phase op's reliable effect is a small structure-preservation improvement (as in
+E43). Demo defaults updated to native dims + the canonical n_max step-window.

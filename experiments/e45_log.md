@@ -167,6 +167,43 @@ window, fresh noise + n_avg) vs my FlowAlign variants at LTX-native 704x480 land
   fixed eps vs fresh per-step noise + n_avg. Added faithful `flowedit_video` baseline +
   `flowalign_video(n_max, n_avg)` (defaults unchanged so prior runs reproduce).
 - CONSEQUENCE: the S2-S7 quantitative results (46x flicker, frontier, -13% cockatoo) were computed
-  on 256/512 square clips that were partly resolution-distorted -> directionally suggestive but
-  should be RE-RUN at 704x480 to be trustworthy. The qualitative story (video >> frame-by-frame on
-  temporal coherence; 3D phase preserves structure) is unaffected.
+  on 256/512 square clips that were partly resolution-distorted -> RE-RUN at native res (S9).
+
+## Probe S9 (e45-ltx-native) — TRUSTWORTHY native-res numbers; CORRECTS the headline claims
+Re-ran at LTX-native, non-square res. Both render clean (verified frames).
+
+### native_toy @704x480 landscape (generated)  -- identity recon 0.0047
+| cond         | struct↓ | clip↑   | warpM↓  |
+|--------------|---------|---------|---------|
+| baseline     | 0.0774  | +0.1745 | 0.00015 |
+| phase2d_c0.2 | 0.0742  | +0.1822 | 0.00015 |
+| phase3d_c0.2 | 0.0749  | +0.1912 | 0.00016 |
+| fbf (paper)  | 0.0870  | +0.1630 | 0.00106 |
+-> video 7.1x less flicker than fbf; phase improves BOTH struct and editability (goal PASS).
+   (Much better than the distorted 256: struct ~halved, clip ~doubled.)
+
+### native_cockatoo @448x768 portrait (REAL footage)  -- identity recon 0.0217
+| cond         | struct↓ | clip↑   | warpM↓  |
+|--------------|---------|---------|---------|
+| baseline     | 0.1295  | +0.1333 | 0.03934 |
+| phase2d_c0.2 | 0.1261  | +0.1254 | 0.04105 |
+| phase3d_c0.2 | 0.1284  | +0.1345 | 0.04003 |
+| fbf (paper)  | 0.1288  | +0.2494 | 0.02929 |
+-> REVERSAL: the video baseline flickers MORE than frame-by-frame (0.039 vs 0.029, i.e. video is
+   0.7x = worse), and the phase op gives NO temporal benefit (~0.040 ≈ baseline). fbf also edits
+   much harder (clip +0.249 vs +0.133).
+
+### CORRECTED VERDICT (supersedes the S2-S7 distorted-res claims)
+- The big temporal numbers (46x flicker, 3D-phase -13% on real footage) were RESOLUTION ARTIFACTS.
+- At native res the picture splits by content:
+  - generated/easy (toy): video editing IS temporally smoother than frame-by-frame (7x) and the
+    phase op improves structure + editability. Video wins.
+  - REAL footage with motion (cockatoo): the video-model edit flickers MORE than frame-by-frame,
+    and the phase op does NOT help temporally. The "video >> frame-by-frame on flicker" and
+    "3D phase reduces flicker" claims DO NOT generalize to real footage.
+- RELIABLE finding: the phase op gives a small, consistent STRUCTURE-preservation improvement on
+  both scenes (toy 0.074 vs 0.077; cockatoo 0.126-0.128 vs 0.130) -- consistent with E43 on images.
+- Temporal hypothesis = KILL as a general claim. Structure-preservation benefit = modest KEEP.
+- Open: the warp metric on real footage may itself be confounded (source-flow warp of a changed
+  object); a multi-clip real set + a perceptual flicker measure would be needed to claim anything
+  temporal. Don't publish the temporal win.

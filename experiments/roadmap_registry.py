@@ -610,13 +610,21 @@ EXPERIMENTS = [
                "the editability-vs-flicker frontier (video editability saturates ~+0.085, can't reach fbf's "
                "+0.12-0.18). On a REAL clip @512 (cockatoo->parrot) the baseline genuinely flickers (warpM 0.042) "
                "and phase3d cuts it -13% (0.0364 vs 0.0419) + better structure -- the clearest spatiotemporal win.",
-     "verdict": "Plan-faithful win: video editing removes the paper's frame-by-frame flicker (46x on generated, "
-                "1.6x on real footage) and DOMINATES the editability-vs-flicker frontier; on real footage that "
-                "actually flickers the 3D phase op gives a measurable temporal win (-13% warp) + structure edge, "
-                "confirming the spatiotemporal hypothesis. The paper's temporal gap is an artifact of frame-by-frame "
-                "image-model editing, not intrinsic to FlowAlign. Available in the demo (--model ltx).",
-     "nxt": "Quantify on a multi-clip real-video set (DAVIS) for significance; the video edit saturates ~+0.085 "
-            "CLIP -- push edit strength (schedule/zeta) without reintroducing flicker; map the phase frontier at "
-            "512px where the radial cut tunes finely.",
+     "result_correction": "DISTORTION DIAGNOSIS + native-res rerun (S8/S9): the earlier clips were edited at "
+                "256/512 SQUARE res, which distorts LTX (it wants larger non-square frames). A faithful FlowEdit "
+                "baseline and FlowAlign both render clean at native 704x480. Re-running the headline numbers at "
+                "native res: toy@704x480 -- video 7.1x less flicker than frame-by-frame, phase improves struct+CLIP "
+                "(goal PASS). BUT real cockatoo@448x768 portrait -- video baseline flickers MORE than frame-by-frame "
+                "(warpM 0.039 vs 0.029) and the phase op gives NO temporal benefit. The 46x flicker win and the "
+                "3D-phase temporal edge were RESOLUTION ARTIFACTS.",
+     "verdict": "CORRECTED (native res): the temporal claims do NOT generalize. On generated/easy content the video "
+                "edit is temporally smoother than frame-by-frame and the phase op improves structure+editability; on "
+                "REAL footage with motion the video edit flickers as much/more than frame-by-frame and the phase op "
+                "gives no temporal benefit. The reliable finding is a small, consistent STRUCTURE-preservation "
+                "improvement from the phase op (as in E43). Temporal hypothesis = KILL as a general claim. The port "
+                "is correct (identity recon ~0.005); distortion was resolution, not a bug. Demo: --model ltx.",
+     "nxt": "Do NOT publish the temporal win. For any temporal claim: multi-clip real-video set (DAVIS) + a "
+            "perceptual flicker metric (source-flow warp is confounded by the edited object). The phase op's honest "
+            "value is structure preservation -- evaluate THAT on a real-video edit benchmark.",
      "script": "experiments/e45_ltx_flowalign.py", "doc": None, "results": None, "image": None},
 ]
