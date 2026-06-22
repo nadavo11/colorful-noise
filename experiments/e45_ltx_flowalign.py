@@ -170,18 +170,19 @@ def ltx_decode(pipe, latent):
     return (out * 255).round().astype(np.uint8)
 
 
-def ltx_conform(video_path, size, frames):
-    """Real clip -> (F,H,W,3) uint8 at size x size, F = nearest 8k+1 <= frames (LTX needs it).
-    Accepts any imageio path incl. bundled samples like 'imageio:cockatoo.mp4'. Shared by the demo."""
+def ltx_conform(video_path, width, frames, height=None):
+    """Real clip -> (F,H,W,3) uint8 at width x height (height defaults to width), F = nearest
+    8k+1 <= frames (LTX needs it). Accepts any imageio path incl. 'imageio:cockatoo.mp4'."""
     import imageio.v3 as iio
     from PIL import Image
+    height = height or width
     vid = np.asarray(iio.imread(video_path))
     if vid.ndim == 3:
         vid = vid[None]
     vid = vid[..., :3]
     n = max(((min(len(vid), frames) - 1) // 8) * 8 + 1, 9)
     idx = np.linspace(0, len(vid) - 1, n).round().astype(int)
-    out = [np.asarray(Image.fromarray(vid[i]).convert("RGB").resize((size, size), Image.BICUBIC))
+    out = [np.asarray(Image.fromarray(vid[i]).convert("RGB").resize((width, height), Image.BICUBIC))
            for i in idx]
     return np.stack(out).astype(np.uint8)
 
@@ -268,25 +269,73 @@ def vel_sbn_video(pipe, vp, vref, mode, cut, Fl, Hl, Wl):
 
 @torch.no_grad()
 def flowalign_video(pipe, x0_packed, C_src, C_tar, sig, ts, seed, w, zeta,
-                    Fl, Hl, Wl, sbn_mode="off", sbn_cut=0.0):
+                    Fl, Hl, Wl, sbn_mode="off", sbn_cut=0.0, n_max=None, n_avg=1):
     """FlowAlign (arXiv:2505.23145) on LTX. Defaults (sbn off) = plain FlowAlign;
-    C_tar==C_src reproduces the source clip (identity gate). 3 velocity forwards/step."""
+    C_tar==C_src reproduces the source clip (identity gate). 3 velocity forwards/step.
+    n_max: edit only the last n_max steps (skip the highest-noise early steps, as canonical
+    FlowEdit does -- editing at sigma~1 is unstable). n_avg: fresh-noise averaging per step."""
     steps = len(sig) - 1
-    eps = torch.randn(x0_packed.shape, generator=torch.Generator("cuda").manual_seed(seed),
-                      device="cuda").float()
+    if n_max is None:
+        n_max = steps
+    gen = torch.Generator("cuda").manual_seed(seed)
     xt = x0_packed.clone()
     for i in range(steps):
+        if steps - i > n_max:                                   # skip high-noise early steps
+            continue
         s_hi, s_lo = float(sig[i]), float(sig[i + 1])
-        qt = (1 - s_hi) * x0_packed + s_hi * eps                 # forward-diffused source
-        pt = xt + qt - x0_packed                                 # == x_tar
-        v_pt_src = ltx_velocity(pipe, pt, ts[i], C_src[0], C_src[1], Fl, Hl, Wl)
-        v_pt_tar = ltx_velocity(pipe, pt, ts[i], C_tar[0], C_tar[1], Fl, Hl, Wl)
-        vp = v_pt_src + w * (v_pt_tar - v_pt_src)                # CFG, source prompt as negative
-        vp = vel_sbn_video(pipe, vp, v_pt_src, sbn_mode, sbn_cut, Fl, Hl, Wl)
-        vq = ltx_velocity(pipe, qt, ts[i], C_src[0], C_src[1], Fl, Hl, Wl)
-        term = (qt - s_hi * vq) - (pt - s_hi * vp)               # E[q0|qt] - E[p0|pt]
-        xt = xt + (s_lo - s_hi) * (vp - vq) + zeta * term
+        vp_avg = torch.zeros_like(xt)
+        vq_avg = torch.zeros_like(xt)
+        term_avg = torch.zeros_like(xt)
+        for _ in range(n_avg):
+            eps = torch.randn(x0_packed.shape, generator=gen, device="cuda").float()
+            qt = (1 - s_hi) * x0_packed + s_hi * eps             # forward-diffused source
+            pt = xt + qt - x0_packed                            # == x_tar
+            v_pt_src = ltx_velocity(pipe, pt, ts[i], C_src[0], C_src[1], Fl, Hl, Wl)
+            v_pt_tar = ltx_velocity(pipe, pt, ts[i], C_tar[0], C_tar[1], Fl, Hl, Wl)
+            vp = v_pt_src + w * (v_pt_tar - v_pt_src)            # CFG, source prompt as negative
+            vp = vel_sbn_video(pipe, vp, v_pt_src, sbn_mode, sbn_cut, Fl, Hl, Wl)
+            vq = ltx_velocity(pipe, qt, ts[i], C_src[0], C_src[1], Fl, Hl, Wl)
+            vp_avg += vp / n_avg
+            vq_avg += vq / n_avg
+            term_avg += ((qt - s_hi * vq) - (pt - s_hi * vp)) / n_avg   # E[q0|qt]-E[p0|pt]
+        xt = xt + (s_lo - s_hi) * (vp_avg - vq_avg) + zeta * term_avg
     return xt
+
+
+@torch.no_grad()
+def flowedit_video(pipe, x0_packed, C_src, C_tar, C_unc, sig, ts, seed, src_gs, tar_gs,
+                   Fl, Hl, Wl, n_max=None, n_min=0, n_avg=1):
+    """Canonical FlowEdit (arXiv:2412.08629, fallenshock/FlowEdit) on LTX -- the reference
+    baseline. Separate src/tar CFG vs the UNCONDITIONAL; fresh per-step noise + n_avg; edits
+    only the [n_min, n_max] step window (skips the highest-noise steps). C_tar==C_src ~= identity."""
+    steps = len(sig) - 1
+    if n_max is None:
+        n_max = steps
+    gen = torch.Generator("cuda").manual_seed(seed)
+    zt = x0_packed.clone()
+
+    def cfg(z, t, C, gs):
+        vu = ltx_velocity(pipe, z, t, C_unc[0], C_unc[1], Fl, Hl, Wl)
+        vc = ltx_velocity(pipe, z, t, C[0], C[1], Fl, Hl, Wl)
+        return vu + gs * (vc - vu)
+
+    for i in range(steps):
+        if steps - i > n_max:                                   # skip high-noise early steps
+            continue
+        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
+        if steps - i > n_min:                                   # editing branch
+            Vd = torch.zeros_like(zt)
+            for _ in range(n_avg):
+                eps = torch.randn(x0_packed.shape, generator=gen, device="cuda").float()
+                zt_src = (1 - s_hi) * x0_packed + s_hi * eps
+                zt_tar = zt + (zt_src - x0_packed)
+                Vt_src = cfg(zt_src, ts[i], C_src, src_gs)
+                Vt_tar = cfg(zt_tar, ts[i], C_tar, tar_gs)
+                Vd += (Vt_tar - Vt_src) / n_avg
+            zt = zt + (s_lo - s_hi) * Vd
+        else:                                                   # regular-sampling tail (n_min)
+            zt = zt + (s_lo - s_hi) * cfg(zt, ts[i], C_tar, tar_gs)
+    return zt
 
 
 # (key, source prompt, edit/target prompt) -- one LTX-generated demo clip for the probe.
@@ -495,6 +544,57 @@ def run_analyze(args):
     print("[an] DONE", flush=True)
 
 
+def run_compare(args):
+    """Diagnostic: canonical FlowEdit (reference) vs my FlowAlign variants at LTX-native
+    resolution (default 704x480, landscape). Isolates whether distortion came from over-guidance
+    (w=10), editing-all-steps (no n_max window), or square low-res. Saves clips to eyeball."""
+    import imageio.v3 as iio
+    os.makedirs(OUT, exist_ok=True)
+    pipe = load_ltx()
+    key, src, tgt = SCENE
+    if args.src_caption:
+        src = args.src_caption
+    if args.edit_prompt:
+        tgt = args.edit_prompt
+    H, W = args.height, args.width
+    Fl = (args.frames - 1) // pipe.vae_temporal_compression_ratio + 1
+    Hl, Wl = H // pipe.vae_spatial_compression_ratio, W // pipe.vae_spatial_compression_ratio
+    sig, ts = ltx_schedule(pipe, args.steps, Fl * Hl * Wl)
+    C_src, C_tar = ltx_encode_prompt(pipe, src), ltx_encode_prompt(pipe, tgt)
+    C_unc = ltx_encode_prompt(pipe, "")
+    nmax = args.steps - max(2, round(args.skip_frac * args.steps))   # skip the first ~skip_frac steps
+    print(f"[cmp] {W}x{H} {args.frames}f, steps={args.steps}, n_max={nmax} "
+          f"(skip first {args.steps - nmax}); src_gs={args.src_gs} tar_gs={args.tar_gs}", flush=True)
+
+    if args.real_video:
+        src_frames = ltx_conform(args.real_video, W, args.frames, H)
+    else:
+        g = pipe(prompt=src, num_frames=args.frames, height=H, width=W,
+                 num_inference_steps=args.steps, guidance_scale=3.0,
+                 generator=torch.Generator("cuda").manual_seed(args.seed), output_type="np")
+        src_frames = (np.asarray(g.frames[0]) * 255).round().astype(np.uint8)
+    iio.imwrite(os.path.join(OUT, "source.mp4"), src_frames, fps=8)
+    x0 = ltx_pack(pipe, ltx_encode(pipe, src_frames))
+    print(f"[cmp] source {src_frames.shape} packed {tuple(x0.shape)}", flush=True)
+
+    def dec(xe, name):
+        fr = ltx_decode(pipe, ltx_unpack(pipe, xe, Fl, Hl, Wl))
+        iio.imwrite(os.path.join(OUT, f"{name}.mp4"), fr, fps=8)
+        print(f"[cmp] {name} done", flush=True)
+
+    dec(flowedit_video(pipe, x0, C_src, C_src, C_unc, sig, ts, args.seed, args.src_gs, args.tar_gs,
+                       Fl, Hl, Wl, n_max=nmax, n_avg=args.n_avg), "identity")
+    dec(flowedit_video(pipe, x0, C_src, C_tar, C_unc, sig, ts, args.seed, args.src_gs, args.tar_gs,
+                       Fl, Hl, Wl, n_max=nmax, n_avg=args.n_avg), "flowedit")
+    dec(flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed, args.w, args.zeta,
+                        Fl, Hl, Wl), "flowalign_hi_allsteps")
+    dec(flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed, args.w, args.zeta,
+                        Fl, Hl, Wl, n_max=nmax, n_avg=args.n_avg), "flowalign_hi_window")
+    dec(flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed, args.w_lo, args.zeta,
+                        Fl, Hl, Wl, n_max=nmax, n_avg=args.n_avg), "flowalign_lo_window")
+    print("[cmp] DONE", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", default="smoke")
@@ -511,6 +611,14 @@ def main():
     ap.add_argument("--real_video", default="")             # lever 2: edit a real clip instead of generating
     ap.add_argument("--src_caption", default="")            # source caption (real clip / override)
     ap.add_argument("--edit_prompt", default="")            # edit prompt (override SCENE target)
+    # compare-part knobs (FlowEdit baseline vs FlowAlign diagnostic)
+    ap.add_argument("--width", type=int, default=704)       # LTX-native landscape default
+    ap.add_argument("--height", type=int, default=480)
+    ap.add_argument("--src_gs", type=float, default=1.5)    # FlowEdit source guidance (vs uncond)
+    ap.add_argument("--tar_gs", type=float, default=3.5)    # FlowEdit target guidance (LTX ~3)
+    ap.add_argument("--w_lo", type=float, default=3.0)      # low FlowAlign guidance to test over-drive
+    ap.add_argument("--skip_frac", type=float, default=0.15)  # fraction of early steps to skip (n_max)
+    ap.add_argument("--n_avg", type=int, default=1)         # fresh-noise averaging per edit step
     args = ap.parse_args()
     if args.out_tag:
         global OUT
@@ -522,6 +630,8 @@ def main():
             run_gen(args)
         elif part == "analyze":
             run_analyze(args)
+        elif part == "compare":
+            run_compare(args)
         else:
             print(f"[e45] part '{part}' not implemented yet", flush=True)
 
