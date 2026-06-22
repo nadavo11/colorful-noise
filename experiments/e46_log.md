@@ -24,3 +24,24 @@ Grid confirms exact layout transfer (cat pose, giraffe+rhino arrangement, panthe
 Caveat: on flat/segmentation-like sources (cat, savana) phaseB shows OOD color artifacts
 (red/cyan fringing) — white magnitude + strong cartoon phase is off-manifold. Natural photo
 (panther) renders clean. -> Probe 1 must use real photos (PIE-Bench) and watch appearance.
+
+## Probe 1 — editing frontier vs vanilla SDEdit (SDXL, 8 SDXL-gen sources, 2 seeds)
+NOTE: local proxy — `datasets` not installed / PIE cache empty locally, so sources are
+SDXL-generated across PIE edit families. Official PIE-Bench to be run on cluster.
+cut=0.2, strength=0.8. vanilla=SDEdit; A=SDEdit w/ phase-structured noise; B=structured seed.
+
+Per-arm means (struct_dist DOWN / clip_dir UP):
+  vanilla  struct=0.129  clip_dir=0.222   <- best editability
+  A        struct=0.104  clip_dir=0.057   <- best structure, editability COLLAPSED
+  B        struct=0.151  clip_dir=0.183   <- worse on BOTH axes (dominated)
+
+Pareto-beats vanilla (struct lower AND clip higher): A 0/8, B 0/8.
+Grid: A often fails to edit (dog stays a dog); B edits but layout drifts + color artifacts.
+
+**Verdict: KILL (both recipes, this operating point).** Seed-phase does not beat vanilla
+SDEdit for editing: A double-anchors structure (x0 term + source phase) so the edit barely
+fires (editability 0.057, several edits go negative); B drops the x0 term and is Pareto-
+dominated (worse structure AND editability). Mechanism (P0) is real but redundant with /
+weaker than SDEdit's own x0-carry. Mirrors E41 (spectral knob trades along the frontier,
+doesn't beat it). PARK option: cut/strength frontier sweep for a matched-editability test
+before final KILL, but the editability collapse + E41 precedent make a win unlikely.
