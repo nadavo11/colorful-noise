@@ -352,7 +352,7 @@ def build_table():
           "r.style.display=((!th||r.dataset.thread==th)&&(!st||r.dataset.status==st))?'':'none';});}"
           "</script>")
     body = (
-        "<h1>All experiments (E0–E31)</h1>"
+        "<h1>All experiments</h1>"
         "<div class=controls>"
         f"<label>Thread <select id=ft onchange=flt()><option value=''>all</option>{threads_opt}</select></label>"
         f"<label>Status <select id=fs onchange=flt()><option value=''>all</option>{status_opt}</select></label>"
@@ -418,6 +418,52 @@ def build_glossary():
 
 
 # --------------------------------------------------------------------------- #
+# coverage check (drift detector)
+# --------------------------------------------------------------------------- #
+def _scripts_on_disk():
+    """Experiment numbers that have at least one e<N>_*.py driver in experiments/."""
+    import re
+    nums = {}
+    for fn in os.listdir(HERE):
+        m = re.match(r"e(\d+)_.*\.py$", fn)
+        if m:
+            nums.setdefault(int(m.group(1)), []).append(fn)
+    return nums
+
+
+def check_coverage():
+    """Report drift between the registry, the scripts on disk, and the manifests.
+    Returns the number of actionable problems (unregistered drivers / stale paths)."""
+    reg_nums = {enum(e["id"]): e for e in EXPERIMENTS}
+    disk = _scripts_on_disk()
+    problems = 0
+
+    unregistered = sorted(n for n in disk if n not in reg_nums)
+    if unregistered:
+        problems += len(unregistered)
+        print("DRIFT — driver(s) on disk with no registry entry:")
+        for n in unregistered:
+            print(f"  E{n}: {', '.join(sorted(disk[n]))}")
+
+    stale = [(e["id"], e["script"]) for e in EXPERIMENTS
+             if e.get("script") and not os.path.exists(os.path.join(REPO, e["script"]))]
+    if stale:
+        problems += len(stale)
+        print("DRIFT — registry script path does not exist:")
+        for eid, sp in stale:
+            print(f"  {eid}: {sp}")
+
+    no_manifest = [e["id"] for e in EXPERIMENTS if e.get("script") and e["id"] not in MANIFESTS]
+    if no_manifest:
+        print(f"NOTE — scripted experiments with no manifest: {', '.join(no_manifest)}")
+
+    if not problems:
+        print(f"[roadmap] coverage OK — {len(reg_nums)} registry entries, "
+              f"{len(disk)} numbered drivers on disk, no drift.")
+    return problems
+
+
+# --------------------------------------------------------------------------- #
 def main():
     os.makedirs(OUT, exist_ok=True)
     written = []
@@ -445,4 +491,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--check" in sys.argv:
+        sys.exit(1 if check_coverage() else 0)
     main()
