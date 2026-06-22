@@ -427,12 +427,10 @@ def make_plots(report):
 
 
 def run_site(args):
-    """Model-free: rebuild results/e10/index.html from cfg_spectral.json + the
-    cached plots, loading no model and re-scoring nothing (mirrors E30 --part site).
-    If cfg_spectral.json is absent it prints "run --part analyze first" and exits
-    gracefully -- the expected no-data path."""
-    from e10_site import build_site
-    build_site()
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e10] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 def main(args):

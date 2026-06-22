@@ -182,16 +182,10 @@ def run_analyze(args):
 
 
 def run_site(args):
-    """Model-free: rebuild results/e22/index.html from invert.json (+ edit.json if
-    present) + the cached reconstruction / edit grids. No model load."""
-    import e22_site
-    if not os.path.exists(f"{OUT}/invert.json") and not os.path.exists(f"{OUT}/edit.json"):
-        print(f"[e22] --part site: no data in {OUT} (need invert.json / edit.json); "
-              "run the driver first: e22_ddim_edit.py --part invert,edit", flush=True)
-        return
-    dest, html, invert, edit = e22_site.build()
-    print(f"[e22] rebuilt {dest} ({len(html) // 1024} KB; no model loaded; "
-          f"invert={'yes' if invert else 'no'}, edit={'yes' if edit else 'no'})", flush=True)
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e22] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 def main():

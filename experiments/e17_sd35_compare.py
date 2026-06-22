@@ -230,10 +230,10 @@ def run_analyze(args, report):
 
 
 def run_site(args, report):
-    """Model-free: rebuild results/e17/index.html from report.json + cached grids
-    (re-templates only; loads no model and re-scores nothing)."""
-    import e17_site
-    e17_site.build_site()
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e17] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 def main(args):

@@ -385,9 +385,10 @@ def main():
 
 
 def part_site(args):
-    """Model-free: rebuild results/e20/index.html from the jsons + cached grids (no model)."""
-    from e20_site import build_site
-    build_site()
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e20] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 if __name__ == "__main__":

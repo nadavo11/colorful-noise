@@ -248,11 +248,9 @@ def main():
         preflight()
     if "analyze" in parts:
         analyze(args)
-    if "site" in parts:   # model-free: rebuild index.html from report_<vae>.json + grids
-        from e18_site import build
-        if build() is None:
-            print("[e18] --part site: no results/e18/report_<vae>.json found; "
-                  "run --part analyze first (or kubectl cp the report + grid).", flush=True)
+    if "site" in parts:   # retired: per-experiment HTML superseded by docs/roadmap/
+        print("[e18] --part site retired; see docs/roadmap/ "
+              "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 if __name__ == "__main__":

@@ -135,10 +135,10 @@ def moments(z):
 
 # ---- model-free site rebuild -------------------------------------------------
 def build_site():
-    """Rebuild results/e26/index.html from report.json + cached figures, NO model load.
-    Mirrors E30's `--part site`. Graceful message if there is no run yet."""
-    from e26_site import build_site as _bs
-    return _bs()
+    """Retired: per-experiment HTML is superseded by the roadmap site
+    (docs/roadmap/, generated from roadmap_registry.py)."""
+    print("[e26] --part site retired; see docs/roadmap/ "
+          "(regen: python experiments/make_roadmap.py)", flush=True)
 
 
 # ---- main --------------------------------------------------------------------
