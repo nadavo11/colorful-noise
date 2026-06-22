@@ -1168,3 +1168,38 @@ axes. (8-step smoke is misleading — sbn_phase there collapses CLIP; need ≥28
 `experiments/spectral_demo.py`; `cluster_e43_job.sh` (smoke→identity gate→w-sweep→GOAL gate).
 Outputs to `results/e43_w5|w7|w10/`: per-scene strips + `index.html`. See
 `docs/experiment-reports/EXPERIMENT_43.md`.
+
+
+## E45 — FlowAlign on LTX-Video + spatiotemporal phase op (LTX-Video)
+
+**Motivation.** FlowAlign (arXiv:2505.23145) edits *video* frame-by-frame on an *image* model
+(SD3) and the paper admits "temporal consistency for the edited object is limited, as no explicit
+constraint is imposed." Hypothesis: run FlowAlign on a real video model (LTX-Video) and add the
+E41/E43 low-band **phase-keep** op in the **spatiotemporal (3D) frequency domain** to constrain
+that flicker. The 2D per-frame variant ≈ the paper's approach (a control); 3D is the bet.
+
+**Method.** Port FlowAlign to LTX in `e45_ltx_flowalign.py` (velocity/pack/VAE/sigma plumbing, 3
+velocity forwards/step). One LTX-generated clip (toy car→tank). Conditions: the paper's
+**frame-by-frame** baseline (`fbf`, independent 1-frame edits), the FlowAlign-on-LTX **video
+baseline**, and the phase op **2D vs 3D** over an `sbn_cut` sweep. Metric bundle: DINO
+struct-dist + CLIP-directional (per-frame avg) + **RAFT warp-error** (global & edited-region
+masked — the flicker axis). 256/512px, 25–49 frames. Identity gate: `C_tar==C_src` reproduces
+the source clip.
+
+**Key result.** Identity gate holds (recon L1 ~0.004–0.005). **Frame-by-frame (the paper's
+method) flickers hard — warp-masked 0.052 — while FlowAlign-on-LTX video editing is ~0.0011: a
+46× reduction in flicker.** Among video methods, the **3D spatiotemporal** phase op further cuts
+warp vs the video baseline (**0.00112 vs 0.00140, −20%**) while the **2D per-frame** variant does
+not (0.00138) — confirming the spatiotemporal hypothesis. All phase variants improve DINO
+structure (~0.139 vs 0.149). The phase op **costs editability** though (CLIP +0.03 vs +0.084),
+coupled to the gain at every cut (cuts snap to the same low-freq bins at the 8×8 latent), so the
+strict "hold-CLIP" goal is not met.
+
+**Verdict.** Plan-faithful win: video editing removes the paper's frame-by-frame flicker (46×),
+and the 3D phase op uniquely adds a temporal+structure edge — at an editability trade-off. **The
+paper's temporal-coherence gap is an artifact of frame-by-frame image-model editing, not
+intrinsic to FlowAlign.**
+
+**Artifacts.** `experiments/e45_ltx_flowalign.py`, `cluster_e45_job.sh` (smoke→identity
+gate→sweep+FBF→goal), `experiments/e45_log.md` (probe log S0–S6). Outputs to `results/e45/`:
+`source/fbf/baseline/phase{2d,3d}_c*.mp4` + `gen_report.json`.

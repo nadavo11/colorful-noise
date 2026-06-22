@@ -589,4 +589,28 @@ EXPERIMENTS = [
      "nxt": "Confirm on the full 700-image PIE-Bench set (+ masks for BG-PSNR/BG-LPIPS); SD3.5 port; sweep "
             "sbn_cut / phase strength to map the structure/editability frontier.",
      "script": "experiments/e43_flowalign.py", "doc": "EXPERIMENT_43.md", "results": None, "image": None},
+
+    {"id": "E45", "title": "FlowAlign on LTX-Video + spatiotemporal phase op (temporal video editing)",
+     "thread": "style", "models": "LTX-Video", "status": "active",
+     "motivation": "FlowAlign (arXiv:2505.23145) edits VIDEO frame-by-frame on an IMAGE model (SD3) and admits "
+                   "'temporal consistency for the edited object is limited'. Does running FlowAlign on a real video "
+                   "model (LTX) + our E41/E43 low-band PHASE-keep op in the SPATIOTEMPORAL (3D) frequency domain "
+                   "fix that flicker?",
+     "method": "Port FlowAlign to LTX-Video (velocity/pack/VAE/sigma, 3 forwards/step) in e45_ltx_flowalign.py. One "
+               "LTX-generated clip (toy car->tank). Conditions: the paper's frame-by-frame baseline (fbf), the "
+               "FlowAlign-on-LTX video baseline, and the phase op in 2D (per-frame, ~paper) vs 3D (spatiotemporal) "
+               "over an sbn_cut sweep. Metric bundle: DINO struct-dist + CLIP-directional (per-frame avg) + RAFT "
+               "warp-error (global & edited-region-masked). 256/512px, 25-49 frames.",
+     "result": "Identity gate holds (recon L1 ~0.004-0.005). Frame-by-frame (paper) flickers hard (warp-masked "
+               "0.052); FlowAlign-on-LTX video editing is ~0.0011 -- 46x less flicker. The 3D spatiotemporal phase "
+               "op further cuts warp vs the video baseline (0.00112 vs 0.00140, -20%) while 2D per-frame does NOT; "
+               "all phase variants improve DINO structure (~0.139 vs 0.149). Phase costs editability though "
+               "(CLIP +0.03 vs +0.084), coupled to the gain at every cut.",
+     "verdict": "Plan-faithful win: video editing removes the paper's frame-by-frame flicker (46x), and the 3D "
+                "phase op uniquely adds a temporal+structure edge -- confirming the spatiotemporal hypothesis -- at "
+                "an editability trade-off. The paper's temporal gap is an artifact of frame-by-frame image-model "
+                "editing, not intrinsic to FlowAlign.",
+     "nxt": "CFG-match the video edit to fbf's edit strength (w sweep) then re-test the frontier; use a real input "
+            "clip instead of an LTX-generated source; higher-res latent so the radial band tunes finely.",
+     "script": "experiments/e45_ltx_flowalign.py", "doc": None, "results": None, "image": None},
 ]

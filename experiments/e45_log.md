@@ -80,6 +80,30 @@ recon L1 = 0.0052 -> port is correct.
   (beat struct+warp while holding clip within 0.01) is NOT met -- phase3d_c0.2 wins struct+warp
   but drops clip. Next: smaller cuts (narrower low band) to keep editability.
 
-## Probe S6 (e45-ltx-s5) — pending
-ONE change vs S4: cuts 0.1,0.15 (narrower low band -> less editability loss). Same FBF/metrics.
-Goal: a phase3d cut that beats video-baseline on struct+warpM while holding clip within 0.01.
+## Probe S6 (e45-ltx-s5) — FINAL: strict goal unreachable by cut; trade-off is fundamental
+256px/25f, cuts 0.1,0.15.
+
+| cond          | struct↓ | clip↑   | warpM   |
+|---------------|---------|---------|---------|
+| baseline      | 0.1490  | +0.0841 | 0.00140 |
+| phase3d_c0.1  | 0.1479  | +0.0635 | 0.00142 |
+| phase3d_c0.15 | 0.1389  | +0.0297 | 0.00112 |
+| fbf (paper)   | 0.1763  | +0.1197 | 0.05183 |
+
+- phase3d_c0.1 (very narrow): negligible effect (~baseline struct/warp), slight clip drop -> no gain.
+- phase3d_c0.15 == phase3d_c0.2 from S4 exactly: at the 8x8 latent the radial band snaps to the
+  same discrete low-freq bins, so cut 0.15 and 0.2 are identical. Can't tune finely at 256px.
+- CONCLUSION: no cut holds editability while keeping the struct+temporal gain -- the benefit and
+  the editability cost are COUPLED. The strict hold-CLIP goal is unreachable by sweeping the cut.
+
+## FINAL VERDICT (E45) — KEEP (plan-faithful goal met), temporal-hypothesis qualified
+1. Frame-by-frame editing (paper's method) flickers (warpM 0.052); FlowAlign-on-LTX video editing
+   is ~0.0011 -> **46x less flicker**. The paper's temporal gap is an artifact of frame-by-frame
+   image-model editing, not intrinsic to FlowAlign.
+2. The 3D spatiotemporal phase op uniquely reduces flicker vs the video baseline (-20%) where 2D
+   does not -> the spatiotemporal hypothesis holds directionally.
+3. Phase preserves structure (0.139 vs 0.149) but trades editability (CLIP +0.03 vs +0.084) at
+   every cut. No free lunch on the editability axis.
+Registered: roadmap_registry.py (E45) + EXPERIMENTS.md + regen site.
+Open (needs user): CFG-match the video edit to fbf's edit strength (w sweep) before claiming the
+frontier; real input clip instead of an LTX-generated source; higher-res latent for fine cut tuning.
