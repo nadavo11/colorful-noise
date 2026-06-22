@@ -7,11 +7,11 @@
 #   --mini          end-to-end harness check: gen+analyze on a tiny stratified subset, cfg 7.5.
 #   --cfg <w>       full 700-image reproduction at CFG <w> (gen+analyze). Run per w in {5,7.5,10,13.5}.
 #
-# Submit (from a shell where `runai` is logged in); force a big card so SD3+T5 fit at 1024px:
-#   runai training submit e44-smoke -g 1 \
+# Submit (from a shell where `runai` is logged in); --gpu-memory 40G forces a big card
+# (A6000/H100) so SD3 + T5-XXL fit at 1024px without the memory-saving dance:
+#   runai submit --name e44-smoke --gpu-memory 40G \
 #     -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
-#     --existing-pvc claimname=storage,path=/storage --large-shm \
-#     --node-pool a6000 --command -- \
+#     --pvc=storage:/storage --large-shm --command -- \
 #     bash /storage/malnick/colorful-noise/experiments/cluster_e44_job.sh --smoke
 set -e
 export HF_HOME=/storage/malnick/huggingface_cache
