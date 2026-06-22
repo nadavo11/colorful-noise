@@ -47,30 +47,66 @@ def _parse_rle(mask_field):
     return [int(x) for x in mask_field]
 
 
-def load_items(n_per_type):
-    """PIE-Bench from the HF++ cache. n_per_type=0 -> all; >0 -> stride-sampled per category."""
+def _stride(n, k):
+    return range(n) if k <= 0 else sorted(set(np.linspace(0, n - 1, k).astype(int).tolist()))
+
+
+def _load_original(root, n_per_type):
+    """Original PIE-Bench: mapping_file.json (RLE masks, real) + annotation_images/. This is the
+    faithful source -- the HF++ repackaging ships degenerate (full-image) masks."""
+    import glob
+    mp = sorted(glob.glob(os.path.join(root, "mapping_file*.json")))[0]
+    with open(mp) as f:
+        ann = json.load(f)
+    groups = {}
+    for k, v in ann.items():
+        groups.setdefault(str(v["editing_type_id"]), []).append((k, v))
+    items = []
+    for et, entries in sorted(groups.items()):
+        entries.sort(key=lambda kv: kv[0])
+        for j in _stride(len(entries), n_per_type):
+            k, v = entries[j]
+            items.append({
+                "key": f"{et}_{k}",
+                "img": Image.open(os.path.join(root, "annotation_images", v["image_path"])).convert("RGB"),
+                "src_prompt": v["original_prompt"],
+                "tgt_prompt": v["editing_prompt"],
+                "mask_rle": [int(x) for x in v["mask"]],
+                "edit_type": et,
+            })
+    return items
+
+
+def _load_hfpp(n_per_type):
+    """Fallback: HF++ cache. WARNING: masks degenerate (many full-image) -> bg/edited metrics
+    unreliable; use only for mask-free metrics (structure distance, whole CLIP)."""
     cache = os.environ.get("CN_PIEBENCH_CACHE", "/storage/malnick/datasets/pie_bench_hf")
     from datasets import get_dataset_config_names, load_dataset
     items = []
     for cfg in sorted(get_dataset_config_names("UB-CVML-Group/PIE_Bench_pp")):
-        dd = load_dataset("UB-CVML-Group/PIE_Bench_pp", cfg, cache_dir=cache)
-        ds = dd[next(iter(dd))]
-        etype = cfg.split("_")[0]                     # leading index == editing_type_id
-        idxs = range(len(ds))
-        if n_per_type > 0:
-            idxs = sorted(set(np.linspace(0, len(ds) - 1, n_per_type).astype(int).tolist()))
-        for j in idxs:
+        ds = load_dataset("UB-CVML-Group/PIE_Bench_pp", cfg, cache_dir=cache)
+        ds = ds[next(iter(ds))]
+        etype = cfg.split("_")[0]
+        for j in _stride(len(ds), n_per_type):
             r = ds[j]
             items.append({
-                "key": f"{cfg}_{r['id']}",
-                "img": r["image"].convert("RGB"),
-                "src_prompt": r["source_prompt"],
-                "tgt_prompt": r["target_prompt"],
-                "mask_rle": _parse_rle(r["mask"]),
-                "edit_type": etype,
+                "key": f"{cfg}_{r['id']}", "img": r["image"].convert("RGB"),
+                "src_prompt": r["source_prompt"], "tgt_prompt": r["target_prompt"],
+                "mask_rle": _parse_rle(r["mask"]), "edit_type": etype,
             })
-    print(f"[e44] loaded {len(items)} PIE-Bench items "
-          f"({'all' if n_per_type == 0 else f'{n_per_type}/type'})", flush=True)
+    return items
+
+
+def load_items(n_per_type):
+    """Prefer the original PIE-Bench (CN_PIEBENCH dir with mapping_file*.json); else HF++ (bad masks)."""
+    root = os.environ.get("CN_PIEBENCH", "")
+    import glob
+    if root and glob.glob(os.path.join(root, "mapping_file*.json")):
+        items = _load_original(root, n_per_type)
+        print(f"[e44] loaded {len(items)} ORIGINAL PIE-Bench items from {root}", flush=True)
+    else:
+        items = _load_hfpp(n_per_type)
+        print(f"[e44] loaded {len(items)} HF++ items (WARNING: degenerate masks)", flush=True)
     return items
 
 
@@ -210,7 +246,7 @@ if __name__ == "__main__":
     ap.add_argument("--part", default="gen,analyze")
     ap.add_argument("--cfg", type=float, default=7.5, help="CFG omega (sweep {5,7.5,10,13.5})")
     ap.add_argument("--NFE", type=int, default=33)
-    ap.add_argument("--img_shape", type=int, default=1024)
+    ap.add_argument("--img_shape", type=int, default=512, help="512 matches the paper's PIE-Bench setup")
     ap.add_argument("--n_per_type", type=int, default=0, help="0=all 700; >0=subset per category")
     ap.add_argument("--tag", default="cfg75")
     ap.add_argument("--device", default="cuda")

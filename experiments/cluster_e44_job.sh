@@ -19,6 +19,9 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
 export CN_FLOWALIGN=/storage/malnick/flowalign_official
 export CN_PNP=/storage/malnick/pnpinversion
+# Original PIE-Bench (real masks): drop mapping_file.json + annotation_images/ here.
+# If absent, the harness falls back to HF++ (degenerate masks -> bg/edited metrics unreliable).
+export CN_PIEBENCH=/storage/malnick/datasets/pie_bench_orig
 EXP=/storage/malnick/colorful-noise/experiments
 SD3=stabilityai/stable-diffusion-3-medium-diffusers
 STAGE="${1:---smoke}"
@@ -56,9 +59,10 @@ case "$STAGE" in
     python e44_flowalign_repro.py --part gen,analyze --cfg 7.5 --n_per_type 2 --tag mini
     ;;
   --cfg)
-    W="$2"; TAG="cfg$(echo "$W" | tr -d '.')"
-    echo "[job] ===== FULL repro: all 700, cfg $W -> tag $TAG ====="
-    python e44_flowalign_repro.py --part gen,analyze --cfg "$W" --n_per_type 0 --tag "$TAG"
+    W="$2"; RES="${3:-512}"; TAG="cfg$(echo "$W" | tr -d '.')_r${RES}"
+    echo "[job] ===== FULL repro: all 700, cfg $W, ${RES}px -> tag $TAG ====="
+    python e44_flowalign_repro.py --part gen,analyze --cfg "$W" --n_per_type 0 \
+      --img_shape "$RES" --tag "$TAG"
     ;;
   *) echo "[job] unknown stage '$STAGE'"; exit 1 ;;
 esac
