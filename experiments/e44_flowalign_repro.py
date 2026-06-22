@@ -176,6 +176,7 @@ def run_analyze(args):
 
     summary = {
         "tag": args.tag, "n": len(rows), "params": meta["params"],
+        "clip_model": args.clip_model,
         "overall": {m: mean(overall[m]) for m in METRICS},
         "per_type": {et: {m: mean(v[m]) for m in METRICS} for et, v in per_type.items()},
     }
