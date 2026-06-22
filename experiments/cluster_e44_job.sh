@@ -19,10 +19,21 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
 export CN_FLOWALIGN=/storage/malnick/flowalign_official
 export CN_PNP=/storage/malnick/pnpinversion
-# Original PIE-Bench (real masks): drop mapping_file.json + annotation_images/ here.
-# If absent, the harness falls back to HF++ (degenerate masks -> bg/edited metrics unreliable).
-export CN_PIEBENCH=/storage/malnick/datasets/pie_bench_orig
+# Original PIE-Bench (real masks). Unzipped cluster-side from pie_bench_v1.zip (the local SSHFS
+# mount is too flaky for 700 small files; one zip copy + cluster-side unzip is reliable).
+export CN_PIEBENCH=/storage/malnick/datasets/PIE-Bench_v1
 EXP=/storage/malnick/colorful-noise/experiments
+if [ ! -f "$CN_PIEBENCH/mapping_file.json" ] && [ -f /storage/malnick/datasets/pie_bench_v1.zip ]; then
+    # atomic lock so parallel jobs don't race the unzip; losers wait for the result
+    if mkdir /storage/malnick/datasets/.pb_unzip.lock 2>/dev/null; then
+        echo "[job] unzipping PIE-Bench (cluster-side, python zipfile) ..."
+        python -c "import zipfile; zipfile.ZipFile('/storage/malnick/datasets/pie_bench_v1.zip').extractall('/storage/malnick/datasets/')"
+        echo "[job] PIE-Bench unzipped: $(find "$CN_PIEBENCH/annotation_images" -iname '*.jpg' | wc -l) jpgs"
+    else
+        echo "[job] another job is unzipping; waiting ..."
+        while [ ! -f "$CN_PIEBENCH/mapping_file.json" ]; do sleep 5; done
+    fi
+fi
 SD3=stabilityai/stable-diffusion-3-medium-diffusers
 STAGE="${1:---smoke}"
 
