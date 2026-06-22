@@ -36,5 +36,29 @@ recon L1 = 0.0052 -> port is correct.
 - Verdict: PARK temporal claim. Next single change -> raise resolution to 512 (16x16 latent) so
   both the flicker and the spectral op have real substrate. Everything else fixed.
 
-## Probe S4 (e45-ltx-s3) — pending
-ONE change vs S2: size 256 -> 512. Same sweep/metrics/goal.
+## Probe S4 (e45-ltx-s3, 512px) — temporal KILL (as framed), structure KEEP
+49 frames, 512px (latent 16x16x7). Identity recon L1 = 0.0037.
+
+| cond          | struct↓ | clip↑   | warpG   | warpM   |
+|---------------|---------|---------|---------|---------|
+| baseline      | 0.2068  | +0.2524 | 0.00054 | 0.00045 |
+| phase2d_c0.2  | 0.1737  | +0.2158 | 0.00065 | 0.00056 |
+| phase3d_c0.2  | 0.1799  | +0.2220 | 0.00062 | 0.00053 |
+| phase2d_c0.35 | 0.1445  | +0.1772 | 0.00070 | 0.00061 |
+| phase3d_c0.35 | 0.1293  | +0.1724 | 0.00069 | 0.00062 |
+
+- Baseline warp is even LOWER at 512 (warpM 4.5e-4) -> FlowAlign-on-LTX is essentially
+  flicker-free at both resolutions. Phase preserves structure strongly (0.207 -> 0.129) but
+  slightly raises warp and costs editability here.
+- KEY INSIGHT: the paper's temporal-coherence gap is an artifact of frame-by-frame *image-model*
+  editing. A real video model (LTX) already removes the flicker, so the 3D-phase op has no
+  temporal headroom against a video-model baseline. Temporal hypothesis = KILL *as framed*.
+- BUT we never ran the paper's actual method (frame-by-frame). To deliver the user's plan
+  ("test as in the paper, then improve") we need the FBF baseline (which flickers) and to show
+  our video+phase approach beats it on temporal coherence.
+
+## Probe S5 (e45-ltx-s4) — pending
+Add frame-by-frame (FBF) baseline = paper's method (edit each frame independently, Fl=1, indep
+noise per frame -> flickers). Compare FBF vs video-baseline vs video-phase on warp + struct +
+clip. Hypothesis: video methods beat FBF on warp (temporal); phase beats video-baseline on
+struct. 256px/25f to keep the 25 single-frame edits cheap.

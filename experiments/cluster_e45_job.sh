@@ -25,9 +25,9 @@ python -c "import torch; print('[job] torch',torch.__version__,'cuda',torch.cuda
 python -c "from diffusers import LTXPipeline; print('[job] LTXPipeline import OK')"
 python -c "import torchvision; from torchvision.models.optical_flow import raft_small; print('[job] torchvision',torchvision.__version__,'RAFT OK')"
 
-# --- S2/S3: gen (identity recon + baseline + 2D/3D phase sweep) ---
-echo "[job] ===== S2/S3: FlowAlign-on-LTX gen (sweep) ====="
-python e45_ltx_flowalign.py --part gen --steps 24 --frames 49 --size 512 --w 10 --zeta 0.01 --cuts 0.2,0.35
+# --- S4: gen incl. paper's frame-by-frame baseline (the temporal reference) ---
+echo "[job] ===== S4: FlowAlign-on-LTX gen + frame-by-frame baseline ====="
+python e45_ltx_flowalign.py --part gen --steps 24 --frames 25 --size 256 --w 10 --zeta 0.01 --cuts 0.2,0.35 --fbf
 
 # --- IDENTITY GATE: C_tar==C_src must reproduce the source clip ---
 echo "[job] ===== GATE: identity reconstruction ====="

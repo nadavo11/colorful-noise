@@ -278,6 +278,20 @@ SCENE = ("rover", "a small toy car driving across a wooden table",
          "a small toy tank driving across a wooden table")
 
 
+@torch.no_grad()
+def edit_fbf(pipe, src_frames, C_src, C_tar, args, Hl, Wl):
+    """The paper's method: edit each frame as an INDEPENDENT 1-frame clip (no temporal
+    coupling), independent noise per frame -> realistic flicker. The temporal reference."""
+    sig, ts = ltx_schedule(pipe, args.steps, Hl * Wl)      # single-frame token count
+    outs = []
+    for i in range(len(src_frames)):
+        x0 = ltx_pack(pipe, ltx_encode(pipe, src_frames[i:i + 1]))
+        xe = flowalign_video(pipe, x0, C_src, C_tar, sig, ts, args.seed + i, args.w, args.zeta,
+                             1, Hl, Wl)
+        outs.append(ltx_decode(pipe, ltx_unpack(pipe, xe, 1, Hl, Wl))[0])
+    return np.stack(outs)
+
+
 def run_gen(args):
     import imageio.v3 as iio
     os.makedirs(OUT, exist_ok=True)
@@ -329,10 +343,18 @@ def run_gen(args):
         decode_save(xe, name)
         print(f"[gen] edit {name} done", flush=True)
 
+    cond_list = list(conds)
+    if args.fbf:
+        cond_list.append("fbf")
+        if not os.path.exists(os.path.join(OUT, "fbf.mp4")):
+            fbf = edit_fbf(pipe, src_frames, C_src, C_tar, args, Hl, Wl)
+            iio.imwrite(os.path.join(OUT, "fbf.mp4"), fbf, fps=8)
+            print("[gen] edit fbf (frame-by-frame = paper's method) done", flush=True)
+
     import json
     with open(os.path.join(OUT, "gen_report.json"), "w") as f:
         json.dump({"scene": key, "src": src, "tgt": tgt, "recon_l1": recon_l1,
-                   "conds": list(conds), "params": {"steps": args.steps, "frames": args.frames,
+                   "conds": cond_list, "params": {"steps": args.steps, "frames": args.frames,
                    "size": args.size, "w": args.w, "zeta": args.zeta, "cuts": cuts}}, f, indent=2)
     print("[gen] DONE", flush=True)
 
@@ -421,6 +443,20 @@ def run_analyze(args):
         if (m["struct_dist"] < base["struct_dist"] and m["warp_masked"] < base["warp_masked"]
                 and m["clip_dir"] >= base["clip_dir"] - args.clip_tol):
             wins.append((cond, m))
+    # Paper-faithful temporal comparison: does using a video model (any 'video' cond) beat the
+    # paper's frame-by-frame editing on flicker? (fbf = paper's method.)
+    fbf = out.get("fbf")
+    if fbf is not None:
+        vid = {k: v for k, v in out.items() if k != "fbf"}
+        best = min(vid.items(), key=lambda kv: kv[1]["warp_masked"])
+        print(f"\n[goal] TEMPORAL vs paper (frame-by-frame): fbf warpM={fbf['warp_masked']:.5f} "
+              f"struct={fbf['struct_dist']:.4f} clip={fbf['clip_dir']:+.4f}", flush=True)
+        print(f"[goal]   best video method '{best[0]}': warpM={best[1]['warp_masked']:.5f} "
+              f"struct={best[1]['struct_dist']:.4f} clip={best[1]['clip_dir']:+.4f}", flush=True)
+        ratio = fbf["warp_masked"] / max(best[1]["warp_masked"], 1e-9)
+        verdict = "PASS" if best[1]["warp_masked"] < fbf["warp_masked"] else "FAIL"
+        print(f"[goal]   {verdict}: video editing is {ratio:.1f}x less flicker than frame-by-frame", flush=True)
+
     print("\n[goal] baseline: "
           f"struct={base.get('struct_dist'):.4f} warpM={base.get('warp_masked'):.5f} "
           f"clip={base.get('clip_dir'):+.4f}", flush=True)
@@ -446,6 +482,7 @@ def main():
     ap.add_argument("--zeta", type=float, default=0.01)     # FlowAlign source-consistency (paper)
     ap.add_argument("--cuts", default="0.2,0.35")           # sbn_cut sweep for the phase ops
     ap.add_argument("--clip_tol", type=float, default=0.01)  # editability tolerance vs baseline
+    ap.add_argument("--fbf", action="store_true")           # also run paper's frame-by-frame baseline
     args = ap.parse_args()
     for part in args.part.split(","):
         if part == "smoke":
