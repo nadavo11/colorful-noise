@@ -69,5 +69,23 @@ NOTE: mini (cfg7.5, 20img) showed BETTER source-consistency than their cfg10 tab
 vs 0.028, PSNR 28.2 vs 25.5) — expected direction (lower CFG = gentler edit) + 20-img noise +
 CLIP-model diff. Real check = cfg10/700 vs the table above.
 
-Verdict (P0 overall): IN PROGRESS — target numbers in hand; full sweep {5,7.5,10,13.5} running
-(e44-cfg5/cfg75/cfg10/cfg135). Gen saves PNGs (CLIP-agnostic); will re-run analyze w/ base16 CLIP.
+FULL SWEEP RESULTS (700 imgs, 1024px, base16 CLIP):
+  cfg5  : struct 0.0116  bgPSNR 31.17  bgLPIPS 0.0163  bgSSIM 0.9586  CLIPw 29.26  CLIPe 28.17
+  cfg7.5: struct 0.0161  bgPSNR 29.87  bgLPIPS 0.0223  bgSSIM 0.9531  CLIPw 30.30  CLIPe 29.16
+  cfg10 : struct 0.0199  bgPSNR 28.64  bgLPIPS 0.0309  bgSSIM 0.9466  CLIPw 31.03  CLIPe 29.86
+  cfg13.5:struct 0.0253  bgPSNR 27.34  bgLPIPS 0.0423  bgSSIM 0.9371  CLIPw 31.50  CLIPe 30.31
+  Trends monotonic & correct (CFG up -> more edit, less preservation, higher CLIP).
+
+DIAGNOSIS of gap vs published (cfg10: struct 0.028 / bgPSNR 25.50 / CLIPe 22.00):
+  (1) RESOLUTION (mask-free, trustworthy): struct@512=0.0245 (20-img diag) vs struct@1024=0.0199;
+      paper=0.028. => paper edits at ~512; my 1024 default over-preserves. Switch editing to 512.
+  (2) MASKS BROKEN: HF++ (`PIE_Bench_pp`) `mask` field is DEGENERATE — many full-image
+      (mask-frac=1.0) incl. change_object/color, where it must be localized. => background metrics
+      skipped on a biased subset; edited-CLIP becomes whole-image CLIP (inflated ~30 vs paper ~22).
+      Structure-distance is mask-free so unaffected. Need ORIGINAL PIE-Bench masks.
+  No ungated mirror found (meituan/PIE_bench = unrelated LLM bench; PnPInversion ships no data;
+  original behind Google Form forms.gle/hVMkTABb4uvZVjme9 + Drive). BLOCKER: need original data.
+
+Verdict (P0): faithful reproduction needs (a) edit@512 + (b) original PIE-Bench masks. Pipeline,
+trends, and mask-free structure metric all validated. Edits already generated (reusable for
+re-analyze once masks are in). PARK pending original-data acquisition.
