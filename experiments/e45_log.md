@@ -57,8 +57,29 @@ recon L1 = 0.0052 -> port is correct.
   ("test as in the paper, then improve") we need the FBF baseline (which flickers) and to show
   our video+phase approach beats it on temporal coherence.
 
-## Probe S5 (e45-ltx-s4) — pending
-Add frame-by-frame (FBF) baseline = paper's method (edit each frame independently, Fl=1, indep
-noise per frame -> flickers). Compare FBF vs video-baseline vs video-phase on warp + struct +
-clip. Hypothesis: video methods beat FBF on warp (temporal); phase beats video-baseline on
-struct. 256px/25f to keep the 25 single-frame edits cheap.
+## Probe S5 (e45-ltx-s4) — KEEP: plan-faithful win + 3D-phase temporal edge
+256px/25f. Identity recon L1 = 0.0052. Added FBF = paper's frame-by-frame method.
+
+| cond          | struct↓ | clip↑   | warpG   | warpM   |
+|---------------|---------|---------|---------|---------|
+| fbf (paper)   | 0.1763  | +0.1197 | 0.03887 | 0.05183 |
+| baseline      | 0.1490  | +0.0841 | 0.00096 | 0.00140 |
+| phase2d_c0.2  | 0.1398  | +0.0536 | 0.00094 | 0.00138 |
+| phase3d_c0.2  | 0.1389  | +0.0297 | 0.00078 | 0.00112 |
+| phase2d_c0.35 | 0.1345  | +0.0620 | 0.00100 | 0.00154 |
+| phase3d_c0.35 | 0.1356  | +0.0365 | 0.00075 | 0.00121 |
+
+- TEMPORAL WIN (plan-faithful): frame-by-frame (paper) flickers at warpM=0.0518; video editing
+  ~0.0011 -> **46x less flicker**. Reproduces the paper's admitted limitation and validates the
+  metric.
+- 3D-phase temporal EDGE: phase3d reduces warp vs video-baseline (0.00112 / 0.00121 vs 0.00140,
+  -14..-20%); phase2d does NOT (0.00138 / 0.00154). Confirms the spatiotemporal hypothesis:
+  3D couples frames, 2D doesn't.
+- Structure: all phase variants beat baseline (0.134-0.140 vs 0.149).
+- TRADE-OFF: phase costs editability (clip +0.03-0.06 vs baseline +0.084), so the strict goal
+  (beat struct+warp while holding clip within 0.01) is NOT met -- phase3d_c0.2 wins struct+warp
+  but drops clip. Next: smaller cuts (narrower low band) to keep editability.
+
+## Probe S6 (e45-ltx-s5) — pending
+ONE change vs S4: cuts 0.1,0.15 (narrower low band -> less editability loss). Same FBF/metrics.
+Goal: a phase3d cut that beats video-baseline on struct+warpM while holding clip within 0.01.

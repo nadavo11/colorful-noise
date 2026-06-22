@@ -27,7 +27,7 @@ python -c "import torchvision; from torchvision.models.optical_flow import raft_
 
 # --- S4: gen incl. paper's frame-by-frame baseline (the temporal reference) ---
 echo "[job] ===== S4: FlowAlign-on-LTX gen + frame-by-frame baseline ====="
-python e45_ltx_flowalign.py --part gen --steps 24 --frames 25 --size 256 --w 10 --zeta 0.01 --cuts 0.2,0.35 --fbf
+python e45_ltx_flowalign.py --part gen --steps 24 --frames 25 --size 256 --w 10 --zeta 0.01 --cuts 0.1,0.15 --fbf
 
 # --- IDENTITY GATE: C_tar==C_src must reproduce the source clip ---
 echo "[job] ===== GATE: identity reconstruction ====="
