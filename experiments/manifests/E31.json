@@ -1,0 +1,11 @@
+{
+  "eid": "E31",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e31_flowedit_freq.py",
+  "results_dir": "e31",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

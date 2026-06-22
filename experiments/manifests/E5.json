@@ -1,0 +1,11 @@
+{
+  "eid": "E5",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e5_strength.py",
+  "results_dir": "e5",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

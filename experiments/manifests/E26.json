@@ -1,0 +1,11 @@
+{
+  "eid": "E26",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e26_seedalign_sdxl.py",
+  "results_dir": "e26",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

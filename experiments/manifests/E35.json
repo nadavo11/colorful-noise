@@ -1,0 +1,10 @@
+{
+  "eid": "E35",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e35_op_sweep.py",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

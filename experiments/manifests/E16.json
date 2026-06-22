@@ -1,0 +1,10 @@
+{
+  "eid": "E16",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e16_baselines.py",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

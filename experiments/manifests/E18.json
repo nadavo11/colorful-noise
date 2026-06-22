@@ -1,0 +1,11 @@
+{
+  "eid": "E18",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e18_spectral_recombine.py",
+  "results_dir": "e18",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

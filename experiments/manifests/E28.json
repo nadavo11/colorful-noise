@@ -1,0 +1,11 @@
+{
+  "eid": "E28",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e28_seedrescue.py",
+  "results_dir": "e28",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

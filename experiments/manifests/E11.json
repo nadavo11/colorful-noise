@@ -1,0 +1,11 @@
+{
+  "eid": "E11",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e11_color_correct.py",
+  "results_dir": "e11",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}

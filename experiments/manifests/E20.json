@@ -1,0 +1,11 @@
+{
+  "eid": "E20",
+  "logged": "2026-06-22",
+  "git_commit": "4f2ce86",
+  "source": "backfill",
+  "script": "experiments/e20_warmstart.py",
+  "results_dir": "e20",
+  "config": {},
+  "metrics": {},
+  "artifacts": []
+}
