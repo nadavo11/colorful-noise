@@ -174,6 +174,11 @@ def main():
     ap.add_argument("--guid", type=float, default=5.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--img_size", type=int, default=1024)
+    ap.add_argument("--method", choices=["A", "sdg", "B"], default="sdg",
+                    help="A=geo noise in SDEdit; sdg=geo on noised latent (apples); B=full-gen seed")
+    ap.add_argument("--strength", type=float, default=0.8)   # SDEdit strength for A/sdg arms
+    ap.add_argument("--taus", type=float, nargs="+", default=[0.25, 0.5, 0.75])
+    ap.add_argument("--taus_white", type=float, nargs="+", default=[0.5])
     ap.add_argument("--tag", default="sub")
     args = ap.parse_args()
 
@@ -185,10 +190,17 @@ def main():
     dino, clip = load_dino(), load_clip()
     items = load_piebench(args.n_per_type)
 
-    # arm spec: (name, kind, param)
+    # arm spec: (name, kind, param). Vanilla strength sweep always draws the frontier;
+    # the chosen method adds its tau-sweep at a fixed strength (tau=0 == vanilla@strength).
     arms = [(f"van_s{s}", "vanilla", s) for s in args.strengths]
-    arms += [(f"geo_t{t}", "global", t) for t in args.ts]
-    arms += [(f"band_c{args.cut}_th{th}", "band", th) for th in args.t_high]
+    if args.method == "A":
+        arms += [(f"A_t{t}", "A", t) for t in args.taus]
+    elif args.method == "sdg":
+        arms += [(f"sdg_src_t{t}", "sdg_src", t) for t in args.taus]
+        arms += [(f"sdg_wht_t{t}", "sdg_white", t) for t in args.taus_white]
+    else:  # B (legacy full-gen seed)
+        arms += [(f"geo_t{t}", "global", t) for t in args.ts]
+        arms += [(f"band_c{args.cut}_th{th}", "band", th) for th in args.t_high]
 
     recs, grid_rows, grid_labels = [], [], []
     grid_cols = ["source"] + [a[0] for a in arms]
@@ -203,15 +215,23 @@ def main():
         xi = torch.fft.fft2(torch.randn(x0.shape, generator=gx, device="cuda").float()).angle()
 
         row = [src]
+        ep = it["edit_prompt"]
+        S = args.strength
         for name, kind, p in arms:
+            gen = torch.Generator("cuda").manual_seed(args.seed)
             if kind == "vanilla":
-                im = sdedit(img2img, src, it["edit_prompt"], p, args.steps, args.guid,
-                            torch.Generator("cuda").manual_seed(args.seed))
-            else:
+                im = sdedit(img2img, src, ep, p, args.steps, args.guid, gen)
+            elif kind == "A":   # geodesic NOISE in SDEdit@S; p=source-phase amount (t=1-p -> white=vanilla)
+                noise = geodesic_seed(x0, Fz, xi, 1.0 - p)
+                im = sdedit(img2img, src, ep, S, args.steps, args.guid, gen, structured_noise=noise)
+            elif kind == "sdg_src":
+                im = sdedit_geodesic(img2img, src, ep, S, args.steps, args.guid, gen, p, toward="source")
+            elif kind == "sdg_white":
+                im = sdedit_geodesic(img2img, src, ep, S, args.steps, args.guid, gen, p, toward="white")
+            else:   # B: legacy full-gen geodesic seed
                 t = p if kind == "global" else band_t_field(H, W, args.cut, p, x0.device)
-                seed = geodesic_seed(x0, Fz, xi, t)
-                im = common.generate(pipe, it["edit_prompt"], seed, steps=args.steps,
-                                     guidance=args.guid)
+                im = common.generate(pipe, ep, geodesic_seed(x0, Fz, xi, t),
+                                     steps=args.steps, guidance=args.guid)
             sd = structure_distance(dino, im, src)
             cd = clip_directional(clip, src, im, it["src_prompt"], it["edit_prompt"])
             recs.append({"key": it["key"], "arm": name, "kind": kind, "param": p,

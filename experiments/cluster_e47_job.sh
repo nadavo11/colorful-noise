@@ -34,8 +34,10 @@ cd "$EXP"
 # NFE=17: FlowAlign's plain-sampling budget on 24GB GPUs (inversion methods 17+17,
 # FlowEdit/AlignFlow 33; our SDEdit + seed-phase and the vanilla baseline are sampling).
 case "$STAGE" in
-  --sub20)  python e47_geodesic.py --n_per_type 2  --steps 17 --tag sub20 ;;
-  --sub100) python e47_geodesic.py --n_per_type 10 --steps 17 --tag sub100 ;;
+  --sub20)    python e47_geodesic.py --n_per_type 2  --steps 17 --method B   --tag sub20 ;;
+  --sub100)   python e47_geodesic.py --n_per_type 10 --steps 17 --method B   --tag sub100 ;;
+  --sweepA)   python e47_geodesic.py --n_per_type 2  --steps 17 --method A   --tag sweepA ;;
+  --sweepSDG) python e47_geodesic.py --n_per_type 2  --steps 17 --method sdg --tag sweepSDG ;;
   *) echo "[job] unknown stage '$STAGE'"; exit 1 ;;
 esac
 echo "[job] stage $STAGE done"
