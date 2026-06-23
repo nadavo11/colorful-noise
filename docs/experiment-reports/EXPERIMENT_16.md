@@ -15,6 +15,8 @@ Conditions: `cfg1.0` (realism anchor), `cfg3.5` (degraded baseline SBN fixes),
 `seg` (Smoothed Energy Guidance, if available). Methods + metrics are documented in
 `FIDELITY_BASELINES.md`.
 
+![E16 design — fidelity is the contest, adherence the guardrail: SBN band-clamp + saturation (ours) vs CFG-Zero*/neg-prompt/SEG, anchored by cfg=1.0 (realism) and cfg=3.5 (degraded). Status: pipeline validated on smoke N=2; full sweep pending.](figs/E16/design.jpg)
+
 **Metrics.** Fidelity (primary): LAION **aesthetic**, **ImageReward**,
 **spectral-distance-to-real** (vs E10 `real_latents.pt`). Adherence (guardrail):
 **CLIP-T**, **VQAScore**. Plus E9 `image_metrics`.
