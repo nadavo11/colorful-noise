@@ -365,7 +365,7 @@ EXPERIMENTS = [
      "result": "Model-free preflight passes (strength=0 == SBN); gen/score needs the SD3.5 run.",
      "verdict": "Headline of the style thread; code-complete, awaiting cluster.",
      "nxt": "Run gen/score; add hybrid / morph / two-prompt modes (operators exist).",
-     "script": "experiments/e19_spectral_style.py", "doc": "docs/experiment-reports/EXPERIMENT_18.md", "results": "e19", "image": None},
+     "script": "experiments/e19_spectral_style.py", "doc": "docs/experiment-reports/EXPERIMENT_19.md", "results": "e19", "image": None},
     {"id": "E20", "title": "Spectral warm-start (skip the beginning of generation)", "thread": "style",
      "models": "SD3.5-medium", "status": "pending",
      "motivation": "If low-band phase locks in early, can we inject it and skip early steps?",
