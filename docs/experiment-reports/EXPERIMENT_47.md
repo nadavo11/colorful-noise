@@ -77,6 +77,13 @@ Direct proof of the decoupling (chair, matched structure ≈ 0.082): **A** gives
 **SDG** gives +0.064 — 3× the edit at the same structure, because A pays extra `x₀` energy while SDG
 only sharpens phase.
 
+![Chair, all variants on one source: source · vanilla@0.8 · A (geodesic noise) ×2 · B (full-gen seed) ×2 · SDG (geodesic on latent) ×3. A over-locks (edit dies), B is dominated, SDG holds structure while editing.](figs/E47/chair_all_methods.jpg)
+
+The SDG τ-sweep on the chair (τ=0 column reproduces vanilla; pushing τ toward the source phase
+restores structure, toward white boosts the edit):
+
+![SDG apples-to-apples chair sweep: source · vanilla@0.8 · SDG-source τ=0/0.25/0.5/0.75 · band · SDG-white τ=0.5](figs/E47/sdg_chair_sweep.jpg)
+
 ## Probes & results
 
 Metric: DINO structure-distance (↓) × CLIP-directional editability (↑). "Win" = a point **NW** of the
@@ -116,8 +123,12 @@ when averaged over 100 images. The point-estimate wins sit at structure ≈ 0.11
 | A_t0.125 | +0.0022 | [−0.0085, +0.0126] | 0.65 |
 
 The best arm is only **78% likely to be truly NW** of the frontier. So the n=100 advantage is a
-point-estimate that **does not clear the noise.** (Analysis: `experiments/e47_analyze.py`; frontier
-plot `docs/experiment-reports/e47_frontier.png`.)
+point-estimate that **does not clear the noise.** (Analysis: `experiments/e47_analyze.py`.)
+
+![Structure (DINO ↓) vs editability (CLIP-dir ↑) frontier on PIE-Bench n=100: the vanilla SDEdit strength sweep draws the curve; the geodesic light-τ arms sit just NW of it (point-estimate), within the bootstrap uncertainty.](figs/E47/frontier.jpg)
+
+Full-resolution per-image grids (vanilla strength sweep × geodesic arms, ~100 rows) are archived
+under `/storage/.../roadmap_results/E47/` (`confA_piebench_n100`, `confSDG_piebench_n100`).
 
 ## Verdict
 

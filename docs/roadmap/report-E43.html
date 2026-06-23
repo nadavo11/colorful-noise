@@ -1,0 +1,112 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E43 — FlowAlign on FLUX + spectral terminal-point variants</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_43.md'>source .md</a> · <a href='../../experiments/e43_flowalign.py'>driver</a></p><article class=report><h1>E43 — FlowAlign on FLUX + spectral terminal-point variants</h1>
+<h2>TL;DR</h2>
+<p><strong>FlowAlign</strong> (arXiv:2505.23145) edits a real image without inversion: it's <strong>FlowEdit</strong> plus a
+<strong>source-consistency terminal-point</strong> regularizer, with CFG run using the <strong>source</strong> prompt as the
+negative. We ported it to FLUX and added two spectral twists, then searched for a knob setting
+that preserves source <strong>structure</strong> better than plain FlowAlign <strong>without</strong> losing edit adherence.</p>
+<p><strong>Winner: <code>sbn_phase</code></strong> — spectrally locking the <em>low-band phase</em> of the CFG velocity to the
+source-conditioned reference. Across 3 scenes × <code>w ∈ {5,7,10}</code> (28 steps) it <strong>beats plain
+FlowAlign on every cell</strong>: DINO structure distance roughly <em>halves</em> (e.g. 0.056 vs 0.124) while
+CLIP-directional editability <em>rises</em> (mean ΔStruct −0.055…−0.061, ΔClip +0.037…+0.085). This is
+the first editing lever in the project that preserves structure <em>more</em> than the baseline at <em>no</em>
+editability cost.</p>
+<h2>Method</h2>
+<p>Per step (demo notation, <code>x_src ≡ qt</code>, <code>x_tar ≡ pt = x_src + delta</code>):</p>
+<pre><code>qt  = (1−σ)·zsrc + σ·eps                      # forward-diffused source
+pt  = xt + qt − zsrc                          # == x_tar
+vp  = v(pt,c_src) + w·(v(pt,c_tgt) − v(pt,c_src))   # CFG, SOURCE prompt as the negative
+vq  = v(qt,c_src)
+xt += (σ_next−σ)·(vp − vq)  +  ζ·(qt−σ·vq − pt+σ·vp)   # ζ = 0.01 terminal-point term
+</code></pre>
+<p>The terminal term is <code>ζ·(E[q0|qt] − E[p0|pt])</code> = source-clean minus edit-clean point. The core
+lives in <code>invert_core.flowalign</code> and is <strong>shared verbatim</strong> by the demo's FlowAlign tab and the
+<code>e43_flowalign.py</code> harness, so they can't drift. Manual CFG (3 velocity forwards/step) keeps <code>w</code>
+a real, SBN-able knob on the distilled model.</p>
+<p><strong>Two spectral twists</strong> (both reduce to plain FlowAlign at their defaults):</p>
+<ol>
+<li><strong>SBN on the CFG reference</strong> — after forming <code>vp</code>, clamp its low radial band <code>[0, cut]</code> toward
+   the source-conditioned reference <code>v(pt,c_src)</code>, reusing E37's <code>velocity_spectral_ops</code>. Modes:
+   <code>band power</code> (per-band power match), <code>mag</code> (per-bin magnitude transplant), <strong><code>phase</code></strong> (keep
+   <code>vp</code> magnitude, lock the low-band phase to the reference), <code>both</code>. Idea: keep a high semantic
+   <code>w</code> while spectrally damping its <em>structural</em> over-editing in low frequencies.</li>
+<li><strong>Annealed terminal point</strong> — band-limit the consistency vector before adding it, low-pass
+   <code>start_cut → end_cut</code> over steps (coarse source-consistency early, fine detail later).</li>
+</ol>
+<h2>Setup</h2>
+<p>FLUX.1-dev, 28 steps. Small qualitative sweep: 3 scenes (<code>cat→dog</code>, <code>house→thunderstorm</code>,
+<code>street→snow</code>), <code>w ∈ {5,7,10}</code>, <code>cut=0.2</code>, <code>ζ=0.01</code>. Scored vs. the source with
+<code>struct_metrics.py</code>: <strong>DINO ViT-S/8 self-similarity structure distance</strong> (↓ = structure
+preserved), <strong>CLIP-directional</strong> similarity (↑ = edit adherence), LPIPS/DSSIM. Conditions:
+<code>flowalign</code> (baseline), <code>sbn_bp</code>, <code>sbn_phase</code>, <code>term_anneal</code>, <code>sbn_bp+term</code>, plus a <code>recon</code>
+identity gate (<code>C_tar==C_src</code>). Run on RunAI via <code>cluster_e43_job.sh</code>
+(smoke → identity gate → w-sweep → automatic GOAL gate).</p>
+<h2>Results</h2>
+<p>Identity gate holds: <code>recon</code> struct-dist ≈ <strong>0.003–0.005</strong> on every scene/config → the FLUX
+port and VAE/packing path are correct.</p>
+<p>Mean deltas vs. the FlowAlign baseline (negative ΔStruct and non-negative ΔClip = win):</p>
+<table>
+<thead>
+<tr>
+<th>variant</th>
+<th>w=5</th>
+<th>w=7</th>
+<th>w=10</th>
+<th>all-scene wins</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>sbn_phase</strong></td>
+<td>ΔStruct −0.061 / ΔClip +0.049</td>
+<td>−0.055 / +0.085</td>
+<td>−0.061 / +0.037</td>
+<td><strong>3/3 at every w</strong></td>
+</tr>
+<tr>
+<td>sbn_bp</td>
+<td>−0.027 / +0.059</td>
+<td>−0.020 / +0.059</td>
+<td>−0.028 / +0.043</td>
+<td>2/3, 2/3, 3/3</td>
+</tr>
+<tr>
+<td>sbn_bp+term</td>
+<td>−0.022 / +0.043</td>
+<td>−0.018 / +0.069</td>
+<td>−0.023 / +0.022</td>
+<td>2/3</td>
+</tr>
+<tr>
+<td>term_anneal</td>
+<td>+0.001 / −0.004</td>
+<td>+0.010 / +0.016</td>
+<td>+0.002 / −0.001</td>
+<td>null</td>
+</tr>
+</tbody>
+</table>
+<p>Example absolute numbers (<code>sbn_phase</code> vs baseline): <code>cat_dog</code> struct 0.056 vs 0.124, clip 0.566
+vs 0.513; <code>house_storm</code> 0.040 vs 0.117, clip 0.350 vs 0.296; <code>street_snow</code> 0.066 vs 0.105, clip
+0.432 vs 0.392 (all at w=5). The job's GOAL gate reports <strong>PASS</strong> with 4 winning config×variant
+settings.</p>
+<p><strong>Caveat — step count matters.</strong> The 8-step smoke is misleading: there <code>sbn_phase</code> collapses
+CLIP-directional to ~0.12 (the edit barely happens). The structure/editability win only emerges
+at ≥28 steps.</p>
+<h2>Verdict</h2>
+<p><strong>KEEP <code>sbn_phase</code> (mode=<code>phase</code>, cut≈0.2)</strong> as the strong default variant of the FlowAlign tab.
+It is the first lever here that preserves structure <em>more</em> than the baseline without losing
+editability. <code>sbn_bp</code> is a secondary KEEP; the annealed terminal point is a KILL.</p>
+<h2>Next</h2>
+<ul>
+<li>Full 700-image <strong>PIE-Bench</strong> set + masks for the publishable comparison (enables BG-PSNR /
+  BG-LPIPS, the masked background-preservation axis deferred here).</li>
+<li>SD3.5 port (true CFG).</li>
+<li>Sweep <code>sbn_cut</code> and phase strength to map the structure↔editability frontier.</li>
+</ul>
+<h2>Artifacts</h2>
+<ul>
+<li><code>experiments/e43_flowalign.py</code> (<code>--part gen,analyze</code>), core in <code>invert_core.flowalign</code>, FlowAlign
+  tab in <code>experiments/spectral_demo.py</code>, scoring in <code>experiments/struct_metrics.py</code>.</li>
+<li><code>experiments/cluster_e43_job.sh</code> (self-gating: smoke → identity gate → w-sweep → GOAL gate).</li>
+<li>Outputs: <code>results/e43_w5|w7|w10/</code> — per-scene strips + <code>index.html</code> and <code>report.json</code>.</li>
+</ul></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_43.md'>source .md</a> · <a href='../../experiments/e43_flowalign.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

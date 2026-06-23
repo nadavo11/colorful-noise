@@ -97,11 +97,76 @@ def pill(status):
     return f"<span class=pill style='--c:{color}'>{esc(label)}</span>"
 
 
+def report_outfile(exp):
+    """report-<eid>.html for an experiment whose .md writeup exists on disk, else None."""
+    doc = exp.get("doc")
+    if doc and doc.endswith(".md") and os.path.exists(os.path.join(REPO, doc)):
+        return f"report-{exp['id']}.html"
+    return None
+
+
 def doc_link(exp, outfile):
-    """Link to the deep writeup, or the chronological log anchor as a fallback."""
-    if exp.get("doc"):
-        return rel(exp["doc"], outfile), os.path.basename(exp["doc"])
+    """Link to the RENDERED report page (nice HTML), else the chronological log fallback."""
+    rof = report_outfile(exp)
+    if rof:
+        return os.path.relpath(os.path.join(OUT, rof),
+                               os.path.dirname(os.path.join(OUT, outfile))), "report"
     return rel("experiments/EXPERIMENTS.md", outfile), "EXPERIMENTS.md"
+
+
+def _img_data_uri(path, max_px=1400, quality=82):
+    """Downscaled JPEG data: URI for a figure, or None if it can't be read."""
+    try:
+        import base64
+        from io import BytesIO
+        from PIL import Image
+        im = Image.open(path).convert("RGB")
+        if max(im.size) > max_px:
+            r = max_px / max(im.size)
+            im = im.resize((max(1, round(im.width * r)), max(1, round(im.height * r))))
+        buf = BytesIO()
+        im.save(buf, "JPEG", quality=quality)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
+def _inline_images(html, base_dir):
+    """Replace <img src=...> with a downscaled data-URI resolved relative to base_dir; a
+    missing file (e.g. a heavy grid that lives only on /storage) degrades to a caption."""
+    import re
+
+    def repl(m):
+        src = m.group(1)
+        if src.startswith(("data:", "http")):
+            return m.group(0)
+        p = src if os.path.isabs(src) else os.path.normpath(os.path.join(base_dir, src))
+        uri = _img_data_uri(p)
+        if uri:
+            return m.group(0).replace(src, uri)
+        return (f"<p class=cap>(figure <code>{esc(os.path.basename(src))}</code> — "
+                f"full-res under <code>/storage/.../roadmap_results/</code>)</p>")
+
+    return re.sub(r'<img[^>]*\bsrc="([^"]+)"[^>]*>', repl, html)
+
+
+def build_report(exp):
+    """Render EXPERIMENT_<n>.md to a styled, self-contained HTML page (tables/code/figures)."""
+    import markdown
+    doc = exp["doc"]
+    src = os.path.join(REPO, doc)
+    of = report_outfile(exp)
+    html = markdown.markdown(open(src, encoding="utf-8").read(),
+                             extensions=["tables", "fenced_code", "sane_lists", "attr_list"])
+    html = _inline_images(html, os.path.dirname(src))
+    nav_links = (f"<p class=rnav><a href='thread-{esc(exp['thread'])}.html'>← "
+                 f"{esc(THREAD_BY_ID[exp['thread']]['title'])}</a> · "
+                 f"<a href='experiments.html'>all experiments</a> · "
+                 f"<a href='{esc(rel(doc, of))}'>source .md</a>"
+                 + (f" · <a href='{esc(rel(exp['script'], of))}'>driver</a>" if exp.get('script') else "")
+                 + "</p>")
+    body = f"{nav_links}<article class=report>{html}</article>{nav_links}"
+    return of, page(f"{exp['id']} — {exp.get('title', '')}", body, "experiments.html", of)
 
 
 def nav(active, outfile="index.html"):
@@ -183,6 +248,15 @@ code{background:#eff1f3;padding:1px 5px;border-radius:3px;font-size:12.5px}
 .gloss dt{font-weight:700;margin-top:12px} .gloss dd{margin:2px 0 2px 0;color:#24292f}
 footer{max-width:980px;margin:0 auto;padding:18px;color:var(--mut);font-size:12px;
   border-top:1px solid var(--line)}
+.rnav{font-size:13px;color:var(--mut);margin:10px 0}
+.report{font-size:15px;line-height:1.65}
+.report img{max-width:100%;border:1px solid var(--line);border-radius:6px;margin:12px 0;display:block}
+.report h1{font-size:24px;margin:18px 0 8px} .report h2{margin-top:26px}
+.report ul,.report ol{margin:8px 0;padding-left:24px} .report li{margin:3px 0}
+.report blockquote{border-left:3px solid var(--line);margin:10px 0;padding:2px 14px;color:var(--mut)}
+.report pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:10px 12px;overflow-x:auto}
+.report pre code{background:none;padding:0;font-size:12.5px}
+.report table{font-size:13.5px} .report hr{border:none;border-top:1px solid var(--line);margin:22px 0}
 """
 
 
@@ -478,6 +552,12 @@ def main():
         with open(os.path.join(OUT, of), "w") as f:
             f.write(htmltext)
         written.append(of)
+    for e in EXPERIMENTS:                       # rendered .md report pages (nice HTML + figures)
+        if report_outfile(e):
+            of, htmltext = build_report(e)
+            with open(os.path.join(OUT, of), "w") as f:
+                f.write(htmltext)
+            written.append(of)
     with open(os.path.join(OUT, "experiments.html"), "w") as f:
         f.write(build_table())
     written.append("experiments.html")

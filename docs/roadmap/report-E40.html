@@ -1,0 +1,139 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E40 — RF inversion + trajectory-matched low-band spectral clamp (real-image editing, FLUX)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_40.md'>source .md</a> · <a href='../../experiments/e40_spectral_invert.py'>driver</a></p><article class=report><h1>E40 — RF inversion + trajectory-matched low-band spectral clamp</h1>
+<h2>TL;DR</h2>
+<p>Edit a <strong>real image</strong> with FLUX while preserving its <strong>structure</strong>, even under an aggressive
+edit prompt. Three steps: (1) <strong>RF-invert</strong> the image to noise — integrate the velocity ODE
+<em>backwards</em> (σ: 0 → 1) under the <strong>source</strong> caption, <strong>recording the latent at every σ node</strong>
+(the inversion <em>trajectory</em> <code>traj[i]</code>); (2) regenerate <em>forward</em> (σ: 1 → 0) under the <strong>edit</strong>
+prompt from that inverted noise; (3) at each step, <strong>clamp the latent's low-frequency band
+<code>[0, cut]</code> back to <code>traj[i]</code></strong> at the matching σ. Low bands carry coarse layout, so pinning
+them to the source trajectory keeps structure while the high band follows the edit. Three clamp
+<strong>modes</strong> reuse the repo's existing spectral primitives — <code>sbn</code> (per-band power), <code>phase</code>
+(power + low-band phase lock), <code>adain</code> (per-band mean+std). Library + experiment:
+<code>experiments/e40_spectral_invert.py</code>; interactive <strong>RF inversion</strong> tab in <code>spectral_demo.py</code>.</p>
+<h2>Where it sits — trajectory reference, not a fixed <code>x0</code></h2>
+<p>The repo already has structure-locking edits: <strong>BandLock</strong> (E21/E22) clamps a generating latent
+to a <strong>single fixed source latent <code>x0</code></strong> at every step. E40's difference is the <strong>reference</strong>:
+the per-step <strong>inversion trajectory</strong>, aligned by σ. Because inversion and generation walk the
+<em>same</em> σ grid, step <code>i</code> of the edit sits at the same noise level as <code>traj[i]</code>, so the clamp pulls
+"the source as it looked at this noise level" rather than "the clean source" at every step.</p>
+<pre><code> real image ─► VAE ─► x0 (σ=0)
+        │
+        │  reverse Euler, source prompt, guidance≈1     ◄── RF inversion
+        ▼     x_{σ↑} = x_{σ} + Δσ · v(x_σ, σ, C_src)
+   traj[i] = latent at σ=sig[i]     (recorded every node)  ──┐
+        │                                                    │  reference per σ
+   inverted noise (σ=1)                                      │
+        │                                                    ▼
+        │  forward Euler, EDIT prompt                FFT ─► low-band clamp(traj[i]) ─► iFFT
+        ▼     x_{σ↓} = x_σ + Δσ · v(x_σ, σ, C_edit)          │  (sbn / phase / adain, band [0,cut])
+   edited image (σ=0)  ◄──────────────────────────────────────┘
+</code></pre>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Rectified-flow inversion</strong> — a flow model generates by following a velocity field
+  <code>v(x, σ, C)</code> from noise (σ=1) to a clean latent (σ=0). <strong>Inversion runs it backwards</strong>: start
+  from the clean image latent and integrate the <em>same</em> ODE up to σ=1, recovering the noise that
+  would regenerate it. Done under the <strong>source</strong> caption so the recovered noise is "about" the
+  source. FLUX is guidance-distilled, so inversion is most faithful at <strong>guidance ≈ 1</strong>.</li>
+<li><strong>The trajectory</strong> — at every σ node we save the <em>unpacked</em> <code>(1,16,128,128)</code> latent. <code>traj[i]</code>
+  is the source's latent at noise level <code>sig[i]</code>. Storage is <code>steps × ~1 MB</code> on CPU — cheap.</li>
+<li><strong>Low band <code>[0, cut]</code></strong> — bin the 2-D FFT by distance from DC; <code>cut</code> is a <strong>normalized radius</strong>
+  (<code>0</code> = DC/global tone … <code>1</code> = corner / finest detail). Low band ≈ coarse layout, global color,
+  large shapes; high band ≈ texture/edges. Pinning the low band keeps <em>where things are</em>; freeing
+  the high band lets the edit prompt repaint <em>what they are</em>.</li>
+<li><strong>σ-alignment</strong> — inversion records at the same <code>sig</code> nodes the generation visits, so reference
+  lookup is by index (<code>traj[i]</code> ↔ generation step <code>i</code>). Verified by the pack/unpack round-trip and
+  the off-by-one in the reverse loop.</li>
+</ul>
+<h2>The clamp (one new operator, three modes)</h2>
+<p>At step <code>i</code>, with the current unpacked latent <code>g</code> and the recorded reference <code>r = traj[i]</code>, pull
+<code>g</code>'s low band toward <code>r</code>. All three modes are <strong>low-band only</strong> (bands above <code>cut</code> pass through)
+and <strong>blended by <code>strength ∈ [0,1]</code></strong> (<code>0</code> = no clamp = baseline). They reuse existing primitives:</p>
+<ul>
+<li><strong><code>sbn</code></strong> — match per-<code>(channel, radial-band)</code> <strong>mean power</strong> (<code>spectral_ops.psd_match</code>, the
+  E8/E16/E23 SBN). Target power in low bands is a geometric blend
+  <code>cur^{1−s} · ref^{s}</code>; high bands target their own power (gain 1 → untouched). Magnitudes
+  rescaled per band, <strong>phase free</strong>. DC lives in band 0, so the per-channel mean (global tone) is
+  matched too.</li>
+<li><strong><code>phase</code></strong> — <code>sbn</code> on magnitude <strong>plus lock the low-band phase</strong> to the source via
+  <code>spectral_ops.band_phase_swap(r, out, q, mag_from="B")</code>: phase from <code>r</code> inside radius <code>≤ cut</code>,
+  phase from the <code>sbn</code> result outside, magnitude from the <code>sbn</code> result. <code>q</code> is the bin-fraction
+  that makes the quantile mask exactly <code>{radius ≤ cut}</code>. <strong>Phase carries layout</strong>, so this is the
+  strongest structure preservation. (The phase lock is hard; <code>strength</code> governs the magnitude part.)</li>
+<li><strong><code>adain</code></strong> — match per-band <strong>mean + std</strong> of the magnitude on <strong>soft</strong> bands
+  (<code>spectral_adain.spectral_adain</code>, the E39 operator, <code>K=8</code> rings). Sources are <code>r</code> for rings with
+  center <code>&lt; cut</code> and <code>g</code> (identity) above, then blended <code>g·(1−s) + out·s</code>. Richer second-moment
+  statistic; phase taken from the content <code>g</code>.</li>
+</ul>
+<pre><code>sbn   :  |F·gain[band]|, gain = sqrt(target/cur), low band only      (mean power)
+phase :  sbn(mag)  ⊕  ∠F from r inside radius≤cut                     (+ low-band layout)
+adain :  per-ring (|F|−μ_g)/σ_g · σ_r + μ_r, low rings only           (mean+std, soft bands)
+</code></pre>
+<p>Identity is exact: clamping a latent to itself (<code>r = g</code>) is a no-op for all three modes
+(<code>‖clamp−g‖∞ ≈ 1e-6</code>, verified in <code>preflight</code>).</p>
+<h2>Knobs and how they trade off</h2>
+<ul>
+<li><strong><code>cut</code></strong> (normalized radius, 0–1) — how much of the spectrum is pinned. Small <code>cut</code> pins only
+  the coarsest structure/color and leaves most of the image editable; large <code>cut</code> pins more of the
+  source → tighter structure, weaker edit. (One <code>cut</code> is consistent across modes because the SBN
+  hard-band centers and the AdaIN soft-band centers are both normalized by the corner radius —
+  <code>radial_norm = rr / rr.max()</code>.)</li>
+<li><strong><code>strength</code></strong> (0–1) — clamp blend. <code>0</code> = baseline (the no-clamp edit), <code>1</code> = full clamp. For
+  <code>phase</code>, governs the magnitude match only (phase lock is hard).</li>
+<li><strong>clamp <code>window</code></strong> (step fraction) — which steps clamp. Early/high-σ steps set coarse structure;
+  clamping only early preserves layout but frees late steps for edit detail; clamping all steps
+  preserves the most.</li>
+<li><strong><code>inv_guidance</code></strong> — guidance during inversion; ≈ 1.0 is most faithful for distilled FLUX.</li>
+</ul>
+<h2>The experiment / demo</h2>
+<ul>
+<li><strong><code>e40_spectral_invert.py</code></strong> (<code>--part preflight,gen,analyze</code>). <code>gen</code>: per source — VAE-encode
+  the real image (or generate one from the source prompt), RF-invert under the source caption, then
+  produce conditions <strong><code>recon</code></strong> (edit=source, no clamp — the <strong>inversion + plumbing gate</strong>, should
+  reproduce the source), <strong><code>recon_clamp</code></strong> (edit=source, with clamp — should be <em>tighter</em> than
+  <code>recon</code>, a <strong>drift-correction</strong> probe), <strong><code>edit_noclamp</code></strong> (plain RF-inversion edit baseline), and
+  <strong><code>edit_{sbn,phase,adain}</code></strong>. <code>analyze</code> scores CLIP→edit (adherence), CLIP→source (content kept),
+  pixel-distance to source, and aesthetic, and writes <code>results/e40/index.html</code>. The run also reports
+  the <strong>inverted-noise std</strong> (≈ 1.0 = a clean Gaussian inversion; &gt; 1 = drift, as E21 saw on SD3.5).</li>
+<li><strong>RF inversion tab</strong> (<code>spectral_demo.py</code>, Flux). Upload an image + source caption + edit prompt;
+  pick mode / <code>cut</code> / <code>strength</code> / window / guidances. <strong>Left</strong> = edit with no clamp; <strong>right</strong> = edit
+  with the low-band clamp — a direct A/B of what the clamp preserves. Reuses the demo's inline FLUX
+  helpers (<code>pack</code>/<code>unpack</code>/<code>flux_velocity</code>/<code>vae_encode</code>/<code>decode_latent</code>) so it stays decoupled from
+  e31's heavy import chain; the only new code is the inversion loop and the clamp.</li>
+</ul>
+<h2>Use cases</h2>
+<ol>
+<li><strong>Structure-preserving real-image editing</strong> — keep layout/geometry, change content/style.</li>
+<li><strong>Aggressive edits in the "low regime"</strong> — pin only the coarsest band (<code>small cut</code>) so a large
+   semantic edit still respects the source composition.</li>
+<li><strong>Inversion drift correction</strong> — re-imposing the recorded spectrum counteracts RF-inversion
+   drift (the <code>recon</code> vs <code>recon_clamp</code> comparison).</li>
+<li><strong>A controllable knob between content and edit</strong> — <code>cut</code> / <code>strength</code> / window sweep the
+   preservation ↔ adherence trade-off continuously.</li>
+</ol>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>Inversion fidelity is the weak link.</strong> FLUX reverse-Euler can drift (cf. E21's failed SD3.5
+  reconstruction, noise std ~1.11). The <code>recon</code> gate and the reported inverted-noise std measure it
+  directly; if poor, the fallbacks are a fixed-point/implicit Euler step (as E21 tried) or an
+  RF-Inversion-style controlled ODE. Not built upfront.</li>
+<li><strong><code>phase</code> strength only affects magnitude</strong> — the low-band phase lock is hard (phase is circular;
+  a linear blend is meaningless).</li>
+<li><strong>Latent frequency ≠ pixel frequency</strong> (the VAE), so map <code>cut</code> → perceptual scale empirically.</li>
+<li><strong>Cost</strong> — the transformer runs <code>steps×</code> for inversion plus <code>steps×</code> per edit condition; fine on
+  the NF4 (<code>bnb4</code>) path, slower than inversion-free FlowEdit (E31).</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># model-free asserts (pack/unpack, clamp identity, low-band restriction):
+python experiments/e40_spectral_invert.py --part preflight
+
+# generate + analyze on one real image (Flux + GPU):
+python experiments/e40_spectral_invert.py --part gen,analyze --num 1 \
+    --real_dir &lt;dir-of-key.png&gt; --mode all --cut 0.25 --strength 1.0
+
+# interactive (Flux): open the &quot;RF inversion&quot; tab
+python experiments/spectral_demo.py --model flux-dev
+</code></pre>
+<p>Reuses <code>psd_match</code> / <code>band_power</code> / <code>band_phase_swap</code> / <code>band_index_map</code> (<code>spectral_ops.py</code>) and
+<code>soft_band_masks</code> / <code>spectral_adain</code> (<code>spectral_adain.py</code>); FLUX plumbing mirrors E31/E7. Contrast:
+<strong>BandLock</strong> (E21/E22) clamps to a fixed <code>x0</code>; E40 clamps to the per-σ inversion trajectory.</p></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_40.md'>source .md</a> · <a href='../../experiments/e40_spectral_invert.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

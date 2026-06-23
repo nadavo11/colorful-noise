@@ -1,0 +1,201 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E35 — Token-frequency operator sweep on SD1.5 (scenarios x operators x params)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_35.md'>source .md</a> · <a href='../../experiments/e35_op_sweep.py'>driver</a></p><article class=report><h1>E35 — Token-frequency operator sweep on SD1.5</h1>
+<p><strong>The direction.</strong> We accumulated a large toolkit of token-axis FFT operators on the text
+conditioning (E24/E30/E32) but only spot-checked pieces on Flux. E35 systematically maps the
+<em>whole</em> toolkit on a fast model (SD1.5): for every operator × parameter level × prompt type,
+what happens to prompt <strong>adherence</strong> and image <strong>fidelity</strong>, and how far the edit moves the
+image. The output is a "what does each knob do, and to which kinds of prompts" map.</p>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Signal.</strong> SD1.5 encodes a prompt with CLIP into a <strong>sequence embedding</strong> <code>E (1, 77, 768)</code>.
+  Every operator FFTs the <strong>token axis</strong> (1-D, per channel) on the real-token span <code>[:L]</code>
+  (<code>L = attention_mask.sum()</code>; BOS/…/EOS are real, padding untouched), edits the spectrum,
+  inverts, and we generate from the edited <code>prompt_embeds</code> (CFG with an empty-string negative).</li>
+<li><strong>Operators (13).</strong> baseline · low-pass · high-pass · band gain · notch · phase-only ·
+  mag-only · phase band-keep · phase gain · per-object band gain · two-prompt
+  band-swap/band-blend/lerp. (Same ops as the interactive demo, ported to SD1.5's CLIP-77.)</li>
+<li><strong>Frequency.</strong> Normalised <code>0→1</code>: DC = mean across tokens; low = slow/global meaning; high =
+  sharp token-to-token detail. <code>cut</code> splits low/high; <code>band</code> picks the side; <code>gain</code> scales it.</li>
+</ul>
+<h2>Method</h2>
+<ul>
+<li><strong>Model.</strong> SD1.5 (<code>StableDiffusionPipeline</code>, fp16, DDIM, 512px, guidance 7.5, 30 steps),
+  the e25 loader pattern. Generation from edited embeddings, <strong>5 seeds per condition batched</strong>.</li>
+<li><strong>Prompt set.</strong> 25 prompts across 5 categories — <strong>short / long-detailed / art-style /
+  single-object / two-object</strong> (5 each); object/two-object prompts carry an object phrase;
+  6 distinct <strong>pairs</strong> for the two-prompt merge ops.</li>
+<li><strong>Parameter grids</strong> (<code>--coverage {quick,thorough,max}</code>; thorough default): low/high-pass
+  <code>cut∈{.1,.2,.3,.45,.65}</code>; band gain <code>band{low,high}×gain{.25,.5,1.5,2,3}</code> at cut .25;
+  notch &amp; phase band-keep over <code>cut</code>; phase gain <code>gain{.5,2}</code>; per-object <code>band×gain{.5,2}</code>;
+  two-prompt swap over <code>cut</code>, blend, lerp. <strong>≈1001 conditions × 5 = ~5005 images, ETA ~2.2h.</strong></li>
+<li><strong>Metrics (code refs).</strong> <code>clip_scores</code> (CLIP-T adherence; vs A/B for pairs; vs object phrase
+  for object prompts) · <code>aesthetic_scores</code> (LAION, no-ref fidelity, reuses the CLIP) ·
+  <code>image_metrics</code> (sharpness/hf_frac/colorfulness) · <strong>drift</strong> = <code>1 − cosine(CLIP_img(baseline),
+  CLIP_img(edit))</code> per (prompt, seed) via <code>clip_sim</code>. No SD1.5 PSD reference exists, so fidelity
+  is no-reference (aesthetic + stats); heavy scorers (ImageReward/VQAScore/B-VQA) are skipped.</li>
+<li><strong>Outputs.</strong> <code>results/e35/</code>: <code>report.json</code> (per (category, op, param, seed) raw + aggregates);
+  per-operator <strong>metric-vs-parameter</strong> plots faceted by prompt category (CLIP / aesthetic /
+  drift); <code>save_grid</code> contact sheets; self-contained <code>index.html</code>.</li>
+</ul>
+<h2>Findings</h2>
+<p>Ran on runai (SD1.5, 1001 conditions, 5005 images). Operator means (CLIP adherence /
+LAION aesthetic / baseline-drift), sorted by adherence; baseline = 0.283 / 5.83:</p>
+<table>
+<thead>
+<tr>
+<th>operator</th>
+<th>CLIP</th>
+<th>aesthetic</th>
+<th>drift</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>baseline</td>
+<td>0.283</td>
+<td>5.83</td>
+<td>—</td>
+</tr>
+<tr>
+<td>lerp</td>
+<td>0.275</td>
+<td>5.96</td>
+<td>0.13</td>
+</tr>
+<tr>
+<td><strong>per-object band gain</strong></td>
+<td>0.274</td>
+<td>5.63</td>
+<td><strong>0.09</strong></td>
+</tr>
+<tr>
+<td>high-pass</td>
+<td>0.224</td>
+<td>5.07</td>
+<td>0.22</td>
+</tr>
+<tr>
+<td>band-blend</td>
+<td>0.213</td>
+<td>4.68</td>
+<td>0.36</td>
+</tr>
+<tr>
+<td>band gain</td>
+<td>0.212</td>
+<td>4.86</td>
+<td>0.26</td>
+</tr>
+<tr>
+<td>band-swap</td>
+<td>0.204</td>
+<td>4.52</td>
+<td>0.37</td>
+</tr>
+<tr>
+<td><strong>phase-only</strong></td>
+<td><strong>0.187</strong></td>
+<td><strong>4.47</strong></td>
+<td>0.36</td>
+</tr>
+<tr>
+<td>low-pass</td>
+<td>0.174</td>
+<td>4.49</td>
+<td>0.38</td>
+</tr>
+<tr>
+<td>notch</td>
+<td>0.171</td>
+<td>4.40</td>
+<td>0.39</td>
+</tr>
+<tr>
+<td>phase band-keep</td>
+<td>0.165</td>
+<td>4.09</td>
+<td>0.36</td>
+</tr>
+<tr>
+<td>phase gain</td>
+<td>0.165</td>
+<td>4.24</td>
+<td>0.37</td>
+</tr>
+<tr>
+<td><strong>mag-only</strong></td>
+<td><strong>0.145</strong></td>
+<td><strong>3.85</strong></td>
+<td><strong>0.43</strong></td>
+</tr>
+</tbody>
+</table>
+<ol>
+<li><strong>Phase ≫ magnitude carries the content — replicated on SD1.5/CLIP-77.</strong> phase-only
+   (0.187 / 4.47) beats mag-only (0.145 / 3.85) on both adherence and fidelity, and mag-only
+   has the <strong>largest drift</strong> (0.43, moves furthest from baseline). This reproduces E30's
+   Flux/T5 result on a different architecture. The phase&gt;mag gap is <strong>largest for long /
+   compositional prompts</strong> (mag-only CLIP drops to 0.13 on long/object/twoobj vs phase-only
+   ~0.17–0.23).</li>
+<li><strong>Localized / interpolation edits are the gentlest.</strong> per-object band gain (drift 0.09,
+   CLIP 0.274 ≈ baseline) and lerp (drift 0.13) barely perturb — per-object stays near baseline
+   (object 0.281 vs 0.284), consistent with E32's small-but-real effect.</li>
+<li><strong>High-pass &gt; low-pass for adherence</strong> (0.224 vs 0.174): keeping high-frequency token
+   detail + DC preserves more prompt content (esp. object identity) than the low "gist" alone.</li>
+<li><strong>Aggressive band surgery degrades both axes.</strong> low-pass / notch / phase band-keep / phase
+   gain / mag-only all fall to CLIP ~0.15–0.17 and aesthetic ~3.9–4.5 with large drift — most
+   single-band surgery costs adherence <em>and</em> fidelity on SD1.5.</li>
+</ol>
+<p>Per-parameter curves (faceted by prompt category) and contact sheets are in
+<code>results/e35/index.html</code>.</p>
+<h3>Follow-up: vs the BASELINE GENERATION (the right reference)</h3>
+<p>The headline/delta views score the edit against the <strong>prompt</strong> (CLIP-T), where the unedited
+baseline is the ceiling <em>by construction</em> — so <code>delta.html</code>'s Δ-vs-baseline heatmaps can only
+ever be red. That measures "how far the edit fell from the prompt", not "is the edited image a
+better image than the model would have made". <code>e35_vs_baseline.py</code> re-references every edit to
+its <strong>same-seed baseline image</strong> and splits the question in two (writes <code>vs_baseline.html</code>):</p>
+<ul>
+<li><strong>Directional — does the operator IMPROVE on the baseline image?</strong> <code>d_imagereward</code>
+  (prompt-aware, learned; <strong>not</strong> capped at baseline, so green is achievable), <code>d_aesthetic</code>,
+  and signed image-stat deltas. <strong>Result: no operator beats baseline.</strong> Ranked by ΔImageReward
+  (all-category mean): per-object −0.17, lerp −0.40, then everything −1.5…−2.6; on Δaesthetic
+  only <strong>lerp</strong> is positive (+0.05) and per-object is ~0. The two interpolation/localized ops
+  are merely the <em>least harmful</em> (near no-ops); single-band surgery is uniformly downhill.</li>
+<li><strong>Distance — how far / in what way it moved.</strong> <code>clip_i2i_dist</code>(=drift), <code>lpips</code>, <code>dssim</code>,
+  <code>img_psd_l2</code> (image-domain spectral change — the low-pass/phase-only texture axis CLIP-img
+  misses), <code>color_l2</code>. Cleanly ordered: per-object/lerp gentlest (LPIPS 0.34/0.42), mag-only
+  moves furthest (LPIPS 0.90, img-PSD 2.29). The operators ARE large, controllable distance
+  knobs — the edits are real and big — but on average the moves lower image quality.</li>
+<li><strong>Merges still don't pull in B:</strong> <code>d_imagereward_B</code> swap −0.07 / blend −0.07 / lerp +0.006;
+  lerp's tiny B-gain is dwarfed by its A-cost (−0.40). Reproduces E24's "MERGE negative".</li>
+</ul>
+<p><strong>Takeaway.</strong> Measured against the correct (uncapped, prompt-aware) reference, the SD1.5
+token-frequency toolkit is a clean <strong>negative result as an image-<em>improvement</em> tool</strong>, while
+remaining a genuine <strong>distance/diversity</strong> lever. "Interesting by eye" is a tail/distance
+effect (big LPIPS/PSD), not a mean-quality gain — both reference framings now agree.
+Tier 1 of the view (Δaesthetic, image-stats, CLIP-i2i) is free from <code>report.json</code>; Tier 2
+(<code>--with_images</code>: LPIPS/SSIM/PSD/color/ImageReward) re-scores the saved PNGs, no re-gen.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>No-reference fidelity.</strong> Aesthetic + image-stats are proxies; there's no SD1.5
+  real-image PSD reference (only Flux). A follow-up could build one (encode ~500 COCO imgs).</li>
+<li><strong>CLIP-77 vs T5-512.</strong> SD1.5 has far fewer tokens than Flux's T5; band structure is coarser,
+  so absolute effects may differ from E24/E30/E32 — E35 characterises SD1.5, not Flux.</li>
+<li><strong>Per-object on CLIP</strong> uses the token-id-subsequence fallback (slow tokenizer, no offsets);
+  validated on all object prompts but can miss exotic phrasings.</li>
+<li><strong>Next:</strong> lift the strongest operator×regime findings back to Flux for confirmation; feed the
+  TI (E33) and channel-axis (E34) proposals.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash">python experiments/e35_op_sweep.py --part preflight                 # counts/spans/ETA, no GPU
+python experiments/e35_op_sweep.py --part gen,analyze --coverage quick \
+    --num_prompts 2 --seeds 2 --steps 8 --out_tag smoke             # smoke
+bash experiments/cluster_e35_job.sh                                 # full on runai
+python experiments/e35_vs_baseline.py                              # vs-baseline view (tier 1)
+python experiments/e35_vs_baseline.py --with_images               # + LPIPS/SSIM/PSD/ImageReward
+bash experiments/cluster_e35_vsbase_job.sh                         # vs-baseline view on runai
+</code></pre>
+<p>Code: <code>experiments/e35_op_sweep.py</code> + <code>experiments/e35_vs_baseline.py</code> (vs-baseline view),
+reuses <code>text_spectral_ops.py</code>, <code>e9_clipt.py</code>, <code>fidelity_metrics.py</code>, <code>clip_sim.py</code>,
+<code>e9_bandnorm_classes.py</code>, <code>common.py</code>, <code>e27_site.py</code>.
+Cluster: <code>experiments/cluster_e35_job.sh</code> (full sweep) and <code>experiments/cluster_e35_vsbase_job.sh</code>
+(vs-baseline views, no re-gen) — ship via <code>kubectl cp</code>; <code>/storage</code> is not git.</p></article><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_35.md'>source .md</a> · <a href='../../experiments/e35_op_sweep.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

@@ -1,0 +1,57 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E16 — SBN fidelity vs training-free guidance baselines (Flux)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_16.md'>source .md</a> · <a href='../../experiments/e16_baselines.py'>driver</a></p><article class=report><h1>E16: fidelity at high CFG — SBN vs training-free guidance baselines</h1>
+<p><strong>Question.</strong> <code>cfg=1.0</code> Flux already adheres to <em>simple</em> prompts and looks
+realistic, but practice uses high CFG (~3.5) for <em>detailed</em> prompts, where guidance
+buys composition at the cost of realism (E10: CFG inflates spectral power above the
+real-image level). Does SBN + a cheap saturation postprocess (E11) give
+<strong>higher-fidelity</strong> images than recent training-free guidance methods in that
+regime, <strong>without</strong> losing prompt adherence?</p>
+<p><strong>Design.</strong> Fidelity is the contest; adherence is a guardrail. 8 detailed prompts,
+paired seeds, all on Flux-dev with a shared seeded initial latent per seed.
+Conditions: <code>cfg1.0</code> (realism anchor), <code>cfg3.5</code> (degraded baseline SBN fixes),
+<code>bandnorm</code> (SBN), <code>bandnorm_pp</code> (SBN + saturation ×1.4 — <strong>our full method</strong>),
+<code>cfgzero</code> (CFG-Zero*), <code>negprompt</code> (true-CFG + fidelity negative prompt, NAG proxy),
+<code>seg</code> (Smoothed Energy Guidance, if available). Methods + metrics are documented in
+<code>FIDELITY_BASELINES.md</code>.</p>
+<p><strong>Metrics.</strong> Fidelity (primary): LAION <strong>aesthetic</strong>, <strong>ImageReward</strong>,
+<strong>spectral-distance-to-real</strong> (vs E10 <code>real_latents.pt</code>). Adherence (guardrail):
+<strong>CLIP-T</strong>, <strong>VQAScore</strong>. Plus E9 <code>image_metrics</code>.</p>
+<p><strong>Files.</strong> Driver <code>e16_prompt_adherence.py</code> (parts <code>gen,score,analyze</code>); baselines
+<code>e16_baselines.py</code> (CFG-Zero* via a transformer-forward recorder + <code>scheduler.step</code>
+override; SEG via a blurred-query attention processor, self-tested by
+<code>seg_available()</code>); metrics <code>fidelity_metrics.py</code> + <code>vqascore.py</code>. Outputs under
+<code>results/e16/</code>: per-prompt <code>images/</code>+<code>latents/</code>, <code>scores.json</code>, <code>summary.md</code>,
+<code>grid_&lt;prompt&gt;.png</code>, <code>report.json</code>.</p>
+<p><strong>Run.</strong></p>
+<pre><code class="language-bash">pip install image-reward t2v-metrics              # ImageReward + VQAScore (optional)
+python e10_cfg_spectral.py --part download,real   # real-image ref for spectral-dist
+# smoke (always do this first — 6 steps, 2 seeds):
+python e16_prompt_adherence.py --part gen   --num_prompts 1 --seeds 2 --ref_seeds 1 --steps 6
+python e16_prompt_adherence.py --part score --num_prompts 1 --seeds 2 --no_vqa
+python e16_prompt_adherence.py --part analyze --num_prompts 1 --seeds 2 --grid_n 2
+# full sweep:
+python e16_prompt_adherence.py --part gen,score,analyze --num_prompts 8 --seeds 25 --steps 28
+</code></pre>
+<p>Caching keys on the condition tag, <strong>not</strong> the step count — clear <code>results/e16/</code>
+before changing <code>--steps</code>, or stale low-step images will be reused.</p>
+<h2>Status / smoke findings (N=2, 6 steps — validation only, not results)</h2>
+<p>Pipeline validated end-to-end: all 7 conditions generate; aesthetic / ImageReward /
+spectral-dist / CLIP-T all compute; VQAScore + SEG degrade gracefully when absent.
+Two things to watch when reading the real sweep:</p>
+<ul>
+<li><strong>bandnorm_pp led on the perceptual fidelity metrics</strong> (aesthetic, ImageReward)
+  and did <strong>not</strong> drop CLIP-T vs <code>cfg=3.5</code> — the hoped-for pattern. Confirm at the
+  full N.</li>
+<li>
+<p><strong>spectral-distance-to-real does <em>not</em> favor SBN, by construction.</strong> E10 found
+  real images sit near <code>cfg≈3.5</code> spectral power, <em>above</em> the unguided <code>cfg=1.0</code>
+  field; SBN clamps power <em>down</em> toward the <code>cfg=1.0</code> reference, so it moves
+  <strong>away</strong> from real on this axis while CFG-Zero*/SEG/negprompt stay closer. So
+  spectral-dist is an honest <em>diagnostic</em> of what SBN does to the spectrum, but it
+  is <strong>not</strong> evidence for "SBN looks more real" — that case rests on
+  aesthetic/ImageReward (and a human/qualitative read). Frame accordingly.</p>
+</li>
+<li>
+<p>SEG at <code>seg_scale=3</code> looked over-perturbed in the 6-step smoke (low aesthetic);
+  tune <code>--seg_scale</code> / <code>--seg_sigma</code> (or <code>--no_seg</code>) on the full run.</p>
+</li>
+</ul></article><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_16.md'>source .md</a> · <a href='../../experiments/e16_baselines.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

@@ -1,0 +1,129 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E30 — Continuous text-frequency control &amp; extraction</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_30.md'>source .md</a> · <a href='../../experiments/e30_text_freq_control.py'>driver</a></p><article class=report><h1>E30 — Continuous text-frequency control &amp; extraction</h1>
+<p><strong>Follow-up to E24</strong> (numbered E30 — E28/E29 are unrelated seed experiments). E24 found
+token-axis frequency bands of Flux's T5 <strong>sequence</strong> embedding are meaningful and
+on-manifold, that <em>merging</em> two prompts snaps to the low-band/phase owner (and doesn't beat
+a <code>lerp</code> baseline), and that high-band injection is a <em>style-strength knob</em>. E30 (a)
+characterizes the bands more finely, (b) turns the manipulation into a <strong>continuous knob</strong>
+with image-strip visualizations, and (c) asks what frequency filtering does to <strong>long</strong> and
+<strong>compositional</strong> prompts.</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart LR
+  P[&quot;Prompt → T5&quot;] --&gt; E[&quot;token embeds E (L × 4096)&quot;]
+  E --&gt; F[&quot;FFT over tokens (per channel)&quot;]
+  F --&gt; S[&quot;spectrum: low | high&quot;]
+  S --&gt; K[&quot;one knob: low-pass cutoff · high-band gain · A↔B swap-cut&quot;]
+  K --&gt; I[&quot;inverse FFT → conditioning&quot;]
+  I --&gt; FL[&quot;Flux&quot;] --&gt; IMG[&quot;image (morphs as the knob turns)&quot;]
+</code></pre>
+<h2>Background (plain language)</h2>
+<p><em>The HTML report (<code>results/e30/index.html</code>) carries the same glossary inline and leads each
+result with its figure. Defining every term here keeps this writeup self-contained.</em></p>
+<ul>
+<li><strong>Token-axis FFT</strong> — a prompt becomes a T5 embedding <code>(1, L, 4096)</code> (<code>L</code> word-pieces, each a
+  4096-dim vector). We take a <strong>1-D real FFT along the token axis</strong> (length <code>L</code>), <strong>separately
+  per channel</strong> — <em>not</em> a 2-D image FFT and <em>not</em> the single pooled vector. It measures how each
+  embedding dimension varies <em>from word to word</em>.</li>
+<li><strong>Token-frequency / DC / bands</strong> — frequencies are normalized to <code>[0, 1]</code>. <strong>DC</strong> (freq 0) =
+  the per-channel average over tokens (bag-of-words gist); <strong>low</strong> = slow drift across the
+  sequence; <strong>high</strong> = fast token-to-token change. Default split is the cut <code>0.25</code>; the per-band
+  probe slices <code>[0,1]</code> into 6 equal bands <code>b0..b5</code>.</li>
+<li><strong>Single-prompt variants</strong> — <code>full</code> = unmodified (baseline); <code>low</code> = low-pass (keep DC..0.25);
+  <code>high</code> = high-pass (keep 0.25..1 + DC); <code>notch_lo</code> = <strong>remove only the low band [0,0.25], keep
+  everything above</strong> (is the low band <em>necessary</em>?); <code>phase_only</code> = keep phase, set all magnitudes
+  to 1; <code>mag_only</code> = keep magnitude, zero all phases; <code>notch_b0..b5</code> = knock out one of the 6 bands.</li>
+<li><strong>Two-prompt merge variants</strong> — <code>band_swap</code> = low(A)+high(B), hard cut; <code>band_blend</code> = soft
+  cosine crossover; <code>lerp</code> = plain 50/50 embedding average (baseline); <code>concat</code> = the
+  <strong>gold-standard baseline</strong>, encode the literal text <code>"A and B"</code>.</li>
+<li><strong>Metrics</strong> — <strong>CLIP-T</strong> (0–1 ↑): image↔prompt similarity in CLIP space. <strong>B-VQA</strong> (0–1 ↑):
+  VQA check that each named object appears <em>with its correct attribute</em> (attribute binding).
+  <strong>sharpness / hf_frac / colorful</strong>: image statistics used as sanity signals.</li>
+</ul>
+<h2>Method (<code>experiments/e30_text_freq_control.py</code>, Flux)</h2>
+<p>New ops in <code>text_spectral_ops.py</code>: <code>band_gain_1d(E, lo, hi, gain)</code> (continuous band
+attenuate/amplify) and <code>band_notch_1d(E, lo, hi)</code> (per-band knockout). Generation reuses
+E24's <code>load_flux_preencoded_lens</code> + e10's <code>gen_emb</code> (true-CFG=1, guidance 3.5); strips via
+<code>common.save_grid</code>; metrics via <code>e9_clipt</code> (CLIP-T), <code>e9_bandnorm_classes.image_metrics</code>
+(sharpness / hf_frac / colorfulness), <code>fidelity_metrics</code> (aesthetic), <code>compbench</code>
+(B-VQA = per-object attribute binding), <code>vqascore</code> (VQAScore = compositional entailment).</p>
+<p>Parts (<code>--part</code>):
+- <strong>probe_deep</strong> — one prompt: per-band <strong>knockout</strong>, <strong>phase-only vs magnitude-only</strong>
+  reconstruction, low/high families. <em>What does each band control?</em> (CLIP + image stats).
+- <strong>continuous</strong> — the headline visual: image <strong>strips</strong> as one knob varies —
+  low-pass cutoff sweep, high-band gain sweep, and a two-prompt <strong>A↔B morph</strong>
+  (<code>band_swap</code> cut swept), with a fine sweep around E24's one near-balanced regime.
+- <strong>concat</strong> — <em>blend vs one big prompt</em>: compare <code>band_swap</code> / <code>band_blend</code> / <code>lerp</code>
+  merges to a single concatenated prompt "A and B" (CLIP_A / CLIP_B + B-VQA: are <strong>both</strong>
+  objects present?).
+- <strong>longprompt</strong> — DPG-Bench (<code>load_dpg_prompts</code>, ~80-word prompts): low-pass / high-pass /
+  band-knockout; <strong>does dropping high freq drop the tail objects while low keeps the
+  gist?</strong> (VQAScore + B-VQA retention).
+- <strong>compositional</strong> — T2I-CompBench (color/shape/texture): band filtering vs <strong>per-object
+  attribute binding</strong> (B-VQA).
+- <strong>analyze</strong> — <code>report.json</code>, strips/grids, self-contained <code>index.html</code> (inline-SVG
+  schematic).</p>
+<h2>What we expect to learn</h2>
+<ul>
+<li>A <em>continuous</em> controllability story (the strips): how cutoff/gain/swap-cut smoothly move
+  the image, and where transitions are gradual vs abrupt.</li>
+<li>Whether the token spectrum carries <strong>structured semantics</strong> (e.g. high band = specific
+  objects/attributes, low band = global gist) — via which objects survive band filtering on
+  long/compositional prompts.</li>
+<li>Whether spectral blending offers anything over simply writing "A and B".</li>
+</ul>
+<h2>Results (runai <code>e30-text-freq</code>, Flux, 28 steps, true-CFG=1 / guidance 3.5)</h2>
+<p>Full sweep ran clean (<code>probe_deep,continuous,concat,longprompt,compositional,analyze</code>),
+<code>--no_vqa</code> (VQAScore deferred to an isolated env — CLIP-T + B-VQA already settle the story).
+Headline strips/sweeps/morph grids generated (<code>results/e30/index.html</code>, self-contained).
+Metrics below are CLIP-T (prompt adherence) and B-VQA (per-object attribute binding); n=1
+per cell (single seed), so read <strong>directions</strong>, not third-decimal differences.</p>
+<p><strong>1. Phase carries the conditioning; magnitude is nearly discardable</strong> (<code>probe_deep</code>).
+Decomposing the per-channel token-axis spectrum into phase vs magnitude:
+<code>phase_only</code> (unit magnitude, keep phase) ≈ <code>full</code> CLIP — cat .316 vs .313, car .296 vs
+.286, castle .316 vs .300 — while <code>mag_only</code> (keep magnitude, zero phase) <strong>collapses</strong> for
+object prompts (cat .019, car .049) and only partly survives for the style-heavy castle
+(.276). The token-axis phase spectrum holds almost all the content; magnitude is close to
+noise. (Mirrors the classic image-FFT "phase carries structure" result, now in the <em>text
+embedding</em> domain — and sharpens E24's "phase≈identity" observation.)</p>
+<p><strong>2. No single band is load-bearing</strong> (<code>probe_deep</code>). Knocking out any one of 6 bands
+(<code>notch_b0..b5</code>) moves CLIP by ≤~0.02 — content is redundantly distributed across bands, so
+narrow-band surgery is a weak lever.</p>
+<p><strong>3. Writing "A and B" still beats spectral blending</strong> (<code>concat</code>). Literal concat B-VQA
+(both objects present): cat_car <strong>0.852</strong>, castle_forest 0.350. Every spectral merge
+(<code>band_blend</code>/<code>band_swap</code>/<code>lerp</code>) drops object B (clip_B ~0.10–0.16, B-VQA ~0.001–0.006),
+snapping to the low-band / prompt-A owner. Lone exception: <code>band_blend</code> matched concat on
+castle_forest (0.377 vs 0.350). Confirms E24's "merge snaps to the low-band owner, doesn't
+beat the baseline" at scale.</p>
+<p><strong>4. Attribute–object binding lives in the MID/HIGH bands, not the low band</strong>
+(<code>compositional</code>, CompBench color/shape/texture, B-VQA = binding). Low-pass (<code>low</code>)
+<strong>destroys</strong> binding almost everywhere (color_000 .945→2e-5, color_003 .921→1e-4,
+texture_000 .998→.002), but <code>notch_lo</code> (remove <em>only</em> the low band, keep mid+high) <strong>retains</strong>
+it in many cases (shape_000 .87, shape_003 .92, texture_000 .99, texture_001 .91,
+texture_002 .92). High-pass is mixed (great on some textures/colors, collapses on others).
+So the token spectrum <em>is</em> structured: <strong>low band = coarse gist / global object presence;
+mid+high bands = which-adjective-binds-to-which-noun</strong>. (<code>longprompt</code>: B-VQA too sparse on
+~80-word DPG/Parti prompts to read object retention; CLIP corroborates that <code>notch_lo</code> hurts
+most — low band carries the gist.)</p>
+<p><strong>Bottom line.</strong> Continuous control works visually and the token spectrum is genuinely
+structured (low=gist, mid/high=binding, phase=content), but spectral <em>blending</em> still offers
+nothing over just writing the prompt. The structure is descriptive, not a better control knob.</p>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># self-gating cluster job (smoke probe_deep -&gt; CLIP gate -&gt; full sweep)
+runai submit --name e30-text-freq -g 1 -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
+  --pvc=storage:/storage --large-shm --command -- \
+  bash /storage/malnick/colorful-noise/experiments/cluster_e30_job.sh
+
+# local / single GPU
+python experiments/e30_text_freq_control.py --part continuous --num_prompts 1 --steps 8  # smoke
+python experiments/e30_text_freq_control.py   # full -&gt; results/e30/{...,index.html}
+
+# rebuild the HTML explainer offline (no GPU) from report.json + cached strips
+python experiments/e30_text_freq_control.py --part site
+</code></pre>
+<blockquote>
+<p>Cluster note: ship code with <code>kubectl cp</code> (the <code>/storage</code> checkout is not git; the image
+has no git). Heavy scorers (VQAScore ~11 GB, B-VQA) load in <code>analyze</code> after Flux is freed.</p>
+</blockquote>
+<h2>Status</h2>
+<p>Complete. Full sweep ran on runai (<code>e30-text-freq</code>, Succeeded). Results above;
+artifacts in <code>experiments/results/e30/</code> (<code>report.json</code> + self-contained <code>index.html</code>).
+Optional follow-up: VQAScore over the saved PNGs from an isolated env to corroborate B-VQA.</p></article><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_30.md'>source .md</a> · <a href='../../experiments/e30_text_freq_control.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

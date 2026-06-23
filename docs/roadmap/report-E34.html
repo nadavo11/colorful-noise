@@ -1,0 +1,178 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E34 — Channel-axis (D=4096) interpretability of the text embedding (proposed)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_32.md'>source .md</a></p><article class=report><h1>E32 — Per-object token-frequency control on two-object prompts</h1>
+<p><strong>The direction.</strong> E24 found that token-axis FFT bands of Flux's T5 sequence embedding
+are meaningful, and E30 turned that into a <em>continuous but global</em> knob (scale a frequency
+band of the whole prompt). E32 asks the obvious next question for <strong>editing</strong>: in a prompt
+with two objects, can we boost/cut the high or low token-frequencies of <strong>one object</strong>, and
+is the effect <strong>selective</strong> to that object — or does it just behave like E30's global gain?
+A "yes" would be a genuinely new, object-local text-space editing handle.</p>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Text conditioning.</strong> Flux encodes a prompt to a T5 <strong>sequence embedding</strong>
+  <code>E (1, L, 4096)</code> (L = real tokens) plus a pooled vector. We modify <code>E</code> before generation
+  and feed it straight to the transformer (the E10 <code>gen_emb</code> hook, true-CFG = 1).</li>
+<li><strong>Token-axis FFT.</strong> Following E24/FNet, we FFT <code>E</code> along the <strong>token axis</strong> (a 1-D DFT per
+  embedding channel). <strong>Low</strong> token-frequencies = slow variation across the prompt
+  (DC = the bag-of-words mean direction); <strong>high</strong> = sharp token-to-token detail.</li>
+<li><strong>Why "per-object" forces a windowed FFT.</strong> Frequency and token-position are <strong>conjugate</strong>:
+  a single FFT over the whole sequence cannot be told to "only touch object A's positions."
+  The one coherent per-object operation is a <strong>windowed FFT over the object's contiguous
+  token span</strong> <code>E[:, a:b]</code> — scale a band there, inverse-FFT, stitch the rest back unchanged
+  (<code>text_spectral_ops.apply_on_subspan</code> + <code>band_gain_1d</code>). This is the per-object
+  generalization of E24/E30, which only ever windowed the prefix <code>[:, :L]</code>.</li>
+<li><strong>The cost of windowing — and why the cut is 0.51, not 0.25.</strong> An object phrase is only
+  ~5–9 tokens, so its windowed rfft has just <code>w//2+1</code> bins (3–5 here) and its lowest non-DC
+  normalized frequency is already ≈0.33. E24/E30's <code>cut = 0.25</code> (tuned for the full
+  512-length sequence) would leave the <strong>low band empty → a silent no-op</strong>. E32 uses the
+  <strong>median split <code>cut = 0.51</code></strong>, which keeps both bands non-empty even for a 3-bin
+  (5-token) window (the mid-bin at 0.5 → low, Nyquist 1.0 → high) and never scales DC, so an
+  object's global level is preserved. This coarseness is intrinsic to per-object frequency
+  control and is reported explicitly (bins-per-object).</li>
+</ul>
+<h2>Method</h2>
+<ul>
+<li><strong>Model.</strong> FLUX.1-dev (bnb 4-bit transformer, bf16), 28 steps, guidance 3.5,
+  true-CFG = 1 — identical stack to E24/E30, reusing <code>load_flux_preencoded_lens</code>-style
+  loading and <code>gen_emb</code>.</li>
+<li><strong>Prompts.</strong> 10 two-object prompts of the form "<em>[object A]</em> and <em>[object B]</em>", each
+  object a <strong>multi-token phrase</strong> (so its window has &gt;1 bin) that appears verbatim in the
+  prompt and doubles as the object's CLIP / B-VQA target (e.g. "a fluffy orange tabby cat"</li>
+<li>"a sleeping golden retriever dog").</li>
+<li><strong>Word → token span.</strong> No such utility existed in the repo. We map each object phrase to
+  its T5 token span via the fast tokenizer's <strong>char offset mapping</strong> (every token whose
+  char span overlaps the phrase's), with a <strong>token-id-subsequence</strong> fallback. Spans are
+  computed while the tokenizer is alive (before the encoders are dropped to free GPU) and
+  persisted to <code>results/e32/spans.json</code>. Validated on all 10 prompts: spans are valid,
+  <strong>non-overlapping</strong> (the "and" token sits in the gap), 3–5 bins each.</li>
+<li><strong>Conditions per prompt</strong> (<code>CUT0 = 0.51</code>, gains <code>{0.5 cut, 2.0 boost}</code>):</li>
+<li><code>baseline</code> (unmodified) — 1</li>
+<li><strong>targeted</strong>: <code>obj{A,B}</code> × band <code>{low, high}</code> × gain → 8</li>
+<li><strong>global control</strong>: whole-prompt band gain (E30-style), band <code>{low, high}</code> × gain → 4</li>
+<li><strong>13 conditions × 10 prompts × 3 seeds.</strong></li>
+<li><strong>Metrics</strong> (the claim is selectivity, so everything is per-object and paired to the
+  same-seed baseline):</li>
+<li><strong>Per-object CLIP</strong> — <code>clip_scores(objA_phrase)</code> vs <code>clip_scores(objB_phrase)</code>
+    (<code>e9_clipt.py</code>). For a targeted edit: <code>Δ_target</code>, <code>Δ_other</code>, and
+    <strong>selectivity = Δ_target − Δ_other</strong>. For the global control: <code>Δ(objA)</code>, <code>Δ(objB)</code>,
+    and <code>Δ(objA) − Δ(objB)</code> (expected ≈ 0 by symmetry).</li>
+<li><strong>B-VQA presence</strong> per object phrase (<code>compbench.bvqa_scores</code>) — corroborates presence.</li>
+<li>Secondary context: whole-image <code>sharpness / hf_frac / colorfulness</code>
+    (<code>e9_bandnorm_classes.image_metrics</code>).</li>
+<li><strong>Hypothesis:</strong> targeted selectivity &gt; 0 and &gt; the global control's ≈0; i.e.,
+    localizing the <em>same fractional-band edit</em> to one object's tokens concentrates the
+    effect on that object.</li>
+</ul>
+<h2>Findings</h2>
+<p>Ran on runai (FLUX.1-dev, A5000; 10 prompts × 13 conditions × 3 seeds = 390 generations;
+per-cell n = 60 targeted / 30 global). Deltas are paired to the same-seed baseline;
+<strong>selectivity = Δ_target − Δ_other</strong> (targeted) or Δ(objA) − Δ(objB) (global control).</p>
+<ol>
+<li><strong>Per-object editing IS object-selective and directionally steerable (CLIP).</strong> Boosting
+   one object's token-frequency band raises <em>that</em> object's CLIP and <em>lowers</em> the other's;
+   cutting reverses it — for <strong>both</strong> bands, with the sign tracking the gain:</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>edit on target</th>
+<th>Δtarget</th>
+<th>Δother</th>
+<th><strong>selectivity</strong></th>
+<th>t</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cut low (g0.5)</td>
+<td>−0.0041</td>
+<td>+0.0037</td>
+<td><strong>−0.0077</strong></td>
+<td>−3.1</td>
+</tr>
+<tr>
+<td>boost low (g2.0)</td>
+<td>+0.0033</td>
+<td>−0.0029</td>
+<td><strong>+0.0062</strong></td>
+<td>+2.1</td>
+</tr>
+<tr>
+<td>cut high (g0.5)</td>
+<td>−0.0027</td>
+<td>+0.0019</td>
+<td><strong>−0.0047</strong></td>
+<td>−2.3</td>
+</tr>
+<tr>
+<td>boost high (g2.0)</td>
+<td>+0.0028</td>
+<td>−0.0017</td>
+<td><strong>+0.0045</strong></td>
+<td>+1.6</td>
+</tr>
+</tbody>
+</table>
+<p>All four cells move in the predicted direction; three reach |t| ≳ 2. This is the clean
+   push-pull signature of a genuine per-object effect.</p>
+<ol start="2">
+<li>
+<p><strong>The global-gain control is a null (CLIP).</strong> Whole-prompt gain gives selectivity
+   ≈ −0.003…+0.003 with no consistent sign — so the <strong>localization</strong>, not the gain, produces
+   the selectivity. Targeted beats the control on a controllable, sign-correct lever.</p>
+</li>
+<li>
+<p><strong>Object presence (B-VQA): high band is where it concentrates, but it's noisy.</strong> The
+   high-band edit shifts presence in the intended direction (boost target high →
+   Δtarget +0.040 / Δother −0.017; cut high → −0.047 / +0.029), echoing E30's "high/mid bands
+   = attribute–object binding". But per-image B-VQA variance is large (sd ≈ 0.2–0.3), so at
+   n = 60 these are <strong>not</strong> statistically significant (|t| ≤ 1.8); the low band is a null.
+   Suggestive, not conclusive.</p>
+</li>
+<li>
+<p><strong>Effect size is small.</strong> CLIP shifts are ~0.005 on a ~0.22 baseline (sub-1%). Real and
+   directional, but a weak handle — consistent with the intrinsic bin-coarseness (3–5
+   bins/object).</p>
+</li>
+</ol>
+<p><strong>Verdict.</strong> Unlike E24-MERGE (negative) and E31 (Δ≈0), per-object token-frequency editing
+<em>is</em> object-selective and steerable in the intended direction (significant in CLIP, the
+control is a null) — the text-freq thread's first <strong>controllable</strong> per-object lever. But the
+magnitude is small and the presence (binding) effect, while concentrated in the high band,
+is within noise at this N. A real but weak handle.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>Bin coarseness.</strong> 3–5 bins per object means "low vs high" is a coarse 2–3-way split; the
+  <code>cut = 0.51</code> median split is the most balanced available but cannot be fine-grained. This
+  is intrinsic to per-object windowing, not a tuning choice — reported per object.</li>
+<li><strong>Pooled vector untouched.</strong> Only the sequence embedding <code>E</code> is edited; the pooled vector
+  stays at baseline (matches E24/E30).</li>
+<li><strong>Short prompts.</strong> L ≈ 13–16 tokens, so the "global" control already covers few bins;
+  it remains a fair locality control (same fractional band, all tokens vs one object).</li>
+<li><strong>Next (recorded follow-ups, not yet run):</strong>
+  1. <strong>Textual inversion → frequency control.</strong> Learn an embedding for a pseudo-token
+     <code>&lt;obj&gt;</code> from a few images of one object, place it in a two-object prompt, then boost/cut
+     <em>its</em> span. No TI scaffolding exists in the repo today; diffusers <code>load_textual_inversion</code>
+     or a custom loop adapted from the E25/E26 seed-optimization loops would be needed, and
+     <strong>SDXL/SD1.5 are safer than Flux</strong> for TI tooling.
+  2. <strong>Channel-axis interpretability (the hidden D = 4096 axis).</strong> Complementary to E32:
+     find which <em>channels</em> of the embedding own which attributes (identity / color / texture
+     / style) — via attribute probing (per-channel variance/correlation with an attribute
+     label) and causal ablation (zero/scale channels, score with CLIP / B-VQA) — then steer
+     those channels directly. E24 noted the hidden axis is <strong>not</strong> semantically ordered, so
+     this likely needs learned channel <em>directions</em>, not raw indices. Composes with E32's
+     token-span masking for per-object × per-channel edits.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># spans + bins-per-object, no GPU (fails fast if a phrase won't map):
+python experiments/e32_object_freq.py --part preflight
+
+# smoke (1 prompt, 1 seed, 8 steps):
+python experiments/e32_object_freq.py --part gen,analyze \
+    --num_prompts 1 --seeds 1 --steps 8 --no_vqa --out_tag smoke
+
+# full sweep (cluster; self-gating preflight -&gt; smoke -&gt; CLIP gate -&gt; full):
+bash experiments/cluster_e32_job.sh
+</code></pre>
+<p>Code: <code>experiments/e32_object_freq.py</code> (driver), <code>experiments/text_spectral_ops.py</code>
+(<code>apply_on_subspan</code>, <code>band_gain_1d</code>), reuses <code>e10_cfg_spectral.gen_emb</code>,
+<code>e9_clipt</code>, <code>e9_bandnorm_classes.image_metrics</code>, <code>compbench</code> (B-VQA), <code>common.save_grid</code>.
+Cluster: <code>experiments/cluster_e32_job.sh</code> (ship via <code>kubectl cp</code>; <code>/storage</code> is not git).</p></article><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_32.md'>source .md</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

@@ -1,0 +1,89 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E46 — Seed-phase fast editing -- 0-NFE phase prior vs SDEdit</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_46.md'>source .md</a> · <a href='../../experiments/e46_seedphase.py'>driver</a></p><article class=report><h1>E46 — Seed-phase fast editing: can a 0-NFE phase prior beat SDEdit? (SDXL)</h1>
+<p><strong>Thread:</strong> seed · <strong>Model:</strong> SDXL · <strong>Status:</strong> dead-end (editing) / mechanism KEPT
+<strong>Worktree:</strong> <code>e46-seedphase</code> (scripts under <code>experiments/e46_*.py</code>)</p>
+<hr />
+<h2>Motivation</h2>
+<p>Inversion-based editors pay many NFE walking back to the seed; training-free editors
+(FlowEdit/FlowAlign) skip inversion but cost &gt;2 NFE/step. SDEdit is cheap but unreliable.
+Idea: build a <strong>structural prior for ~0 NFE</strong> by transplanting the source image's <strong>FFT phase</strong>
+(where the colored-noise line has repeatedly found structure lives) into a fresh seed, then run a
+single fast generation toward the target prompt. If phase carries structure and a fresh
+magnitude carries editability, SDEdit could be made reliable for free.</p>
+<h2>Derivation (the theory, settled before/through the probes)</h2>
+<ol>
+<li>
+<p><strong>Averaging noised copies recovers <code>phase(x₀)</code> exactly.</strong> With <code>x_t = a_t·x₀ + b_t·ε</code>, the FFT
+   is linear: <code>X_t = a_t·X₀ + b_t·E</code>. Over draws of ε, <code>E[X_t] = a_t·X₀</code>, whose phase <strong>is</strong>
+   <code>phase(x₀)</code> (phase is scale-invariant). So "noise n times and average" is a <em>noisier</em> estimator
+   of a quantity available for free — the loop is <strong>dominated</strong>. (Circular-mean-of-angles is the
+   one exception: a biased estimator that band-limits phase by SNR — i.e. the low-band cut below.)</p>
+</li>
+<li>
+<p><strong>The 100% (full-noise) pass is information-theoretically empty.</strong> <code>q(x_T)=N(0,I)</code> is independent
+   of <code>x₀</code>; forward-noising cannot extract an "image-fitting" seed (that <em>is</em> inversion). Any usable
+   trace lives at partial <code>t</code> (the low-band phase that survives at strength ~0.8).</p>
+</li>
+<li>
+<p><strong>Whitening the phase == destroying the structure.</strong> Structure is the <strong>cross-frequency phase
+   coherence</strong> (edges = many frequencies whose phases align spatially). A statistically-white phase
+   field is i.i.d.-uniform = no coherence = no structure. So there is <em>no</em> transform that whitens
+   the phase while keeping structure; they are the same axis (proved empirically by Cnorm below).</p>
+</li>
+<li>
+<p><strong>The OOD-ness is purely the phase, not the spectrum.</strong> A phase-transplant seed already has white
+   <em>magnitude</em>; literal whitening (flattening the PSD) is a no-op here. The off-manifold part is a
+   higher-order (phase) statistic that 2nd-order whitening can't reach — confirmed by Approach 3.</p>
+</li>
+</ol>
+<h2>Method &amp; probes</h2>
+<p>All on SDXL (the colored-noise home model). Source latent <code>x₀ = VAE.encode(src)</code>; fresh white seed
+<code>z</code>. Structure scored by <strong>DINO self-similarity distance</strong> (↓ = layout preserved), editability by
+<strong>CLIP-directional similarity</strong> (↑). PIE-Bench was unavailable locally (no <code>datasets</code>/empty cache),
+so the editing probes use <strong>SDXL-generated sources</strong> spanning PIE edit families; official PIE-Bench
+is deferred to the cluster.</p>
+<ul>
+<li><strong>P0 — mechanism (reconstruction).</strong> <code>phaseB = phase_swap_2d(x₀, z, cut=0.2, mag_from="B")</code> (source
+  low-band phase, white magnitude), full gen with the <strong>source</strong> prompt vs a plain white seed.
+  → <strong>phaseB beats white on 12/12 seed pairs</strong>; grid shows exact pose/arrangement transfer.
+  <strong>Seed low-band phase controls output layout. KEEP.</strong></li>
+<li><strong>P1 — editing frontier.</strong> Recipes vs vanilla SDEdit@0.8 on 8 sources × 2 seeds: <code>A</code> = SDEdit with
+  phase-structured noise; <code>B</code> = structured-seed full gen. → A over-locks (editability collapses,
+  edits fail); B is Pareto-dominated. <strong>0/8 Pareto wins. KILL.</strong></li>
+<li><strong>P2 — full-band phase &amp; phase-normalize (chair).</strong> <code>Cfull</code> (all-frequency image phase) preserves
+  structure <em>worse</em> than low-band (white amp + high-freq image phase = OOD fringing). <code>Cnorm</code>
+  (<code>φ_src − φ_z</code>) <code>= e^{iφ_src}·conj(Z) ~</code> white Gaussian → <strong>a random seed</strong> (structure gone),
+  empirically confirming derivation #3.</li>
+<li><strong>P3 — three OOD escapes + synthesis (chair).</strong></li>
+<li><strong>(1) γ phase-whiten</strong> (slerp seed phase white↔image): a clean smooth structure↔edit knob;
+    <strong>fringing grows with γ</strong>; best struct (γ=0.5: 0.124) still &gt; vanilla (0.093).</li>
+<li><strong>(2) timestep injection</strong> (white seed, project low-band phase during the structure-forming
+    window): <strong>clean / on-manifold, no fringing, structure 0.082 BEATS vanilla</strong> — but the hard
+    clamp drives editability negative.</li>
+<li><strong>(3) colored amplitude</strong> (image phase + 1/f amp): <strong>rainbow artifacts</strong> — confirms the seed
+    amplitude must stay white (derivation #4).</li>
+<li><strong>Synthesis — soft timestep injection</strong> (γ-blended low-band phase during 0–50%): γ=0.3 gives the
+    cleanest, best-structure point (0.081) but editability caps ~0, never reaching vanilla's +0.090.</li>
+</ul>
+<h2>Key result</h2>
+<p>Every variant — seed-bake, γ, full-band, timestep, soft-timestep, colored-amplitude — traces a
+<strong>structure↔editability frontier that sits at-or-inside vanilla SDEdit's</strong>. SDEdit's <code>x₀</code>-carry is a
+strictly better and cheaper structural anchor than any phase transplant: where you keep <code>x₀</code>, the
+phase prior is redundant; where you drop it, you give up more than you gain.</p>
+<h2>Verdict</h2>
+<p><strong>KILL the seed-phase EDITING direction — the 4th independent confirmation of the E41 frontier-trap</strong>
+(a spectral/structural knob slides along the SDEdit/RF-inversion frontier, never pushes it outward).
+The underlying <strong>mechanism is real and kept</strong> (P0: seed low-band phase controls layout; timestep
+injection yields clean structure beating vanilla) — but it only has value where there is <strong>no <code>x₀</code>
+to carry</strong>: layout-conditioned text-to-image, or cross-modal structure transfer.</p>
+<h2>Next / open</h2>
+<ul>
+<li>If revisited: matched-editability comparison (sweep vanilla strength to draw its full frontier) to
+  put a final nail in, and/or the <strong>no-<code>x₀</code> pivot</strong> (seed-phase as a cheap layout prior for plain
+  T2I, where SDEdit isn't a competitor).</li>
+<li>Confirm P1 numbers on official PIE-Bench (cluster, where <code>datasets</code> is installed).</li>
+</ul>
+<h2>Artifacts</h2>
+<p>Scripts (worktree <code>e46-seedphase</code>): <code>experiments/e46_seedphase.py</code> (P0),
+<code>experiments/e46_probe1.py</code> (P1), <code>experiments/e46_chair.py</code> (P2),
+<code>experiments/e46_gamma.py</code> · <code>e46_inject.py</code> · <code>e46_coloramp.py</code> · <code>e46_softinject.py</code> (P3).
+Probe log: <code>experiments/e46_log.md</code>. Grids/scores under <code>experiments/results/e46*</code>.</p></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_46.md'>source .md</a> · <a href='../../experiments/e46_seedphase.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

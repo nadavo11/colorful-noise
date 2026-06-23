@@ -1,0 +1,132 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E37 — Velocity spectral normalization (CFG velocity → cfg=1 amplitude, SD3.5)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_37.md'>source .md</a> · <a href='../../experiments/e37_geneval.py'>driver</a></p><article class=report><h1>E37 — Velocity spectral normalization on SD3.5, evaluated on GenEval</h1>
+<h2>TL;DR</h2>
+<p>During a Stable Diffusion 3.5 generation we edit the <strong>CFG velocity</strong> in frequency space:
+keep its phase but pull its FFT <strong>amplitude</strong> toward the <em>same-step unconditional velocity</em>
+<code>v_∅</code> (the "cfg=1" flow field). On GenEval (553 prompts, 1 sample/prompt, 512px, guidance
+w=4.5), the effect is <strong>entirely band-dependent</strong>: normalizing the <strong>bottom 25%</strong> of radial
+frequencies, or the <strong>full</strong> band, <em>hurts</em> prompt adherence (overall 0.561 / 0.524 vs baseline
+0.644); normalizing only the <strong>top 25%</strong> (high-freq) slightly <em>beats</em> baseline (<strong>0.655 vs
+0.644</strong>), with the gain concentrated in <strong>color attribution</strong> (0.48 → 0.54, 7 wins / 1 loss).
+Low frequencies carry layout/composition (don't touch them); high frequencies are where CFG
+over-amplifies magnitude without aiding composition, so normalizing them is free-to-beneficial.
+Single-seed, so the +0.011 overall is within seed noise — but the per-tag pattern is coherent.</p>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Flow-matching velocity <code>v</code></strong> — SD3.5 is sampled by Euler integration <code>z_{t+1}=z_t+Δt·v</code>,
+  where the transformer output <code>v</code> is a <em>velocity</em> (the direction the latent moves this step).</li>
+<li><strong>Classifier-free guidance (CFG)</strong> — combines two velocities: <code>v_w = v_∅ + w·(v_c − v_∅)</code>,
+  with <code>v_∅</code> unconditional, <code>v_c</code> conditional, <code>w</code> the guidance scale (here 4.5). High <code>w</code>
+  improves adherence but over-amplifies certain frequency <strong>magnitudes</strong> (the over-contrasty
+  CFG look). The <strong>phase</strong> of <code>v_w</code> carries layout/composition.</li>
+<li><strong>Velocity spectral normalization (this op)</strong> — inside the band <code>[lo,hi]</code> of the 2-D radial
+  FFT, replace <code>|V_w|</code> with <code>|V_∅|</code> (keep <code>v_w</code>'s phase). This pulls the magnitude toward the
+  natural cfg=1 envelope without disturbing the adherence-bearing phase. Scale-correct in one
+  pass because <code>v_∅</code> is the <em>same-step</em> field (see <code>docs/methods/VELOCITY_SPECTRAL_MATH.md</code>).</li>
+<li><strong>Conditions</strong> — <code>baseline</code> (plain CFG); <code>mag_{full,top25,bot25}</code> = magnitude transplant on
+  <code>[0,1]</code> / <code>[0.75,1]</code> / <code>[0,0.25]</code>. (A per-band-power <code>psd_match</code> variant exists but was dropped
+  for this pass; mag-only matches the demo.)</li>
+<li><strong>GenEval</strong> — 553 prompts over 6 tags: single_object, two_object, counting, colors, position,
+  color_attr. <strong>Score = 1</strong> if all required objects/counts/colours/relations are detected, else 0.
+  <em>Overall</em> = mean of the 6 per-tag accuracies (macro).</li>
+<li><strong>Scorer note</strong> — we use the GenEval <strong>protocol</strong> (the official <code>evaluate()</code> decision logic,
+  thresholds and colour templates, copied verbatim) but with a <strong>torchvision Mask R-CNN v2</strong>
+  detector + transformers CLIP colour classifier instead of MMDetection's Mask2Former (<code>mmcv</code> is
+  brittle on modern torch). Numbers <strong>rank conditions faithfully</strong> but are not bit-identical to
+  the Mask2Former leaderboard (our baseline 0.644 vs the published ~0.71).</li>
+</ul>
+<h2>Method</h2>
+<p><code>experiments/e37_geneval.py</code> (<code>--part preflight,gen,score,summary,site</code>) generates each
+condition over the 553 prompts and scores with <code>experiments/geneval_score.py</code>. Each generation
+uses <strong>seed = prompt-index, identical across conditions</strong>, so a condition differs from baseline
+only by the operator (paired). Interception = <code>e17_sd35.gen_sd3</code>'s <code>scheduler.step</code> override,
+which records the batched <code>[v_∅, v_c]</code> and edits <code>v_w</code> before the Euler step (no extra forward).
+Ran locally on one A5000 at ~3.5 s/img.</p>
+<h2>Results</h2>
+<p>GenEval accuracy (per-tag and macro <strong>Overall</strong>); SD3.5-medium, n=1, 512px, w=4.5:</p>
+<table>
+<thead>
+<tr>
+<th>condition</th>
+<th style="text-align: center;"><strong>Overall</strong></th>
+<th style="text-align: center;">single</th>
+<th style="text-align: center;">two_obj</th>
+<th style="text-align: center;">counting</th>
+<th style="text-align: center;">colors</th>
+<th style="text-align: center;">position</th>
+<th style="text-align: center;">color_attr</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>baseline (plain CFG)</td>
+<td style="text-align: center;"><strong>0.644</strong></td>
+<td style="text-align: center;">0.963</td>
+<td style="text-align: center;">0.879</td>
+<td style="text-align: center;">0.537</td>
+<td style="text-align: center;">0.766</td>
+<td style="text-align: center;">0.240</td>
+<td style="text-align: center;">0.480</td>
+</tr>
+<tr>
+<td><strong>mag_top25</strong> <code>[0.75,1]</code></td>
+<td style="text-align: center;"><strong>0.655</strong></td>
+<td style="text-align: center;">0.963</td>
+<td style="text-align: center;">0.879</td>
+<td style="text-align: center;">0.550</td>
+<td style="text-align: center;">0.777</td>
+<td style="text-align: center;">0.220</td>
+<td style="text-align: center;"><strong>0.540</strong></td>
+</tr>
+<tr>
+<td>mag_bot25 <code>[0,0.25]</code></td>
+<td style="text-align: center;">0.561</td>
+<td style="text-align: center;">0.912</td>
+<td style="text-align: center;">0.808</td>
+<td style="text-align: center;">0.425</td>
+<td style="text-align: center;">0.681</td>
+<td style="text-align: center;">0.190</td>
+<td style="text-align: center;">0.350</td>
+</tr>
+<tr>
+<td>mag_full <code>[0,1]</code></td>
+<td style="text-align: center;">0.524</td>
+<td style="text-align: center;">0.900</td>
+<td style="text-align: center;">0.727</td>
+<td style="text-align: center;">0.450</td>
+<td style="text-align: center;">0.638</td>
+<td style="text-align: center;">0.120</td>
+<td style="text-align: center;">0.310</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ranking: top-25% &gt; baseline &gt; bottom-25% &gt; full</strong> — band placement flips the sign.</p>
+<ul>
+<li><strong>High-freq normalization (top-25%) slightly beats baseline</strong> (+0.011 overall), driven by
+  <strong>color_attr +0.06</strong> (7 prompts fixed, 1 regressed; see <code>examples_color_attr.html</code>); single/
+  two-object unchanged, colors/counting nudged up. On <strong>counting</strong> it is close to a wash
+  (0.537 → 0.550, 3 wins / 2 losses; see <code>examples_counting.html</code>).</li>
+<li><strong>Low-freq normalization (bottom-25%) hurts</strong> (−0.083) and <strong>full-band hurts most</strong> (−0.120),
+  worst on the compositional tags (two_object, color_attr, position) — pulling the
+  adherence-bearing low band toward cfg=1 erodes composition.</li>
+</ul>
+<p>Interpretation: <strong>low-frequency velocity magnitude carries adherence/composition; high-frequency
+is CFG's correctable over-amplification.</strong> Touch only the high band.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>Single seed (n=1)</strong> → the +0.011 overall is within seed noise; the per-tag <em>pattern</em> is the
+  real signal. Confirm the top-25% win with n=4 multi-seed.</li>
+<li><strong>torchvision-detector variant</strong>, not the Mask2Former leaderboard scorer — good for ranking,
+  not absolute comparison.</li>
+<li>Next: sweep the high-band cut (<code>[0.5,1]</code>, <code>[0.85,1]</code>), try strength&lt;1, a <strong>band-amplify</strong> (gain
+  1.6) on <code>[0.75,1]</code> over late-only timestep windows, and re-run under the official scorer.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># local (A5000), per condition ~3.5 s/img:
+python experiments/e37_geneval.py --part gen,score,summary \
+    --conditions baseline,mag_full,mag_top25,mag_bot25 --guidance 4.5 --steps 28 --size 512
+# example HTML (counting / color_attr), no GPU:
+python experiments/e37_geneval.py --part site --compare mag_top25 --site_tag counting
+python experiments/e37_geneval.py --part site --compare mag_top25 --site_tag color_attr
+# cluster: experiments/cluster_e37_geneval_job.sh (ship via kubectl cp; /storage is not git)
+</code></pre>
+<p>Results (gitignored) under <code>experiments/results/e37_geneval/</code> (<code>report.json</code>, <code>scores/*.jsonl</code>).</p></article><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_37.md'>source .md</a> · <a href='../../experiments/e37_geneval.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

@@ -1,0 +1,187 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E24 — Token-axis FFT on the TEXT conditioning (FNet-motivated)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_24.md'>source .md</a> · <a href='../../experiments/e24_text_spectral.py'>driver</a></p><article class=report><h1>E24 — Token-axis spectral surgery on the text conditioning</h1>
+<p><strong>The question.</strong> Diffusion models are steered by a <em>text conditioning tensor</em>: the prompt
+is run through a text encoder (Flux uses <strong>T5-XXL</strong>) into a sequence of token embeddings
+<code>E</code> of shape <code>(1, L, 4096)</code> — one 4096-dim vector per prompt token — which is fed to the
+transformer's cross-attention. <strong>Can we treat that sequence as a signal, take its Fourier
+transform along the <em>token</em> axis, and use the frequency bands to merge or edit images?</strong></p>
+<p><strong>Why it's plausible — FNet.</strong> Lee-Thorp et al. (2021) replaced Transformer self-attention
+with a parameter-free DFT over the token-sequence axis and still reached ~92–97% of BERT.
+That is evidence the <strong>token-axis FFT is a meaningful token-mixing basis</strong>: low
+token-frequencies carry slow / global meaning (the DC term is the bag-of-words mean), high
+token-frequencies carry sharp token-to-token detail. E24 is the text-side analogue of the
+project's image-latent Fourier band-swap (E18 "AdaIN-in-Fourier", E20).</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart TD
+    subgraph S1[&quot;1 · Decompose (FFT along the TOKEN axis)&quot;]
+        P[&quot;Prompt&quot;] --&gt; T5[&quot;T5 encoder&quot;]
+        T5 --&gt; E[&quot;token embeddings E (L tokens × 4096)&quot;]
+        E --&gt; FFT[&quot;FFT over the token axis&quot;]
+        FFT --&gt; SPEC[&quot;spectrum (low ── high)&quot;]
+        SPEC --&gt; LOW[&quot;LOW band = DC + low freq&lt;br/&gt;≈ PHASE → subject / identity&quot;]
+        SPEC --&gt; HIGH[&quot;HIGH band&lt;br/&gt;≈ per-token detail / style&quot;]
+    end
+    LA[&quot;low(A) &amp;nbsp;or&amp;nbsp; low(base)&quot;] --&gt; SWAP[&quot;band swap / blend&lt;br/&gt;(real-token span only; T5 pads to 512)&quot;]
+    HB[&quot;high(B) &amp;nbsp;or&amp;nbsp; high(style)&quot;] --&gt; SWAP
+    SWAP --&gt; IFFT[&quot;inverse FFT → modified conditioning&quot;]
+    IFFT --&gt; FLUX[&quot;Flux cross-attention&quot;]
+    FLUX --&gt; IMG[&quot;image&quot;]
+</code></pre>
+<p><em>(The HTML explainer <code>results/e24/index.html</code> carries the same schematic as an inline SVG.)</em></p>
+<h2>How the FFT works (1D per channel, on the full sequence)</h2>
+<p>A common point of confusion — to be explicit about what is and isn't transformed:</p>
+<ul>
+<li><strong>The signal is the token sequence.</strong> The conditioning is <code>E ∈ (N_T × d)</code> with
+  <code>N_T</code> = number of real prompt tokens and <code>d = 4096</code>. We take a <strong>1‑D DFT along the
+  token axis</strong> (<code>torch.fft.rfft(E, dim=1)</code>), computed <strong>independently for each of the
+  4096 embedding channels</strong> — i.e. <code>d</code> separate length‑<code>N_T</code> transforms. "Frequency"
+  means <em>how fast a given channel's value oscillates as you walk along the tokens</em>
+  (DC = that channel's average over the prompt). The transform <strong>never mixes across
+  the embedding dimension</strong>.</li>
+<li><strong>This is not a 2‑D transform.</strong> A 2‑D FFT over <em>(tokens × channels)</em> appears only in
+  the <code>fnet_swap_2d</code> control condition (the literal FNet operation). Because the
+  embedding dimension has no natural ordering, that 2‑D version is not interpretable and
+  is included only as an "is the mixing transform itself enough?" baseline.</li>
+<li><strong>It operates on the full sequence, not the pooled vector.</strong> All band ops act on the
+  T5 <strong>sequence</strong> embeddings <code>(1, L, 4096)</code> that feed cross‑attention — <em>not</em> on the
+  single pooled <code>(1, 4096)</code> vector. (The pooled CLIP vector is left untouched in most
+  conditions; the <code>pooled_swap</code> baseline confirmed it barely steers the image — the
+  sequence dominates.)</li>
+</ul>
+<h2>Method</h2>
+<p>All ops live in <code>experiments/text_spectral_ops.py</code> and act on the <strong>real-token span</strong>
+<code>E[:, :L]</code> (captured from the T5 tokenizer — T5 pads to 512, and FFTing the padding mixes
+the content→padding cliff into the high band). They use <code>rfft</code>/<code>irfft</code> along the token axis
+so everything is real-in / real-out. <code>cut</code> is the normalised crossover frequency
+(<code>0</code>=DC … <code>1</code>=Nyquist).</p>
+<ul>
+<li><strong>probe</strong> (one prompt): keep only a band — <code>dc_only</code>, <code>low</code>, <code>high</code>, <code>high_dc</code>, <code>full</code> —
+  and regenerate. Tells us <em>what each band controls</em> and whether band-filtered embeddings
+  stay on the encoder manifold (do they still make coherent images?).</li>
+<li><strong>merge</strong> (prompt A + B): <code>lowA_highB</code>, <code>lowB_highA</code>, soft <code>blend</code> over a <code>cut</code> grid, the
+  token-axis phase/magnitude swaps <code>phaseA_magB</code> / <code>magA_phaseB</code>, plus baselines
+  <code>lerp@0.5</code> (token-space interpolation — <strong>the bar to beat</strong>), <code>pooled_swap</code> (T5 sequence
+  from A, CLIP pooled from B), and <code>fnet_swap</code> (FNet-style 2D seq×hidden DFT swap).</li>
+<li><strong>edit</strong> (base + style prompt): inject the style's high band into the base over a <code>cut</code>
+  grid; compare to the full style prompt and a pooled-only inject.</li>
+</ul>
+<p><strong>Hook &amp; model.</strong> Flux pre-encodes prompts to <code>(prompt_embeds, pooled)</code> and feeds them to
+generation (<code>gen_emb</code> in <code>e10_cfg_spectral.py</code>); we modify <code>prompt_embeds</code> before
+denoising. true-CFG=1 (single pass / trained field), guidance 3.5, 28 steps, 4 seeds.</p>
+<p><strong>Metrics.</strong> CLIP-T cosine (<code>e9_clipt.clip_scores</code>) to each source prompt — for merges,
+<code>CLIP_A</code> vs <code>CLIP_B</code> is the <strong>attribution</strong>: which prompt does the image resemble? Plus
+LAION aesthetic and ImageReward (<code>fidelity_metrics.py</code>).</p>
+<h2>Results (<code>results/e24/</code>, RTX A5000, ~4 h)</h2>
+<p><strong>Probe — token-axis bands are meaningful and on-manifold.</strong> Every band-filtered variant
+produces a coherent, on-prompt image (CLIP 0.21–0.32, aesthetic 6–7). The <strong>high band
+alone reconstructs the prompt about as well as <code>full</code></strong>; <code>dc_only</code> is weakest. So the
+conditioning is robust to band filtering — the FNet intuition holds at the conditioning
+level.</p>
+<p><strong>Merge — NEGATIVE for clean blending.</strong> No condition blends A and B; results <strong>snap to
+whichever prompt owns the low band + phase</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>cat_car condition</th>
+<th>CLIP_A</th>
+<th>CLIP_B</th>
+<th>leans</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pure_A / pure_B</td>
+<td>0.279 / 0.095</td>
+<td>0.164 / 0.254</td>
+<td>anchors</td>
+</tr>
+<tr>
+<td><strong>lerp@0.5</strong> (baseline)</td>
+<td>0.272</td>
+<td>0.165</td>
+<td>→ A</td>
+</tr>
+<tr>
+<td>lowA_highB</td>
+<td>0.274</td>
+<td>0.162</td>
+<td>→ A</td>
+</tr>
+<tr>
+<td>lowB_highA</td>
+<td>0.139</td>
+<td>0.222</td>
+<td>→ B</td>
+</tr>
+<tr>
+<td>phaseA_magB</td>
+<td>0.274</td>
+<td>0.159</td>
+<td>→ A</td>
+</tr>
+<tr>
+<td>magA_phaseB</td>
+<td>0.212</td>
+<td>0.254</td>
+<td>→ B</td>
+</tr>
+<tr>
+<td>pooled_swap</td>
+<td>0.275</td>
+<td>0.162</td>
+<td>→ A</td>
+</tr>
+<tr>
+<td>fnet_swap</td>
+<td>0.100</td>
+<td>0.262</td>
+<td>→ B</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>The spectral merges <strong>do not beat <code>lerp</code></strong> — and <code>lerp@0.5</code> <em>itself</em> collapses to A. The
+  token spectrum behaves as a near-<strong>binary identity selector</strong>, not a continuous blender.
+  (Only <code>blend_c0.15</code> on castle_forest got near-balanced: A 0.245 / B 0.226.)</li>
+<li><code>pooled_swap</code> (sequence A + pooled B → A) shows the <strong>T5 sequence dominates</strong>; the CLIP
+  pooled vector barely steers the image.</li>
+</ul>
+<p><strong>Edit — PARTIAL POSITIVE.</strong> Injecting the style's high band is a usable <strong>style-strength
+knob</strong> via <code>cut</code>: gentle settings give a modest content-preserving nudge (house: style
+0.150→0.18, content held 0.272→0.25); an aggressive <code>cut=0.15</code> (85% of the spectrum from
+the style prompt) ≈ just using the style prompt (portrait: style 0.071→0.224).
+<code>pooled_inject</code> does about the same, more cheaply.</p>
+<p><strong>Mechanistic takeaway.</strong> Content <strong>identity is carried by the token-axis PHASE</strong> (and the
+low band): <code>phaseA_magB→A</code>, <code>magA_phaseB→B</code> — magnitude does not transfer identity. This
+directly mirrors the project's image-domain finding that <strong>phase carries structure</strong> (E18 /
+E20).</p>
+<h2>Verdict</h2>
+<p>The hunch is <strong>directionally right for editing</strong> (high-band style injection works as a
+knob) but <strong>wrong for merging</strong>: the token spectrum is too winner-take-all to blend two
+full prompts, and it does not beat plain embedding interpolation — which was the bar. A
+clean exploratory result: a negative (merge) + a partial positive (edit) + a mechanistic
+insight (phase = identity).</p>
+<h2>Run</h2>
+<pre><code class="language-bash"># self-gating cluster job: smoke (probe+analyze) -&gt; CLIP sanity gate -&gt; full sweep
+runai submit --name e24-text-spectral -g 1 \
+  -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
+  --pvc=storage:/storage --large-shm --command -- \
+  bash /storage/malnick/colorful-noise/experiments/cluster_e24_job.sh
+
+# locally / single GPU
+python experiments/e24_text_spectral.py --part probe --num_prompts 2 --seeds 1 --steps 8  # smoke
+python experiments/e24_text_spectral.py --part probe,merge,edit,analyze                   # full
+# -&gt; results/e24/{probe,merge,edit}/grid.png, report.json, index.html
+</code></pre>
+<blockquote>
+<p><strong>Cluster note.</strong> <code>/storage/malnick/colorful-noise</code> is <strong>not</strong> a git checkout and the
+pytorch image has no <code>git</code>, so ship new code with <code>kubectl cp</code> into a PVC-mounted pod
+rather than an in-pod <code>git pull</code>.</p>
+</blockquote>
+<h2>Open directions</h2>
+<ul>
+<li>Chase the one near-balanced regime (soft <code>blend</code> at low <code>cut</code>) — is there a narrow band
+  that genuinely co-presents A and B?</li>
+<li>Push the content-preserving edit: inject only a sub-band of the style's high frequencies,
+  or renorm per token (<code>--renorm</code>) to stay closer to the base.</li>
+<li>Cross-model check on SD3.5 (dual CLIP + T5), as done for the E18 cross-domain finding.</li>
+</ul></article><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_24.md'>source .md</a> · <a href='../../experiments/e24_text_spectral.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

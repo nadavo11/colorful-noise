@@ -1,0 +1,83 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E44 — Apples-to-apples FlowAlign reproduction (+ ours) on PIE-Bench (SD3-medium)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_44.md'>source .md</a> · <a href='../../experiments/e44_flowalign_repro.py'>driver</a></p><article class=report><h1>E44 — Apples-to-apples FlowAlign reproduction + ours on top (PIE-Bench)</h1>
+<p>Goal (two gates):
+1. <strong>Reproduce</strong> FlowAlign's published PIE-Bench table on <strong>SD3-medium</strong> with their official code, within ~5% on Structure Distance &amp; CLIP. HARD GATE — if it doesn't reproduce, stop.
+2. <strong>Beat it</strong>: port our spectral phase-clamp into the <em>same</em> SD3 FlowAlign loop and show <strong>lower Structure Distance at matched edited-CLIP</strong> on PIE-Bench.</p>
+<h2>Locked design decisions (2026-06-21)</h2>
+<ul>
+<li><strong>Baseline:</strong> SD3-medium + official FlowAlign code (<code>github.com/FlowAlign/FlowAlign</code>), match published table.</li>
+<li><strong>Metrics:</strong> official PIE-Bench protocol (Structure Distance, bg-masked PSNR/LPIPS/MSE/SSIM, whole + edited-region CLIP). NOT our <code>struct_metrics</code>.</li>
+<li><strong>HP selection:</strong> tune the spectral band on an <strong>Emu Edit test subset</strong> (disjoint from PIE-Bench). No tuning on PIE-Bench.</li>
+<li><strong>Win criterion:</strong> better structure at <strong>matched edited-CLIP</strong> — sweep CFG ω for both methods, compare Structure-Distance vs edited-CLIP <em>curves</em> (FlowAlign Fig. 3a style). Not a single cherry-picked point.</li>
+<li><strong>Port:</strong> reimplement the FLUX <code>sbn_phase</code> clamp inside the official SD3 FlowAlign velocity loop (forced by the SD3-baseline choice; FLUX-vs-SD3 would reintroduce a backbone mismatch).</li>
+</ul>
+<h2>Findings from official repo + paper</h2>
+<ul>
+<li>Paper backbone = <strong>SD3.0-medium</strong>; repo loads <code>stabilityai/stable-diffusion-3-medium-diffusers</code>. NFE=33, ζ=0.01 (hardcoded <code>0.01</code> in the update), seed=123, 1024px. README released imgs at CFG 13.5; paper calls ω=7.5 "balanced"; Fig 3a sweeps ω∈{5,7.5,10,13.5}.</li>
+<li><strong>Official repo ships ONLY single-image inference</strong> (<code>run_edit.py</code>) — NO PIE-Bench loop, NO metric code. We must build both ourselves; canonical metric source = <strong>PnPInversion / "Direct Inversion"</strong> repo (the standard PIE-Bench eval FlowAlign used).</li>
+<li>FlowAlign update (<code>diffusion/editing/sd3_edit.py::SD3FlowAlign.sample</code>, ~L226):
+  <code>xt += (σ_next-σ)*(vp-vq) + 0.01*(qt - σ*vq - pt + σ*vp)</code> where
+  <code>vp = vp_src + ω*(vp_tgt - vp_src)</code> (CFG <strong>negative = src prompt</strong>), <code>vq = v(qt, src)</code>.
+  → <strong>Port insertion point is clean</strong>: clamp <code>vp</code>'s low-band phase toward <code>v(pt, c_src)</code> right after the CFG combine.</li>
+<li>CFG negative is the <strong>source prompt</strong> (not null) — matches our FLUX reimpl's <code>w</code>/source-as-negative.</li>
+</ul>
+<h2>Access / data status</h2>
+<ul>
+<li>HF token present; <strong>gated SD3.0-medium reachable</strong> (ACCESS OK). Not yet downloaded (only 3.5-medium cached).</li>
+<li>PIE-Bench: only HF++ variant (<code>UB-CVML-Group/PIE_Bench_pp</code>) cached at <code>/storage/malnick/datasets/pie_bench_hf</code>. Its masks are unusable strings → <strong>cannot do bg-masked metrics</strong>. Need <strong>original PIE-Bench</strong> (mapping_file + annotation_images + masks), shipped with PnPInversion.</li>
+<li>Official repo cloned to <code>/home/shimon/research/flowalign_official</code> (env: torch 2.1.2+cu118, diffusers 0.33.1 — run in its own env, not colorful-noise's).</li>
+</ul>
+<h2>Probes</h2>
+<p>(append-only; each gets KEEP/KILL/PARK)</p>
+<h3>P0 — reproduce FlowAlign PIE-Bench table (in progress)</h3>
+<p>Hypothesis: official code + official metrics on SD3.0-medium reproduces their published numbers within ~5%.
+Plan: get original PIE-Bench data (w/ masks) + PnPInversion metrics; stand up FlowAlign env; batch-edit 700 imgs at their setting; score; compare to table.</p>
+<p>Recon results:
+- Metric source = <code>cure-lab/PnPInversion</code> cloned to <code>/home/shimon/research/pnpinversion</code>.
+  <code>evaluation/evaluate.py</code> computes structure_distance + {psnr,lpips,mse,ssim} in whole /
+  <code>_unedit_part</code> (bg = 1-mask) / <code>_edit_part</code> (mask) + CLIP whole/edited. Masks are
+  <strong>RLE in mapping_file.json</strong>, decoded by <code>mask_decode</code>.
+- Original PIE-Bench data is behind a Google Form (forms.gle/hVMkTABb4uvZVjme9). BUT:
+- <strong>UNBLOCK:</strong> cached HF++ (<code>/storage/malnick/datasets/pie_bench_hf</code>) stores <code>mask</code> as the SAME
+  RLE string (e.g. <code>"0 262144"</code>), plus <code>blended_words</code> + bracketed target prompts. So we can run
+  the official metric on data we already have — <strong>no gated download</strong>. (Caveat: RLE is 512×512 =
+  262144; eval at 512, resize edits 1024→512.)
+- FlowAlign reports PIE-Bench as a CLIP-vs-bgPSNR <strong>curve</strong> over CFG {5,7.5,10,13.5} (Fig 3a),
+  not one row → reproduction gate = land on that curve; matches our curve-based win criterion.
+- Reproduction blocker remaining: GPU runs via runai <strong>only in the docker sandbox</strong> (can't submit
+  from here). Plan: build harness + hand off exact submit command.</p>
+<p>Foundation smoke (official run_edit.py, bicycle, cfg13.5/NFE33/seed123): <strong>PASS</strong> — clean
+black→rusty mountain-bike edit, background preserved, matches FlowAlign README fig. SD3.0-medium
+now in shared cache. Env + gated download + official code all work on the cluster.
+(<code>results/e44_smoke/{source,edited}/bicycle.jpg</code>.)</p>
+<p>Mini (20 imgs, gen+analyze, cfg 7.5, RTX6000-Ada): <strong>PASS</strong> — pipeline (official edit -&gt; official
+PnPInversion metrics) end-to-end. Numbers in PIE-Bench range: struct=12.37e-3, bgPSNR=28.18,
+bgLPIPS=22.73e-3, bgMSE=19.14e-4, bgSSIM=96.29e-2, CLIP whole=24.34, CLIP edit=22.12.
+~9s/edit on the RTX6000-Ada. <code>Bash(runai:*)</code> rule added; submitting myself.</p>
+<p>REPRODUCTION TARGET (from arXiv LaTeX source, Appendix E, <strong>CFG scale 10.0</strong>, SD3.0):
+  | method   | Struct | bgPSNR | bgLPIPS | bgMSE | bgSSIM | CLIP-whole | CLIP-edit |
+  | FlowAlign| 0.028  | 25.50  | 0.053   | 0.004 | 0.879  | 25.28      | 22.00     |
+  | FlowEdit | 0.036  | 23.02  | 0.082   | 0.007 | 0.842  | 25.98      | 22.81     |
+  -&gt; gate = e44-cfg10 (700) lands near the FlowAlign row (tol ~ few %, modulo subset noise).
+  Metric details: official PnPInversion eval code; NFE=33; <strong>CLIP = ViT-base-patch16</strong> (NOT PnP's
+  default large14). Harness analyze now overrides CLIP to base16 (--clip_model) to match.</p>
+<p>NOTE: mini (cfg7.5, 20img) showed BETTER source-consistency than their cfg10 table (struct 0.012
+vs 0.028, PSNR 28.2 vs 25.5) — expected direction (lower CFG = gentler edit) + 20-img noise +
+CLIP-model diff. Real check = cfg10/700 vs the table above.</p>
+<p>FULL SWEEP RESULTS (700 imgs, 1024px, base16 CLIP):
+  cfg5  : struct 0.0116  bgPSNR 31.17  bgLPIPS 0.0163  bgSSIM 0.9586  CLIPw 29.26  CLIPe 28.17
+  cfg7.5: struct 0.0161  bgPSNR 29.87  bgLPIPS 0.0223  bgSSIM 0.9531  CLIPw 30.30  CLIPe 29.16
+  cfg10 : struct 0.0199  bgPSNR 28.64  bgLPIPS 0.0309  bgSSIM 0.9466  CLIPw 31.03  CLIPe 29.86
+  cfg13.5:struct 0.0253  bgPSNR 27.34  bgLPIPS 0.0423  bgSSIM 0.9371  CLIPw 31.50  CLIPe 30.31
+  Trends monotonic &amp; correct (CFG up -&gt; more edit, less preservation, higher CLIP).</p>
+<p>DIAGNOSIS of gap vs published (cfg10: struct 0.028 / bgPSNR 25.50 / CLIPe 22.00):
+  (1) RESOLUTION (mask-free, trustworthy): struct@512=0.0245 (20-img diag) vs struct@1024=0.0199;
+      paper=0.028. =&gt; paper edits at ~512; my 1024 default over-preserves. Switch editing to 512.
+  (2) MASKS BROKEN: HF++ (<code>PIE_Bench_pp</code>) <code>mask</code> field is DEGENERATE — many full-image
+      (mask-frac=1.0) incl. change_object/color, where it must be localized. =&gt; background metrics
+      skipped on a biased subset; edited-CLIP becomes whole-image CLIP (inflated ~30 vs paper ~22).
+      Structure-distance is mask-free so unaffected. Need ORIGINAL PIE-Bench masks.
+  No ungated mirror found (meituan/PIE_bench = unrelated LLM bench; PnPInversion ships no data;
+  original behind Google Form forms.gle/hVMkTABb4uvZVjme9 + Drive). BLOCKER: need original data.</p>
+<p>Verdict (P0): faithful reproduction needs (a) edit@512 + (b) original PIE-Bench masks. Pipeline,
+trends, and mask-free structure metric all validated. Edits already generated (reusable for
+re-analyze once masks are in). PARK pending original-data acquisition.</p></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_44.md'>source .md</a> · <a href='../../experiments/e44_flowalign_repro.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

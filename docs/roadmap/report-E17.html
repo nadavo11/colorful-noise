@@ -1,0 +1,265 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E17 — SD3.5 port (true CFG): SBN vs CFG-Zero* + CompBench harness</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_17.md'>source .md</a> · <a href='../../experiments/e17_sd35_compare.py'>driver</a></p><article class=report><h1>E17 — SD3.5 port: SBN vs CFG-Zero* vs CFG++ (true CFG)</h1>
+<p><strong>Status: RAN.</strong> The full fidelity comparison ran (SD3.5-medium, 8 detailed prompts × 25
+seeds, cfg=4.5, 28 steps); results live at <code>experiments/results/e17/{report.json, scores.json}</code>
+plus eight <code>grid_&lt;scene&gt;.png</code> strips and a self-contained <code>index.html</code>. (<code>spectral_dist</code> and
+<code>vqascore</code> are <strong>null</strong> in this run — see Caveats.) The self-contained HTML report is at
+<code>results/e17/index.html</code>; this writeup tells the same story and defines the same terms.</p>
+<h2>TL;DR</h2>
+<p>Every spectral method so far lived on <strong>Flux</strong>, whose <em>distilled</em> guidance makes the high-CFG
+regime behave oddly. We port the methods to <strong>Stable Diffusion 3.5-medium</strong> — which uses <em>true</em>
+two-pass classifier-free guidance (CFG) — and pit our <strong>SBN</strong> (clamp the generated latent's
+power spectrum back to a guidance-off reference) against two published high-CFG fixes,
+<strong>CFG-Zero*</strong> and <strong>Rectified-CFG++</strong>, on image fidelity. <strong>Headline:</strong> the plain high-CFG
+baseline (<code>cfg_hi</code>) and the two guidance fixes (<code>cfgzero</code>, <code>cfgpp</code>) win fidelity (<code>cfgzero</code> tops
+ImageReward at 1.250, <code>cfg_hi</code> tops aesthetic at 6.367), while <strong>SBN nudges every fidelity metric
+slightly down</strong> (it desaturates, lowers contrast, lifts high-frequency content), and <strong>combining
+SBN with a guidance fix does not complement</strong> — <code>cfgzero_sbn</code> / <code>cfgpp_sbn</code> track plain
+<code>bandnorm</code>, the late SBN clamp overwriting whatever the guidance produced. CLIP-T (adherence) is
+flat across all eight conditions, so nothing trades adherence for the fidelity differences. On
+this true-CFG model SBN is a spectral <em>regularizer</em>, not a fidelity win.</p>
+<h2>Background (plain language)</h2>
+<p><em>The HTML report (<code>results/e17/index.html</code>) carries the same glossary inline and leads each
+scene with its grid. Defining every term here keeps this writeup self-contained.</em></p>
+<p><strong>Setup terms</strong></p>
+<ul>
+<li><strong>SD3.5-medium &amp; the latent</strong> — a 2.5B rectified-flow text-to-image model (transformer +
+  T5-XXL + 2×CLIP + a 16-channel VAE) at 1024px; it denoises a <code>(1, 16, 128, 128)</code> latent that
+  the VAE decodes to the image. Fits a 24GB GPU bf16 GPU-resident (<code>--mem offload</code> fallback).</li>
+<li><strong>True CFG (vs Flux's distilled guidance)</strong> — <strong>classifier-free guidance</strong> is the knob for how
+  hard the prompt steers generation. SD3.5's <code>guidance_scale</code> is <em>real</em> CFG: one batched
+  <code>[uncond, cond]</code> transformer pass per step, then combine <code>uncond + w·(cond − uncond)</code>. So
+  <code>guidance=1</code> is the pure conditional flow field (no steering) and higher <code>w</code> pushes harder
+  toward the prompt at the cost of over-saturated / over-contrasty output. Flux's guidance is a
+  <em>distilled</em> embedding instead, which is why we moved here for a clean high-CFG test.</li>
+<li><strong>The cfg=1 reference</strong> — SBN needs a target spectrum. We generate the same prompt at
+  <code>guidance=1</code> (steering off) and record, per step and per (channel, radial-frequency band), the
+  latent's mean power. That guidance-off trajectory is the <strong>reference</strong> SBN clamps toward.</li>
+<li><strong>Radial-frequency band / PSD</strong> — 2-D Fourier transform a latent channel; group coefficients by
+  distance from the centre (DC) into <code>n_bins=24</code> rings. Mean squared magnitude per ring is the
+  <strong>power spectral density (PSD)</strong> — low bands = coarse layout / palette power, high bands = fine
+  texture.</li>
+</ul>
+<p><strong>The eight conditions (how each is computed)</strong></p>
+<ul>
+<li><strong><code>cfg1</code></strong> — guidance=1, the pure conditional field. Both the SBN reference and a <em>realism
+  anchor</em> (un-steered: faithful palette/contrast, but weak prompt adherence).</li>
+<li><strong><code>cfg_hi</code></strong> <em>(the BASELINE)</em> — guidance=<code>w</code> (here <strong>4.5</strong>), the plain high-CFG generation.
+  Every other condition is a treatment <em>on top of</em> this regime and is judged against it.</li>
+<li><strong><code>bandnorm</code></strong> <em>(SBN — ours)</em> — <strong>Spectral Band Normalization.</strong> At each denoising step the
+  <code>ClampPSD3</code> callback rescales the cfg=<code>w</code> latent's per-(channel, band) PSD back to the cfg=1
+  reference at that step, <strong>leaving phase untouched</strong> (op <code>psd_match</code>, mode <code>band</code>). It pulls the
+  over-amplified high-CFG power spectrum back toward guidance-off statistics.</li>
+<li><strong><code>bandnorm_pp</code></strong> — <code>bandnorm</code> plus an E11 post-process: multiply image saturation by <code>1.4×</code>
+  (SBN tends to desaturate; this puts colour back).</li>
+<li><strong><code>cfgzero</code></strong> <em>(baseline fix)</em> — <strong>CFG-Zero*</strong>, a published high-CFG fix: a <code>scheduler.step</code>
+  override that (1) rescales the uncond term by a per-sample <em>optimal</em> scale <code>α</code> minimizing the
+  guided velocity's error, and (2) <em>zero-inits</em> the earliest step(s). Adapted to SD3.5's batched
+  output (<code>make_cfgzero_step</code>).</li>
+<li><strong><code>cfgzero_sbn</code></strong> — CFG-Zero* <strong>and</strong> the SBN clamp together. They compose: CFG-Zero* modifies
+  the velocity inside <code>scheduler.step</code>, SBN clamps the resulting latent at step end. Tests whether
+  the two <em>complement</em>.</li>
+<li><strong><code>cfgpp</code></strong> <em>(baseline fix)</em> — <strong>Rectified-CFG++</strong> (arXiv 2510.07631): a predictor/corrector
+  that evaluates guidance at a <em>predicted</em> next point (with a small corrector jitter <code>σ</code>), a
+  second high-CFG fix (<code>gen_rcfgpp_sd3</code>).</li>
+<li><strong><code>cfgpp_sbn</code></strong> — Rectified-CFG++ <strong>and</strong> the SBN clamp together (same composition as
+  <code>cfgzero_sbn</code>).</li>
+</ul>
+<p><strong>Metrics (and which direction is good)</strong></p>
+<ul>
+<li><strong><code>aesthetic</code> (↑)</strong> — LAION aesthetic predictor on CLIP features (learned "how nice does this
+  look"). Higher = better.</li>
+<li><strong><code>imagereward</code> (↑)</strong> — ImageReward human-preference reward model. Higher = more preferred. The
+  headline fidelity metric.</li>
+<li><strong><code>clip_t</code> (↑)</strong> — CLIP image↔text cosine similarity, the <strong>adherence guardrail</strong>: does the
+  image still match the prompt? Watched so a fidelity change isn't bought by dropping the prompt.</li>
+<li><strong>image statistics</strong> <em>(descriptive, no good direction)</em> — <code>sharpness</code>, <code>hf_frac</code> (high-frequency
+  energy fraction), <code>rms_contrast</code>, <code>colorfulness</code>, <code>saturation</code>; they explain <em>how</em> a condition
+  changes the image (SBN lowers saturation/contrast, raises hf_frac).</li>
+<li><strong><code>spectral_dist</code> (↓), <code>vqascore</code> (↑)</strong> — supported by the driver but <strong>null in this run</strong>:
+  <code>spectral_dist</code> (distance to a real-image PSD) needs an SD3.5-VAE real reference that wasn't
+  available; <code>vqascore</code> was skipped (<code>--no_vqa</code>). Defined for completeness — the story rests on
+  aesthetic / ImageReward / CLIP-T.</li>
+</ul>
+<h2>Method</h2>
+<ul>
+<li><strong>Backend (<code>e17_sd35.py</code>).</strong> <code>gen_sd3</code> is one entry point that composes an optional guidance
+  <code>step_override</code> <em>and</em> an optional step-end callback; <code>ClampPSD3</code> / <code>RecordPSD3</code> (SBN clamp /
+  reference recorder — SD3.5 latents are already unpacked <code>(B,16,128,128)</code>, so the spectral ops
+  apply directly, the cleanest SBN path in the repo); <code>make_cfgzero_step</code>; <code>gen_rcfgpp_sd3</code>;
+  <code>record_reference_sd3</code> (the cfg=1 per-step PSD reference). E20 warm-start helpers also live here.</li>
+<li><strong>What the run does.</strong> For each of 8 detailed prompts we draw 25 seeded init latents (shared
+  across conditions, so differences are the <em>method</em>, not the seed), record the cfg=1 PSD
+  reference, generate all eight conditions at 28-step SD3.5 (cfg=4.5), and score every image.</li>
+<li><strong>The question each comparison answers.</strong> (a) <code>bandnorm</code> vs <code>cfg_hi</code>: does SBN improve fidelity
+  over plain high-CFG? (b) <code>bandnorm</code> vs <code>cfgzero</code>/<code>cfgpp</code>: does SBN beat the published guidance
+  fixes? (c) <code>cfgzero_sbn</code> / <code>cfgpp_sbn</code> vs either alone: do the spectral clamp and the guidance
+  fix <em>complement</em>?</li>
+<li><strong>Drivers.</strong> Fidelity driver <code>e17_sd35_compare.py</code> (this writeup); the separate CompBench
+  attribute-binding driver <code>e17_compbench.py</code> → <code>results/e17cb</code> answers the <em>compositional</em>
+  contest (does SBN preserve binding?), which is not part of this fidelity run.</li>
+</ul>
+<h2>Results</h2>
+<p>The HTML report leads <strong>each scene with its 8-condition grid</strong> (rows = condition, columns =
+seeds) → a "what to look for" note → the per-condition numbers, then closes with the aggregate.
+Below is the aggregate (mean over the 8 scenes) — the headline verdict; per-scene tables and
+grids are in <code>results/e17/index.html</code>. n=25 seeds per cell; read directions, not third decimals.</p>
+<h3>Aggregate — mean across the 8 scenes</h3>
+<p><strong>What to look for:</strong> which condition wins each fidelity column, and where SBN sits relative to
+<code>cfg_hi</code>. <code>cfg1</code> is the un-steered anchor (context), not a competitor.</p>
+<table>
+<thead>
+<tr>
+<th>condition</th>
+<th>aesthetic ↑</th>
+<th>imagereward ↑</th>
+<th>clip_t ↑</th>
+<th>saturation</th>
+<th>rms_contrast</th>
+<th>hf_frac</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cfg1</td>
+<td>6.069</td>
+<td>−0.172</td>
+<td>0.280</td>
+<td>0.320</td>
+<td>0.196</td>
+<td>0.034</td>
+</tr>
+<tr>
+<td><strong>cfg_hi</strong> (baseline)</td>
+<td><strong>6.367</strong></td>
+<td>1.194</td>
+<td>0.307</td>
+<td>0.578</td>
+<td>0.221</td>
+<td>0.028</td>
+</tr>
+<tr>
+<td>bandnorm (SBN)</td>
+<td>6.203</td>
+<td>1.020</td>
+<td>0.303</td>
+<td>0.419</td>
+<td>0.187</td>
+<td>0.037</td>
+</tr>
+<tr>
+<td>bandnorm_pp</td>
+<td>6.210</td>
+<td>1.056</td>
+<td>0.305</td>
+<td>0.535</td>
+<td>0.187</td>
+<td>0.036</td>
+</tr>
+<tr>
+<td>cfgzero</td>
+<td>6.351</td>
+<td><strong>1.250</strong></td>
+<td>0.304</td>
+<td>0.506</td>
+<td>0.234</td>
+<td>0.029</td>
+</tr>
+<tr>
+<td>cfgzero_sbn</td>
+<td>6.226</td>
+<td>1.052</td>
+<td>0.303</td>
+<td>0.421</td>
+<td>0.192</td>
+<td>0.037</td>
+</tr>
+<tr>
+<td>cfgpp</td>
+<td>6.336</td>
+<td>1.245</td>
+<td>0.303</td>
+<td>0.557</td>
+<td>0.244</td>
+<td>0.028</td>
+</tr>
+<tr>
+<td>cfgpp_sbn</td>
+<td>6.291</td>
+<td>1.071</td>
+<td><strong>0.309</strong></td>
+<td>0.422</td>
+<td>0.194</td>
+<td>0.040</td>
+</tr>
+</tbody>
+</table>
+<p><em>(Bold = best in column. <code>cfg1</code> excluded from the "win" since it is the un-steered anchor.)</em></p>
+<p><strong>Interpretation (good/bad).</strong></p>
+<ol>
+<li><strong>Guidance owns fidelity; SBN costs fidelity.</strong> <code>cfgzero</code> tops ImageReward (1.250) and <code>cfg_hi</code>
+   tops aesthetic (6.367), all clustered tightly. <strong>SBN (<code>bandnorm</code>) lowers every fidelity metric
+   vs <code>cfg_hi</code></strong> (aesthetic 6.367→6.203, ImageReward 1.194→1.020): it pulls saturation
+   (0.578→0.419) and contrast (0.221→0.187) down toward cfg=1 statistics and <em>raises</em> hf_frac
+   (0.028→0.037). The learned-preference scorers read that flatter, less-punchy look as slightly
+   worse. So <strong>SBN does not beat the guidance fixes on fidelity here</strong> (question a/b: no).</li>
+<li><strong>The combinations do not complement</strong> (question c: no). <code>cfgzero_sbn</code> (ImageReward 1.052,
+   aesthetic 6.226) and <code>cfgpp_sbn</code> (1.071, 6.291) land near plain <code>bandnorm</code> (1.020, 6.203), <strong>not
+   near their guidance parents</strong> (<code>cfgzero</code> 1.250 / <code>cfgpp</code> 1.245). The late SBN clamp overwrites
+   whatever the guidance fix did to the spectrum — composing them just gives back the SBN result.</li>
+<li><strong><code>bandnorm_pp</code> recovers colour, not the gap.</strong> The 1.4× saturation post-process lifts
+   colourfulness/saturation (0.419→0.535) but ImageReward only 1.020→1.056 — short of <code>cfg_hi</code>.</li>
+<li><strong>Adherence is flat.</strong> CLIP-T sits in 0.303–0.309 across all eight conditions (<code>cfgpp_sbn</code>
+   nominally highest at 0.309), so <strong>nothing trades prompt adherence</strong> for the fidelity
+   differences — the verdict is purely about the look, not about following the prompt.</li>
+</ol>
+<p><strong>Bottom line.</strong> On a <em>true-CFG</em> model the spectral clamp behaves as a regularizer that pulls the
+image toward guidance-off statistics (less saturated, less contrasty, more high-freq texture).
+The learned fidelity scorers prefer the punchy high-CFG / guidance-fix look, so SBN loses on
+fidelity and does not complement CFG-Zero* or CFG++. SBN's intended advantage — <em>closeness to a
+real-image spectrum</em> — is exactly the metric that is null here (see Caveats), so this run settles
+the fidelity-by-preference question, not the closeness-to-real one.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong><code>spectral_dist</code> and <code>vqascore</code> are null in this run.</strong> The SD3.5-VAE real PSD reference
+  (<code>SD35_REAL_LATENTS</code>) wasn't built, so the "closer to a real spectrum" claim SBN is <em>designed</em>
+  for isn't measured; the fidelity verdict rests on learned-preference scores (aesthetic /
+  ImageReward) that reward punchy high-CFG output. VQAScore was deferred (<code>--no_vqa</code>). Building
+  the SD3.5 real ref (cf. the E23 real-target line) is the natural follow-up to test SBN on its
+  home turf.</li>
+<li><strong>Fidelity ≠ the compositional contest.</strong> Whether SBN <em>preserves attribute binding</em> is the
+  separate <code>e17_compbench.py</code> → <code>results/e17cb</code> run (B-VQA on color/shape/texture), not this one.</li>
+<li><strong>SBN still pays a per-prompt cfg=1 reference cost</strong> (extra <code>ref_seeds</code> generations per prompt);
+  a universal reference is future work.</li>
+<li><strong>CFG-Zero* / CFG++ monkey-patch diffusers internals</strong> (<code>transformer.forward</code>,
+  <code>scheduler.step</code>; restored in a <code>finally</code>) and could break on version bumps.</li>
+<li><strong>Downstream:</strong> this SD3.5 backend (<code>e17_sd35.py</code>) is the foundation E18 (style transfer), E20
+  (warm-start) and E21/E22 (editing) build on.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># Cluster (runai / kubectl): full fidelity run — SD3.5-medium, cfg=4.5
+python experiments/e17_sd35_compare.py --part gen,score,analyze \
+    --seeds 25 --ref_seeds 3 --cfg 4.5 --steps 28 --n_bins 24 --no_vqa
+
+# Local smoke (few prompts/seeds)
+python experiments/e17_sd35_compare.py --part gen,score,analyze \
+    --num_prompts 1 --seeds 4 --no_cfgpp --no_vqa
+
+# Rebuild the HTML explainer offline (NO model load, re-templates report.json + grids)
+python experiments/e17_sd35_compare.py --part site     # via the driver
+python experiments/e17_site.py                          # or the standalone generator
+
+# CompBench binding contest (separate run -&gt; results/e17cb)
+python experiments/e17_compbench.py --part gen,score,analyze \
+    --categories color shape texture --per_cat 64 --seeds 4 --ref_seeds 2 --cfg 4.5
+</code></pre>
+<blockquote>
+<p>Results live on <code>/storage</code> (gitignored). To rebuild locally, <code>kubectl cp</code> the <code>report.json</code> +
+the <code>grid_&lt;scene&gt;.png</code> files (not the heavy per-seed PNGs) from
+<code>mystorage-0-0:/storage/.../experiments/results/e17</code> into local <code>experiments/results/e17</code>, then
+run <code>python experiments/e17_site.py</code>.</p>
+</blockquote>
+<p>Code: <code>experiments/e17_sd35.py</code> (backend), <code>experiments/e17_sd35_compare.py</code> (fidelity driver +
+<code>--part site</code>), <code>experiments/e17_site.py</code> (HTML generator), <code>experiments/e17_compbench.py</code>
+(CompBench), reusing <code>spectral_ops.py</code>, <code>fidelity_metrics.py</code>, <code>compbench.py</code>, and the E16
+scoring helpers. Outputs: <code>results/e17/{report,scores}.json</code> + <code>grid_&lt;scene&gt;.png</code> +
+<code>index.html</code>.</p></article><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_17.md'>source .md</a> · <a href='../../experiments/e17_sd35_compare.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

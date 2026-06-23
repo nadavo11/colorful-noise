@@ -1,0 +1,149 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E28 — Does seed-biasing RESCUE dropped compositional elements?</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-seed.html'>← Seed steering (“golden noise”)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_28.md'>source .md</a> · <a href='../../experiments/e28_seedrescue.py'>driver</a></p><article class=report><h1>E28 — Does biasing the seed RESCUE dropped elements on hard compositional prompts?</h1>
+<p><strong>TL;DR.</strong> A diffusion model starts from a random <strong>seed</strong>, and on <strong>hard compositional
+prompts</strong> (e.g. "a green bench and a blue bowl") it often <strong>drops or mis-binds an element</strong> —
+and <em>which</em> element it drops depends on the seed. E25–E27 showed seed-biasing is a do-no-harm
+<em>palette/appearance</em> lever on easy prompts (no headroom, and CLIP-T was blind to dropped
+elements). Here we test the regime where the seed might actually matter, using a metric that
+<em>sees</em> a dropped element (<strong>B-VQA</strong>): we scan compositional prompts × seeds, find the failures,
+and on the worst ones <strong>bias the failing seed toward the prompt</strong> — then compare to simply
+<strong>re-rolling a fresh random seed</strong>. <strong>Verdict (a clean negative):</strong> biasing the seed <strong>loses to
+plain re-rolling</strong> (seed-dependent recovery <strong>0.57</strong> for re-roll vs <strong>0.43 / 0.29</strong> for the
+biased seed) and it even <strong>breaks compositions that already worked</strong> (−0.176 on passers).
+<strong>Seed-as-adherence is a dead end; best-of-N random seeds + a B-VQA picker wins.</strong> This closes
+the seed-as-adherence line (E25→E28); the remaining positive use of seed-biasing is the
+appearance/palette steering documented in E27 (Arm B).</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart TD
+  S[&quot;scan: CompBench prompts × seeds&quot;] --&gt; F{&quot;B-VQA &lt; τ=0.5 ?&quot;}
+  F --&gt;|fail| I[&quot;intervene on the worst failures&quot;]
+  F --&gt;|pass| H[&quot;do-no-harm: apply opt-A to passers&quot;]
+  I --&gt; A[&quot;opt-A: bias seed → full prompt&quot;]
+  I --&gt; B[&quot;opt-B: bias seed → dropped phrase&quot;]
+  I --&gt; R[&quot;re-roll: fresh random seed (control)&quot;]
+  A --&gt; M[&quot;re-score B-VQA → recovery rate&quot;]
+  B --&gt; M
+  R --&gt; M
+  M --&gt; V[&quot;re-roll wins ⇒ seed-bias is a dead end&quot;]
+</code></pre>
+<h2>Background (plain language)</h2>
+<p><em>The HTML report (<code>results/e28/index.html</code>) carries the same glossary inline and leads each
+result with its figure. Defining every term here keeps this writeup self-contained.</em></p>
+<ul>
+<li><strong>Seed / ‖z‖=√d</strong> — SDXL denoises a random <strong>seed</strong> (a <code>4×128×128</code> Gaussian latent, ‖z‖≈√d=256)
+  into the 1024×1024 image. The same seed gives the same image; <em>which</em> objects get rendered
+  depends on the seed.</li>
+<li><strong>Seed bias / latent-mode optimization</strong> — "biasing the seed" = nudging the seed toward a text
+  target by <strong>gradient on the seed</strong>: backprop <code>cosine(CLIP_image(decode(z)), CLIP_text(target))</code>
+  and take <code>K=8</code> small steps (lr 0.05), <strong>re-standardizing</strong> after each step so the seed stays on
+  the ‖z‖=√d sphere (E25/E26 latent-mode, reused as <code>optimize_seed</code>). It is a smooth nudge of the
+  <em>current</em> seed, not a new draw.</li>
+<li><strong>B-VQA (↑, 0–1)</strong> — the metric (T2I-CompBench attribute binding). spaCy extracts the prompt's
+  <strong>noun phrases</strong> ("a green bench", "a blue bowl"); BLIP-VQA answers "{phrase}?" per image,
+  giving <code>P(yes)</code>; the score is the <strong>product</strong> of P(yes). Because it is a product, <strong>one dropped
+  or mis-bound element tanks it</strong> — unlike CLIP-T, B-VQA <em>sees</em> a missing object. (We use
+  <code>Salesforce/blip-vqa-base</code> — safetensors; the capfilt-large checkpoint is <code>.bin</code>-only and
+  blocked on torch&lt;2.6. Fine for <em>relative</em> recovery.)</li>
+<li><strong>FAIL threshold τ=0.5</strong> — a (prompt, seed) generation <strong>fails</strong> if its B-VQA &lt; τ. We intervene
+  only on failures (the cases with headroom).</li>
+<li><strong>Per-prompt seed-dependence</strong> — for each prompt, the <strong>fraction of seeds that pass</strong>. A prompt
+  with passrate&gt;0 is <strong>seed-dependent</strong> (some seed <em>can</em> render it, so a seed change <em>could</em>
+  help); passrate=0 is <strong>always-fail</strong> (no seed in range works, so seed manipulation can't help).
+  We stratify the verdict by this.</li>
+<li><strong>Recovery rate (↑)</strong> — of the intervened failures, the <strong>fraction that cross τ</strong> after the
+  treatment. Reported overall and on the seed-dependent stratum (the fair comparison).</li>
+<li><strong>The treatments — intervention vs re-roll</strong> — on each failure: <strong>opt-A</strong> = bias the seed toward
+  the <em>full prompt</em>; <strong>opt-B</strong> = bias it toward the <em>single lowest-P(yes) noun phrase</em> (the
+  dropped element); <strong>re-roll</strong> = the control, just draw a <em>fresh random seed</em> (no optimization).
+  The whole question is whether the gradient bias (A/B) beats luck (re-roll).</li>
+<li><strong>Do-no-harm (↑, want ≈0)</strong> — apply opt-A to <em>passing</em> pairs and measure ΔB-VQA. ≈0 = safe;
+  negative = the bias <strong>breaks compositions that already worked</strong>.</li>
+</ul>
+<h2>Method (<code>experiments/e28_seedrescue.py</code>, SDXL 1024px)</h2>
+<p>Reuses <code>compbench.{load_compbench_prompts, load_bvqa, noun_phrases, _p_yes}</code>,
+<code>e26_seedalign_sdxl.{load_sdxl, optimize_seed, ...}</code>, <code>clip_sim</code>, <code>common</code>.</p>
+<ol>
+<li><strong>scan</strong> — 30 CompBench prompts (color/shape/texture) × 4 seeds = 120 baseline gens; B-VQA +
+   per-phrase P(yes); locate <strong>FAILS</strong> (B-VQA&lt;τ=0.5) and each prompt's seed-dependence. <em>How often
+   does SDXL drop an element, and is it seed-dependent?</em></li>
+<li><strong>intervene</strong> on the worst 37 failures — run <strong>opt-A</strong>, <strong>opt-B</strong> (<code>optimize_seed</code>, K=8,
+   re-standardized so <code>‖z‖=√d=256</code>), and the <strong>re-roll</strong> control; re-score. <em>Does biasing the seed
+   recover the dropped element — and does it beat just drawing a new seed?</em></li>
+<li><strong>do-no-harm</strong> — apply opt-A to a sample of <strong>passing</strong> pairs. <em>Is biasing the seed at least
+   safe on cases that already work?</em></li>
+</ol>
+<h2>Results</h2>
+<p>Baseline fail rate <strong>0.308</strong> (37/120) — good headroom. On the failing subset:</p>
+<table>
+<thead>
+<tr>
+<th>(37 failures)</th>
+<th>opt-A (full prompt)</th>
+<th>opt-B (dropped phrase)</th>
+<th><strong>re-roll</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>mean ΔB-VQA ↑</td>
+<td>+0.101</td>
+<td>+0.125</td>
+<td><strong>+0.230</strong></td>
+</tr>
+<tr>
+<td>recovery rate (cross τ) ↑</td>
+<td>0.189</td>
+<td>0.243</td>
+<td><strong>0.324</strong></td>
+</tr>
+<tr>
+<td>recovery on <strong>seed-dependent</strong> (n=21) ↑</td>
+<td>0.286</td>
+<td>0.429</td>
+<td><strong>0.571</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>do-no-harm: FAILED.</strong> Applying the optimization to <em>passing</em> pairs <strong>dropped</strong> B-VQA by
+<strong>−0.176</strong> on average — biasing the seed toward the prompt actively <em>breaks</em> compositions that
+already worked. (<code>summary.png</code>, <code>grid_recovered.png</code>, <code>grid_nochange.png</code>.)</p>
+<h2>Verdict (a clean negative)</h2>
+<ul>
+<li><strong>Biasing the seed does not beat simply re-rolling it.</strong> Even in the regime the seed genuinely
+  matters (seed-dependent compositional failures), a fresh random seed recovers <strong>0.57</strong> of
+  failures vs <strong>0.43 / 0.29</strong> for the gradient-biased seed — re-roll wins on every metric, by a
+  wide margin.</li>
+<li><strong>Always-fail prompts</strong> (passrate 0 — e.g. the 4–5-element <code>shape_008</code>, <code>texture_009</code>) recover
+  with <em>nothing</em>: no seed exists in range that the model can render, so seed manipulation can't help.</li>
+<li><strong>The bias even hurts working cases</strong> (−0.176 on passers), so it is not a safe default.</li>
+</ul>
+<p><strong>Why.</strong> Consistent with E25–E27: the gradient toward CLIP/text moves <em>palette/appearance</em>, which
+keeps the latent in the <strong>same compositional basin</strong> while degrading it — it does not jump the
+sampler to a different "which objects appear" mode. Changing <em>which</em> mode renders requires a
+genuinely different seed (a re-roll), not a smooth nudge of the current one. The seed's influence
+on composition is real (seeds differ a lot — that's the seed-dependence) but <strong>not steerable by
+gradient toward the prompt</strong>.</p>
+<p><strong>Practical takeaway:</strong> for compositional adherence, <em>best-of-N random seeds + a B-VQA picker</em> beats
+optimizing a seed; the gradient-bias direction is a dead end for adherence. This closes the
+seed-as-adherence-lever line (E25→E28). The remaining real, positive use of seed-biasing is the
+<strong>appearance/palette steering</strong> documented in E27 (Arm B).</p>
+<h2>Caveats &amp; next</h2>
+<p>(1) B-VQA uses <code>blip-vqa-base</code> (the larger capfilt checkpoint is blocked on torch&lt;2.6); fine for
+<em>relative</em> recovery, less so for absolute scores. (2) The negative is robust across 37 failures
+and a seed-dependence stratification — the decisive comparison (re-roll &gt; opt-B &gt; opt-A on the
+seed-dependent stratum) is unambiguous — but n per stratum is modest, so read the direction, not
+third decimals. (3) Constraint <code>‖z‖=√d</code> held on every edit. <strong>Next:</strong> the practical lever for
+compositional adherence is best-of-N random seeds + a B-VQA/VQA picker (not gradient on the seed);
+seed-biasing stays an appearance tool (E27 Arm B).</p>
+<h2>Status</h2>
+<p>Done. Negative result is robust across 37 failures and a seed-dependence stratification; the
+decisive comparison (re-roll &gt; opt-B &gt; opt-A on the seed-dependent stratum) is unambiguous. HTML
+explainer added (<code>e28_site.py</code>, model-free <code>--part site</code> rebuild) to document the closing of the
+seed-as-adherence thread.</p>
+<h2>Reproduce</h2>
+<pre><code class="language-bash">python experiments/e28_seedrescue.py quick   # smoke
+python experiments/e28_seedrescue.py         # full -&gt; results/e28/{grid_recovered.png, grid_nochange.png, summary.png, report.json}
+python experiments/e28_seedrescue.py --part site  # model-free: rebuild results/e28/index.html from report.json + figures (no SDXL/BLIP load)
+</code></pre>
+<p>Artifacts: <code>results/e28/grid_recovered.png</code> (cols: baseline-fail | opt-A | opt-B | re-roll),
+<code>grid_nochange.png</code> (do-no-harm on passers), <code>summary.png</code>, <code>report.json</code>, <code>index.html</code>
+(self-contained explainer). Lineage: <code>EXPERIMENT_26.md</code>, <code>EXPERIMENT_27.md</code> (E25–E27 seed-bias thread).</p></article><p class=rnav><a href='thread-seed.html'>← Seed steering (“golden noise”)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_28.md'>source .md</a> · <a href='../../experiments/e28_seedrescue.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

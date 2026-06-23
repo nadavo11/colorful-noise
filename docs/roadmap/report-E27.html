@@ -1,0 +1,214 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E27 — A single “concept direction” in the seed (CLIP-&gt;latent pullback)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-seed.html'>← Seed steering (“golden noise”)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_27.md'>source .md</a> · <a href='../../experiments/e27_seeddir.py'>driver</a></p><article class=report><h1>E27 — A single "concept direction" in the diffusion seed (CLIP→latent pullback)</h1>
+<p><strong>TL;DR.</strong> A diffusion model starts from a random <strong>seed</strong> (a Gaussian noise array) and the
+seed leaves traces in the output. So: can we compute <strong>one direction per prompt</strong> in seed
+space that means "more of this prompt" and simply <strong>add</strong> it to any seed — a linear
+<em>concept/steering vector</em> — instead of optimizing every seed (E25/E26)? We build the
+direction in two stages (a CLIP-space direction, then a pull-back through the decoder into
+latent space) and keep the edited seed Gaussian by re-standardizing so it stays on the
+<code>‖z‖=√d=256</code> sphere. <strong>Findings:</strong> the two stages collapse to a <strong>single chain-rule backward
+pass</strong>, and the <strong>anchor barely matters</strong> (every anchor gives nearly the same latent
+direction, cos 0.89–0.97). The single additive direction is <strong>too blunt</strong> — gentle = no
+measurable change, strong (<code>s≈1</code>) = destroyed image. The heavy <em>iterative</em> version (Arm B) is
+well-behaved but gives <strong>palette/appearance, not composition</strong> (CLIP-T stays flat). Consistent
+with E25/E26: the seed's trace is an appearance signal, not a composition lever.</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart LR
+  T[&quot;prompt c → CLIP_text&quot;] --&gt; G[&quot;Stage 1: CLIP-space dir g (anchor e0)&quot;]
+  G --&gt; V[&quot;Stage 2: pull back Jᵀg → latent dir v&quot;]
+  V --&gt; A[&quot;Arm A: z' = renorm(z₀ + s·√d·v)&quot;]
+  Z[&quot;seed z₀ (‖z‖=√d)&quot;] --&gt; A
+  Z --&gt; B[&quot;Arm B: iterate z₀ for N steps (re-standardize)&quot;]
+  A --&gt; IMG[&quot;SDXL → image → CLIP-T&quot;]
+  B --&gt; IMG
+</code></pre>
+<h2>Background (plain language)</h2>
+<p><em>The HTML report (<code>results/e27/index.html</code>) carries the same glossary inline and leads each
+result with its figure. Defining every term here keeps this writeup self-contained.</em></p>
+<ul>
+<li><strong>Seed / latent</strong> — image diffusion works in a compressed <strong>latent</strong> space. For SDXL a
+  <strong>seed</strong> is a <code>4×128×128</code> Gaussian noise array (dimension <code>d = 65536</code>); the model denoises it
+  into the final 1024×1024 image. The same seed produces the same image.</li>
+<li><strong>The ‖z‖=√d sphere</strong> — a standard Gaussian vector in <code>d</code> dims has norm ≈ <code>√d = 256</code> (since
+  <code>‖z‖²=d·(var+mean²)</code>, var≈1, mean≈0). We keep every seed we make exactly on that sphere by
+  <strong>re-standardizing</strong> to zero-mean/unit-variance after any edit (<code>renorm(z)=(z−mean)/std</code>), so
+  edits are moves <em>along the sphere real seeds live on</em>, not off into low-probability noise.</li>
+<li><strong>CLIP</strong> — a model with an <strong>image encoder</strong> and a <strong>text encoder</strong> into one shared space;
+  <strong>cosine similarity</strong> there measures image↔text match. Used both to build the direction and to
+  score results.</li>
+<li><strong>Decoder Jacobian <code>J</code></strong> — <code>decode</code> maps latent→pixels; <code>CLIP_image∘decode</code> maps latent→CLIP
+  vector. <code>J</code> says how a small latent change moves the CLIP vector; <code>Jᵀ</code> (one backward pass)
+  turns a desired CLIP direction into the latent direction that best produces it.</li>
+<li><strong>The two-stage direction</strong> —</li>
+<li><strong>Stage 1 (CLIP space):</strong> a unit direction <code>g</code> that raises
+    <code>cosine(image-embedding, CLIP_text(c))</code>, taken as the one-step cosine gradient at a base
+    image's embedding <code>e₀</code>: <code>g = normalize(e_text − ⟨e_text, e₀⟩·e₀)</code>.</li>
+<li><strong>Stage 2 (decoder pullback):</strong> the latent direction whose decoded image moves along <code>g</code>:
+    <code>v = normalize(∇_z⟨CLIP_image(decode(z_base)),g⟩) = normalize(Jᵀg)</code>.</li>
+<li><strong>Chain-rule equivalence</strong> — composing the two stages is a <strong>single backward pass</strong>:
+  <code>v_chain = normalize(∇_z cosine(CLIP_image(decode(z)), text))</code>. The intermediate normalization
+  of <code>g</code> is irrelevant because we normalize <code>v</code> at the end. So the <strong>only substantive choice is
+  where <code>g</code> is anchored</strong> — the base image <code>e₀</code>:</li>
+<li><code>chain</code> — <code>g = e_text</code> anchored at the base latent's <em>own</em> decoded image (pure chain rule).</li>
+<li><code>noise</code> — <code>e₀</code> from random-pixel images.</li>
+<li><code>mean</code> — <code>e₀</code> from the <em>mean</em> of a small image pool (a gray-ish prior).</li>
+<li><code>fit</code> — <code>e₀</code> from an image that <strong>matches</strong> the prompt.</li>
+<li><code>nofit</code> — <code>e₀</code> from an image that <strong>does not</strong> match the prompt.</li>
+<li><strong>Arm A — additive direction (strength s)</strong> — apply once: <code>z' = renorm(z₀ + s·√d·v)</code>. Here
+  <code>s</code> is the <strong>ratio of the added vector's norm to the seed's own norm</strong>, so <code>s=1</code> is a ~45°
+  tilt (expected destructive); useful regime is small <code>s</code>. Sweep <code>[−0.25, 0, 0.1, 0.25, 0.5,
+  1.0]</code> (note the negative −v column).</li>
+<li><strong>Arm B — heavy optimization (N)</strong> — for contrast, <strong>iterate the seed itself</strong> for <code>N</code> steps
+  on the same decode→CLIP→cosine objective, re-standardizing each step (E25/E26 latent-mode
+  taken hard). Sweep <code>N = [0, 1, 5, 20, 60]</code>. Each step is a small, re-projected, on-manifold
+  move — which is why it doesn't blow up like Arm A.</li>
+<li><strong>ΔCLIP-T (↑)</strong> — the metric. <strong>CLIP-T</strong> = cosine(generated image, prompt text). <strong>Δ</strong> =
+  aligned − baseline (edited seed minus unedited seed), so <strong>Δ&gt;0 means the edit moved the image
+  toward the prompt</strong>. Means over all prompt×seed cells.</li>
+</ul>
+<h2>Method (<code>experiments/e27_seeddir.py</code>, SDXL 1024px)</h2>
+<p>Reuses <code>e26_seedalign_sdxl.{load_sdxl, clip_pixel_values, moments, optimize_seed}</code>,
+<code>clip_sim.{load_clip, clip_image_features, clip_text_features, cosine}</code>,
+<code>common.{save_grid, generate}</code>. Prompts: 5 medium scenes from <code>e9_bandnorm_classes.CLASSES</code>
+× 2 seeds. fp16 models + fp16-fix VAE; <code>z</code> fp32. The pullback is a single VAE-decode+CLIP
+backward per (base, direction), averaged over <code>B=2</code> random base latents (the Jacobian is
+point-dependent, so averaging makes the direction more transferable). All heavy GPU ops have
+OOM-retry; the seed is re-standardized after every edit (<code>‖z‖≡256</code> verified).</p>
+<p>Parts / questions:
+- <strong>Anchor comparison</strong> (fixed <code>s=0.25</code>) — build the direction from each anchor and compare
+  ΔCLIP-T <em>and</em> the pairwise cosines of the resulting latent directions. <em>Does the anchor choice
+  change the direction?</em>
+- <strong>Arm A</strong> — add <code>v_chain</code> at each <code>s</code>. <em>Is there a small <code>s</code> that reliably raises CLIP-T?
+  Where does it collapse?</em>
+- <strong>Arm B</strong> — iterate the seed for <code>N</code> steps. <em>What does "pushing on-manifold" do — does it raise
+  CLIP-T, and does it change composition or just appearance?</em></p>
+<h2>Results (5 prompts × 2 seeds; <code>results/e27/</code>, mean ΔCLIP-T = aligned − baseline ↑)</h2>
+<p><strong>Anchor comparison (fixed <code>s = 0.25</code>)</strong> — all break-even, <code>chain</code> marginally best
+(<code>grid_anchors.png</code>):</p>
+<table>
+<thead>
+<tr>
+<th>anchor</th>
+<th>chain</th>
+<th>noise</th>
+<th>mean</th>
+<th>fit</th>
+<th>nofit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>mean ΔCLIP-T ↑</td>
+<td><strong>+0.000</strong></td>
+<td>−0.006</td>
+<td>−0.016</td>
+<td>−0.009</td>
+<td>−0.008</td>
+</tr>
+<tr>
+<td>mean cos(v_chain, v_·)</td>
+<td>1.00</td>
+<td>0.97</td>
+<td>0.92</td>
+<td>0.89</td>
+<td>0.97</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The Stage-1 anchor barely matters</strong>: every anchor yields nearly the same latent direction
+(<code>cos = 0.89–0.97</code>). The <code>fit</code> anchor (an image <em>of</em> the prompt) deviates most (0.89) and helps
+least — subtracting the already-on-prompt component changes <code>g</code> the most. So "the prompt
+direction in seed space" is essentially <strong>anchor-independent</strong>; the rest uses <code>v_chain</code>.</p>
+<p><strong>Arm A — additive direction <code>v_chain</code>, strength sweep</strong> (<code>grid_direction.png</code>):</p>
+<table>
+<thead>
+<tr>
+<th>s (·√d)</th>
+<th>−0.25</th>
+<th>0</th>
+<th>0.1</th>
+<th>0.25</th>
+<th>0.5</th>
+<th>1.0</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>mean ΔCLIP-T ↑</td>
+<td>−0.002</td>
+<td>0</td>
+<td>+0.000</td>
+<td>+0.000</td>
+<td><strong>−0.083</strong></td>
+<td><strong>−0.144</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A single additive direction is <strong>too blunt</strong>: at gentle strength (<code>s ≤ 0.25</code>) it is
+<strong>break-even</strong> (no measurable CLIP-T change, image visually unchanged); at <code>s = 0.5</code> it washes
+the image out; at <code>s = 1</code> (added vector ≈ the seed's own size, a ~45° tilt) it collapses to
+noise. There is no "free lunch" additive <code>s</code> that raises CLIP-T.</p>
+<p><strong>Arm B — heavy per-seed optimization, step sweep</strong> (<code>grid_heavy.png</code>):</p>
+<table>
+<thead>
+<tr>
+<th>N steps</th>
+<th>0</th>
+<th>1</th>
+<th>5</th>
+<th>20</th>
+<th>60</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>mean ΔCLIP-T ↑</td>
+<td>0</td>
+<td>+0.002</td>
+<td><strong>+0.003</strong></td>
+<td>+0.001</td>
+<td>+0.001</td>
+</tr>
+</tbody>
+</table>
+<p>Iterating <em>on the sphere</em> is far better-behaved than the single additive jump: it
+<strong>progressively intensifies palette / saturation / detail toward the concept while preserving
+composition</strong>, even at <code>N = 60</code> (not destroyed). CLIP-T stays ~flat (best <code>+0.003</code> at <code>N = 5</code>):
+it enhances <em>appearance</em>, not object presence. The reason it doesn't blow up like Arm A is the
+<strong>per-step re-standardization</strong> (each step is a small, re-projected, on-manifold move).</p>
+<h2>Takeaways</h2>
+<ol>
+<li><strong>The two stages are one chain-rule backward pass</strong>, confirmed; and the anchor is almost
+   irrelevant (directions 0.89–0.97 correlated), with the pure chain-rule (<code>chain</code>) marginally
+   best.</li>
+<li><strong>A single additive concept-direction is too blunt for adherence</strong>: gentle = no effect,
+   strong = destruction. There is no additive <code>s</code> that raises CLIP-T.</li>
+<li><strong>On-manifold iterative steering (Arm B) is the well-behaved version</strong>: it intensifies the
+   concept's palette/appearance gracefully up to many steps without wrecking structure — but it
+   shifts <em>appearance</em>, not composition, so CLIP-T stays flat. This is the real positive use of
+   seed-biasing.</li>
+<li>Consistent with <strong>E25/E26</strong>: the seed's trace is a <strong>palette / global-appearance</strong> signal,
+   not a composition one. Re-standardizing each step (staying on the √d sphere) is what makes
+   steering safe.</li>
+</ol>
+<h2>Caveats &amp; next</h2>
+<p>(1) The direction <code>v</code> is computed at a few random base latents but applied to a different seed;
+the decoder Jacobian is point-dependent, so transfer is imperfect (averaging over bases
+mitigates). (2) CLIP-T is a coarse metric blind to dropped elements — the visual grids are the
+real evidence; the small ΔCLIP-T signs are within noise. (3) This is a linear edit in a highly
+nonlinear pipeline — expect it to shift palette/global-appearance more than composition.
+<strong>Next:</strong> E28 takes this to hard compositional prompts with a metric (B-VQA) that <em>does</em> see
+dropped elements, to ask whether biasing the seed can rescue a missing object.</p>
+<h2>Status</h2>
+<p>Done. Constraint (<code>‖z‖≡√d</code>, moments held) verified on every edit. Both arms run; anchor
+ablation + chain-rule equivalence quantified. The robust, reproducible parts are the
+anchor-independence, the s-collapse threshold, and Arm B's do-no-harm intensification; the
+small ΔCLIP-T signs are within noise.</p>
+<h2>Reproduce</h2>
+<pre><code class="language-bash">python experiments/e27_seeddir.py quick   # 1-prompt smoke
+python experiments/e27_seeddir.py         # full -&gt; results/e27/{grid_direction,grid_anchors,grid_heavy,deltaclip}.png, report.json
+python experiments/e27_seeddir.py --part site  # model-free: rebuild results/e27/index.html from report.json + cached grids (no SDXL/CLIP load)
+</code></pre>
+<p>Artifacts: <code>results/e27/grid_direction.png</code> (Arm A s-sweep), <code>grid_heavy.png</code> (Arm B),
+<code>grid_anchors.png</code> (anchor compare), <code>deltaclip.png</code> (trends), <code>report.json</code>,
+<code>index.html</code> (self-contained explainer, embeds the grids). Lineage: see <code>EXPERIMENT_26.md</code>
+(E25/E26 seed-alignment) for the thread; <code>EXPERIMENT_28.md</code> for the compositional sequel.</p></article><p class=rnav><a href='thread-seed.html'>← Seed steering (“golden noise”)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_27.md'>source .md</a> · <a href='../../experiments/e27_seeddir.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

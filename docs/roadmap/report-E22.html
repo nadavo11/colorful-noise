@@ -1,0 +1,223 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E22 — DDIM-inversion frequency-band editing (SDXL pivot)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_22.md'>source .md</a> · <a href='../../experiments/e22_ddim_edit.py'>driver</a></p><article class=report><h1>E22 — Spectral image editing via DDIM inversion + frequency-band locking (SDXL)</h1>
+<p><strong>TL;DR.</strong> We edit a <em>real</em> photo by spectral surgery: invert it back to the noise that would have
+produced it, then regenerate with a new prompt while <strong>locking</strong> the source's low-frequency
+<strong>phase</strong> (which carries layout) so the prompt only repaints appearance (oil painting / pencil
+sketch / watercolor). E21 tried this on <strong>SD3.5</strong> and the <strong>inversion drifted</strong> — the round-trip
+would not close, and reconstruction is the gate for everything downstream. E22 keeps the <strong>exact
+same band-lock editing control</strong> and swaps the backbone to <strong>SDXL</strong>, an <strong>ε-prediction</strong> model with
+a clean, deterministic <strong>DDIM inversion</strong>. The result: the <strong>gate passes</strong> (reconstruction CLIP-I
+≈ <strong>0.94</strong> vs E21's drift), and phase-band locking is a <strong>strong, tunable composition-preservation
+knob</strong> — it lifts structure-to-source CLIP-I from <strong>0.60 → 0.90</strong> while the prompt still moves the
+look, but <strong>trades away</strong> prompt adherence (edit CLIP-T <strong>0.24 → ≈ 0.16</strong>). A genuine
+structure⇄edit <strong>frontier</strong>, not a free lunch.</p>
+<blockquote>
+<p><strong>Status / Verdict:</strong> ✅ <strong>Ran on SDXL. The gate passes</strong> — DDIM reconstruction CLIP-I ≈ <strong>0.94</strong>
+(vs E21's drift). Phase-band locking lifts structure-to-source CLIP-I <strong>0.60 → 0.90</strong> while the
+prompt still moves appearance, but <strong>trades away</strong> prompt adherence (edit CLIP-T <strong>0.24 → ≈ 0.16</strong>).
+It is a genuine structure⇄edit frontier, with <code>c</code> (how much layout to lock) and <code>u</code> (how long) as
+the two dials.</p>
+</blockquote>
+<pre><code class="language-mermaid">flowchart LR
+  A[&quot;real photo&quot;] --&gt;|VAE encode| B[&quot;clean latent x0&lt;br/&gt;(1,4,128,128)&quot;]
+  B --&gt;|DDIM inversion&lt;br/&gt;(DDIMInverseScheduler, 0→T)| C[&quot;noise&quot;]
+  C --&gt;|&quot;regen, SAME prompt&lt;br/&gt;(the gate)&quot;| R[&quot;reconstruction&quot;]
+  A -. &quot;recon CLIP-I ≈ 0.94 ✅&quot; .- R
+  C --&gt;|&quot;regen, TARGET prompt&lt;br/&gt;+ BandLock callback&quot;| E[&quot;edit&quot;]
+  B -. &quot;lock source low-band PHASE&lt;br/&gt;(layout)&quot; .-&gt; E
+</code></pre>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Latent (SDXL).</strong> SDXL denoises a <code>4×128×128</code> latent at 1024px; a VAE decodes it to RGB. That
+  <code>(H,W)=128</code> grid is <strong>identical</strong> to SD3.5's, so the radial-band spectral operators
+  (<code>spectral_ops</code>, <code>style_ops</code>) apply <strong>unchanged</strong> — they are channel-agnostic.</li>
+<li><strong>ε-prediction vs rectified flow.</strong> SDXL predicts the <strong>noise</strong> <code>ε</code> added to a latent (classic
+  DDPM/DDIM formulation), unlike SD3.5's velocity field. ε-prediction has a clean, well-behaved
+  <strong>DDIM inversion</strong>: a deterministic map clean-latent → noise that closes back to the same image.
+  This is exactly the property E21's RF model lacked.</li>
+<li><strong>DDIM inversion (clean → noise).</strong> Run the pipeline with the <strong><code>DDIMInverseScheduler</code></strong>
+  (timesteps 0 → T) on a real image's latent to recover the noise that produces it. Reverse with the
+  normal <code>DDIMScheduler</code> and you should get the image back.</li>
+<li><strong>FFT phase vs magnitude.</strong> Each spatial frequency carries a <strong>magnitude</strong> (ripple strength →
+  texture/palette) and a <strong>phase</strong> (alignment → structure/layout). Classic result (Oppenheim &amp; Lim):
+  <strong>phase carries layout</strong>. Locking phase locks layout.</li>
+<li><strong>Frequency-band PHASE locking (composition preservation).</strong> Frequencies binned into <code>N_BINS=24</code>
+  rings from DC; band 0 = coarsest layout. The <strong><code>lockphase</code></strong> variant (<code>BandLock</code>, <code>mode="phase"</code>)
+  keeps the <strong>source's</strong> low-band phase (layout) while the new prompt owns the magnitude + high-band
+  phase — composition survives, the prompt repaints appearance.</li>
+<li><strong>cut <code>c</code> + until <code>u</code> (the two dials).</strong> <strong><code>c</code></strong> = the lowest fraction of the spectrum that gets
+  locked (<code>c=0.1</code> coarsest only, <code>c=0.25</code> a bit more). <strong><code>u</code></strong> = the lock is active only for the
+  first <code>u</code> fraction of denoising steps, then released (<code>u=0.6</code> lets go early; <code>u=1.0</code> holds to the
+  end).</li>
+<li><strong><code>lockpower</code> (palette lock, the control).</strong> <code>BandLock</code> <code>mode="power"</code> re-levels per-band <em>power</em>
+  (magnitude energy) to the source. Magnitude carries palette/texture, not layout, so this is
+  expected to barely preserve structure — a control isolating the phase⇄magnitude split.</li>
+<li><strong>The metrics.</strong> <code>recon_clip_i</code> ↑ = CLIP-I of the reconstruction to the source (<strong>~0.94 = round-trip
+  closed</strong>, the gate). <code>struct_clip</code> ↑ = CLIP-I of the edit to the <strong>source</strong> (composition preserved).
+  <code>edit_clip_t</code> ↑ = CLIP of the edit to the <strong>target prompt</strong> (edit followed). A good knob negotiates
+  the last two.</li>
+</ul>
+<h2>Method</h2>
+<ul>
+<li><strong>Model.</strong> SDXL (<code>StableDiffusionXLPipeline</code>, fp16, <code>SDXL_ID</code>), <code>DDIMScheduler</code> for generation +
+  <code>DDIMInverseScheduler</code> for inversion, 1024px, <code>(1,4,128,128)</code> latent, 30 steps, inversion guidance
+  1.0, edit CFG 5.0. Runs locally (SDXL is cached).</li>
+<li><strong><code>--part invert</code> (the gate).</strong> Encode the photo with the VAE (in fp32 for stability), run
+  <code>ddim_invert</code> (temporarily swap in the inverse scheduler, run the pipe to get the noise latent,
+  restore the normal scheduler), regenerate from that noise with the <strong>same</strong> prompt at guidance 1,
+  and score <code>recon_clip_i</code> to the original (+ report <code>noise_std</code> as a sanity check). <em>Question: does
+  the inverted noise round-trip back to the source?</em> High ⇒ the inverted noise is faithful ⇒ edits
+  are meaningful.</li>
+<li><strong><code>--part edit</code> (the frontier).</strong> Same inversion, then regenerate with a <strong>target</strong> prompt under
+  band-lock variants — <code>invert_only</code> (baseline, no lock) · <code>lockphase_c{0.1,0.25}_u{0.6,1.0}</code> (four
+  phase-lock settings) · <code>lockpower</code> — scoring <code>struct_clip</code> (CLIP-I to source ↑) against
+  <code>edit_clip_t</code> (CLIP to target prompt ↑). Three edits, all from real photos: photo→oil-painting,
+  photo→pencil-sketch, photo→watercolor. <em>Question: can locking source low-band phase preserve
+  composition while the prompt repaints appearance — and at what cost to adherence?</em></li>
+<li><strong><code>--part preflight</code> (model-free, passes).</strong> Verifies the band-lock invariants:
+  <code>band_phase_swap(c=1, mag_from="A")</code> reconstructs the source (&lt;1e-2); <code>mag_from="B"</code> returns a
+  valid same-shape float latent. The math is right before any model loads.</li>
+</ul>
+<h2>Results</h2>
+<p>(SDXL, 3 real photos, 30 steps, edit CFG 5.0. Numbers from <code>results/e22/invert.json</code> and
+<code>results/e22/edit.json</code>.)</p>
+<h3>Reconstruction (the gate)</h3>
+<p><strong>What to look for.</strong> A faithful inversion makes each reconstruction match its source — same scene,
+layout, colors. On SDXL they do: the round-trip <strong>closes</strong>, unlike E21's SD3.5 drift.</p>
+<p><strong>Interpretation.</strong> SDXL's ε-prediction gives a well-behaved deterministic DDIM inversion: the
+recovered "noise" is faithful, so the clean→noise→clean loop returns the source. This is the core
+win of the E21→E22 pivot — with a passing gate, the edit cells below are interpretable (on E21 they
+were not). Reconstruction CLIP-I to the source: <strong>0.974 / 0.906 / 0.926</strong> (mean <strong>0.935</strong>), with
+<code>noise_std ≈ 0.87–0.90</code>.</p>
+<table>
+<thead>
+<tr>
+<th>photo</th>
+<th>recon CLIP-I ↑ (round-trip; ~0.94 = closed)</th>
+<th>noise_std</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>photo_000</td>
+<td><strong>0.974</strong></td>
+<td>0.87</td>
+</tr>
+<tr>
+<td>photo_001</td>
+<td>0.906</td>
+<td>0.90</td>
+</tr>
+<tr>
+<td>photo_002</td>
+<td>0.926</td>
+<td>0.89</td>
+</tr>
+<tr>
+<td>mean</td>
+<td><strong>0.935</strong></td>
+<td>0.89</td>
+</tr>
+</tbody>
+</table>
+<p>Every cell sits at/above the ~0.94 "round-trip closed" bar — the gate passes.</p>
+<h3>Band-lock edit (the structure⇄edit frontier)</h3>
+<p><strong>What to look for.</strong> The <code>invert_only</code> cell follows the prompt hardest (most repainted) but
+<strong>drifts</strong> from the source layout; each <code>lockphase</code> cell keeps the source composition (same scene
+geometry) while the style still shifts toward the target — and the prompt's grip visibly weakens as
+the lock tightens. <code>lockpower</code> looks like a palette nudge, not a composition lock. (Grids:
+<code>results/e22/edit/grid_*.png</code>.)</p>
+<p><strong>Interpretation.</strong> Locking the source's low-band phase lifts structure-preservation from <strong>0.60</strong>
+(no lock) to <strong>~0.90</strong> — a large, consistent gain confirming <strong>low-band phase = layout</strong> end-to-end
+on a <em>real</em> image edit, not just generated latents (E18/E19). But it is a <strong>frontier, not a free
+lunch</strong>: every <code>lockphase</code> cell <strong>drops</strong> edit CLIP-T from the <strong>0.237</strong> baseline to <strong>≈ 0.15–0.17</strong>,
+because holding the layout fixed constrains how far the prompt can repaint. Within the phase
+variants, <strong><code>u=1.0</code> (hold to the end) gives slightly better edit-CLIP than <code>u=0.6</code></strong> at essentially
+equal structure — counter-intuitive but consistent across all three edits, suggesting early release
+lets the layout partly wash out without buying back much edit strength. <code>c=0.1</code> and <code>c=0.25</code> are
+close; the smaller cut preserves marginally more structure. <code>lockpower</code> barely moves structure
+(<strong>0.637</strong>, only just above the 0.602 baseline) — magnitude carries palette, not layout — confirming
+the phase/magnitude split rather than competing with it.</p>
+<table>
+<thead>
+<tr>
+<th>condition (mean over edits)</th>
+<th>struct→source (CLIP-I) ↑</th>
+<th>edit→prompt (CLIP-T) ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>invert_only</code> (baseline)</td>
+<td>0.602</td>
+<td><strong>0.237</strong></td>
+</tr>
+<tr>
+<td><code>lockphase_c0.1_u0.6</code></td>
+<td>0.902</td>
+<td>0.146</td>
+</tr>
+<tr>
+<td><code>lockphase_c0.1_u1.0</code></td>
+<td>0.900</td>
+<td>0.169</td>
+</tr>
+<tr>
+<td><code>lockphase_c0.25_u0.6</code></td>
+<td>0.884</td>
+<td>0.153</td>
+</tr>
+<tr>
+<td><code>lockphase_c0.25_u1.0</code></td>
+<td><strong>0.892</strong></td>
+<td>0.173</td>
+</tr>
+<tr>
+<td><code>lockpower</code></td>
+<td>0.637</td>
+<td>0.164</td>
+</tr>
+</tbody>
+</table>
+<p>The two best cells land in <strong>different rows</strong> — max structure (a <code>lockphase</code> cell) and max adherence
+(the <code>invert_only</code> baseline) trade off. That gap <strong>is</strong> the frontier; <code>c</code> and <code>u</code> tune where you sit
+on it. <code>c=0.1, u=1.0</code> is the current sweet spot (max structure, best edit-CLIP among the strong-lock
+cells).</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>3 photos, 3 prompts</strong> — directionally clear (the struct gap is huge and unanimous) but a small
+  sample; widen the photo/prompt set before any strong quantitative claim on the edit frontier.</li>
+<li><strong>CLIP-T is a weak edit metric</strong> for style words ("oil painting") — the absolute edit numbers are
+  low even at baseline; the <em>relative</em> drop under lock is the trustworthy signal, and the qualitative
+  grids (<code>results/e22/edit/grid_*.png</code>) are the real evidence of the look.</li>
+<li><strong>Isotropic bands</strong> lock layout phase + texture energy, <strong>not oriented strokes</strong> (the E18 caveat
+  persists).</li>
+<li>The structure⇄edit trade is a <strong>frontier to tune</strong>, not a single setting: <code>c</code> (how much layout to
+  lock) and <code>u</code> (how long) are the two dials. <code>c=0.1, u=1.0</code> is the current sweet spot.</li>
+<li><strong>Next:</strong> a soft/decaying lock (ramp the lock strength down over steps instead of a hard release)
+  to recover edit-adherence without losing the layout; and per-edit picking along the <code>(c,u)</code>
+  frontier rather than a global setting.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash">cd experiments
+# 0) model-free sanity: band-lock reconstruction + shape invariants
+python e22_ddim_edit.py --part preflight
+# 1) THE GATE: DDIM-invert real photos, reconstruct (same prompt), report CLIP-I  -&gt; invert.json
+python e22_ddim_edit.py --part invert --num 3 --steps 30 --inv_guidance 1.0
+# 2) edit: invert, regenerate with target prompt under band-lock variants          -&gt; edit.json
+python e22_ddim_edit.py --part edit \
+    --num 3 --steps 30 --inv_guidance 1.0 --cfg 5.0 --cuts 0.1,0.25 --untils 0.6,1.0
+# 3) dump the JSON tables
+python e22_ddim_edit.py --part analyze
+# 4) MODEL-FREE: rebuild results/e22/index.html from invert.json + edit.json + cached grids
+python e22_ddim_edit.py --part site          # (or: python e22_site.py)
+</code></pre>
+<p>Results live on <code>/storage</code> (gitignored). To rebuild the HTML locally without a GPU: <code>kubectl cp</code> the
+<code>invert.json</code> / <code>edit.json</code> + <code>invert/grid.png</code> / <code>edit/grid_*.png</code> from
+<code>mystorage-0-0:/storage/malnick/colorful-noise/experiments/results/e22</code> into local
+<code>experiments/results/e22</code>, then run <code>python e22_ddim_edit.py --part site</code> (no model loaded).</p>
+<p>Code: <code>experiments/e22_ddim_edit.py</code> (driver: <code>load_sdxl</code>, <code>ddim_invert</code> DDIM inversion, <code>BandLock</code>
+callback), HTML generator <code>experiments/e22_site.py</code>, reusing <code>experiments/spectral_ops.py</code>
+(<code>band_phase_swap</code>, <code>band_index_map</code>), <code>experiments/style_ops.py</code> (<code>restyle_latent</code>,
+<code>latent_band_power</code>), and <code>experiments/clip_sim.py</code> (<code>load_clip</code>, <code>clip_image_features</code>,
+<code>clip_text_features</code>, <code>cosine</code>). Results in <code>experiments/results/e22/</code> (<code>invert.json</code>, <code>edit.json</code>,
+<code>invert/grid.png</code>, <code>edit/grid_*.png</code>, <code>index.html</code>).</p></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_22.md'>source .md</a> · <a href='../../experiments/e22_ddim_edit.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

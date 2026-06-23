@@ -1,0 +1,106 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E31 — Real-image editing via FlowEdit + frequency-surgery conditioning</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_31.md'>source .md</a> · <a href='../../experiments/e31_flowedit_freq.py'>driver</a></p><article class=report><h1>E31 — Real-image editing via FlowEdit + frequency-surgery conditioning</h1>
+<p><strong>Follow-up to E24/E30</strong> (numbered E31). FlowEdit (Kulikov et al. 2024) edits a flow
+model's output <strong>without inversion</strong> by integrating the difference between target- and
+source-conditioned velocity fields and adding the resulting delta to the source latent.
+E31's twist: the <strong>target conditioning is a token-frequency surgery</strong> of the source
+conditioning (E24/E30 ops) — e.g. low band from the source prompt + high band from the edit
+prompt — instead of a plain different prompt.</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart LR
+  SRC[&quot;source image&quot;] --&gt; X0[&quot;x0 latent&quot;]
+  CSRC[&quot;C_src (source prompt)&quot;] --&gt; FE[&quot;FlowEdit ODE: δ += dσ·(v(x_tar,C_tar) − v(x_src,C_src))&quot;]
+  CTAR[&quot;C_tar = band_swap(low: C_src, high: C_style)&quot;] --&gt; FE
+  X0 --&gt; FE
+  FE --&gt; DEC[&quot;x0 + δ → unpack → VAE decode&quot;] --&gt; OUT[&quot;edited image&quot;]
+</code></pre>
+<h2>Background (plain language)</h2>
+<p><em>The HTML report (<code>results/e31/index.html</code>) carries the same glossary inline and leads each
+scene with its before/after strip.</em></p>
+<ul>
+<li><strong>Flow model &amp; velocity</strong> — Flux generates by following a learned <strong>velocity field</strong>
+  <code>v(x, σ, C)</code> from noise (σ=1) to a clean latent (σ=0), conditioned on the text embedding <code>C</code>.
+  <code>x0</code> is the clean source latent (from the source prompt, or VAE-encoded from a real image).</li>
+<li><strong>FlowEdit (inversion-free)</strong> — no inversion back to noise; set <code>δ=0</code> and, stepping σ high→low,
+  accumulate <code>δ += (σ_next−σ)·[v(x_tar, C_tar) − v(x_src, C_src)]</code>; the edit is <code>x0 + δ</code>. Only the
+  <strong>difference</strong> between the two conditionings drives the change.</li>
+<li><strong>C_src vs C_tar</strong> — <code>C_src</code> = source-prompt embedding; <code>C_tar</code> = target. If <code>C_tar = C_src</code> the
+  difference is exactly zero → output is the source unchanged (the safety gate).</li>
+<li><strong><code>--skip</code></strong> — fraction of the top (noisiest) steps to skip; higher = weaker edit / more source
+  preserved (here 0.33).</li>
+<li><strong>Conditions</strong> — <code>recon</code> = <code>C_tar=C_src</code> (the identity gate, must reproduce the source);
+  <code>full</code> = <code>C_tar</code> is the <strong>whole style prompt</strong> (ordinary prompt-swap FlowEdit, the edit
+  baseline); <code>swap_c0.25</code> / <code>swap_c0.4</code> = <strong>frequency surgery</strong> — token-axis spectrum with the
+  <strong>low band (0–0.25 / 0–0.4) from the source</strong> and the <strong>high band from the style</strong>.</li>
+<li><strong>Metrics</strong> — <strong>CLIP→style</strong> (↑ stronger edit), <strong>CLIP→source</strong> (↑ content kept),
+  <strong>px-dist→source</strong> (↓ content kept; ≈0 for <code>recon</code>), <strong>aesthetic</strong> (↑ sanity). A good edit
+  <em>raises</em> CLIP→style while <em>keeping</em> CLIP→source.</li>
+</ul>
+<h2>Method (<code>experiments/e31_flowedit_freq.py</code>, Flux)</h2>
+<ul>
+<li><strong>Flux velocity accessor</strong> <code>flux_velocity(pipe, packed_x, sigma, pe, ppe, gids)</code> — a
+  manual Flux transformer forward (packed latents + <code>img_ids</code>/<code>txt_ids</code> + guidance embed),
+  mirroring <code>FluxPipeline</code>'s denoising call and the SD3.5 <code>velocity()</code> in
+  <code>e21_spectral_edit.py</code>. <code>flux_sigmas</code> reproduces Flux's resolution-shifted σ grid.</li>
+<li><strong>FlowEdit (inversion-free):</strong> <code>δ=0; for σ high→low: x_src=(1-σ)x0+σε; x_tar=x_src+δ;
+  δ += (σ_next−σ)·(v(x_tar,C_tar) − v(x_src,C_src))</code>; edited <code>= x0 + δ</code>. <code>--skip</code> controls
+  how many top (noisy) steps are skipped = edit strength.</li>
+<li><strong>Target conditioning</strong> <code>C_tar = freq_surgery(C_src, C_style)</code> via <code>band_swap_1d</code> (low
+  from source, high from style) at a couple of cuts; plus <code>full</code> (C_tar = style, plain
+  prompt-swap FlowEdit) for comparison.</li>
+<li><strong>Source latent</strong> <code>x0</code>: generated from the source prompt (exact caption — clean
+  evaluation) by default, or VAE-encoded from a real image via <code>--real_dir &lt;dir&gt;/&lt;key&gt;.png</code>.</li>
+<li><strong>Reuse:</strong> <code>load_flux_preencoded_lens</code> (E24), <code>flux_vae_decode</code> (E7), <code>gen_emb</code> (E10),
+  <code>text_spectral_ops</code> band ops, <code>e9_clipt</code>/<code>fidelity_metrics</code> metrics, <code>e27_site</code> HTML.</li>
+</ul>
+<h2>The identity property (and the gate)</h2>
+<p>If <code>C_tar == C_src</code> the velocity difference is <strong>exactly zero</strong>, so <code>δ=0</code> and the <code>recon</code>
+condition reproduces the source <strong>exactly by construction</strong> — independent of the σ schedule.
+The reconstruction gate (recon pixel-distance to source &lt; 0.05) therefore validates the
+VAE/packing path before any GPU is spent on the full run. A model-free <code>--part preflight</code>
+checks the FlowEdit accumulation math on a synthetic linear field.</p>
+<h2>Results (runai <code>e31-flowedit</code>, Flux, 3 scenes, 28 steps, skip=0.33, guidance 3.5)</h2>
+<p>Preflight (model-free) and the reconstruction gate both passed, then the full run completed.
+Per-scene CLIP-to-style / CLIP-to-source / pixel-distance below; n=1 per cell.</p>
+<p><strong>Reconstruction identity holds</strong> (the gate). <code>recon</code> (C_tar=C_src) reproduces the source by
+construction: px-dist <strong>0.0031 / 0.0022 / 0.0029</strong> (house_storm / cat_paint / street_snow).
+The Flux velocity accessor, σ schedule, packing, and VAE path are all validated.</p>
+<p><strong>Plain prompt-swap FlowEdit (<code>full</code>) edits — unevenly.</strong> Strong on street_snow
+(CLIP-style 0.093→<strong>0.208</strong>, px-dist 0.121), modest on house_storm (px-dist 0.063 but
+CLIP-style barely moves, .094→.099), near-recon on cat_paint. So inversion-free FlowEdit
+works on Flux, scene-dependent.</p>
+<p><strong>Frequency-surgery target conditioning barely edits — the negative result.</strong>
+<code>swap_c0.25</code> / <code>swap_c0.4</code> (<code>band_swap</code>: low band from source, high band from style) leave
+CLIP-style at <strong>recon level</strong> (street_snow 0.086 — <em>below</em> recon's 0.093; cat_paint 0.169 ≈
+recon 0.168; house_storm 0.088–0.096) with small px-dist. Mechanism: the kept low band
+anchors the conditioning to the source (E24/E30's "low band = owner"), so the velocity
+difference <code>v(x,C_tar) − v(x,C_src)</code> stays ≈0 ⇒ δ≈0 ⇒ no edit; the style's high band is too
+weak to redirect the flow (E24's "high band = weak style-strength knob"). Caveat: short
+prompts collapse the two cuts onto the same integer frequency index (<code>swap_c0.25</code> ==
+<code>swap_c0.4</code> exactly for street_snow).</p>
+<p><strong>Bottom line.</strong> Token-frequency surgery is <strong>not</strong> a usable handle for inversion-free
+editing — it can't out-edit a plain prompt swap, and usually does nothing. This unifies the
+text-freq thread (E24→E30→E31): the low band owns the result, and high-band injection is a
+weak style knob, never a compositional or editing lever.</p>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># self-gating cluster job (preflight -&gt; smoke 1 scene -&gt; recon gate -&gt; full)
+runai submit --name e31-flowedit -g 1 -i pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime \
+  --pvc=storage:/storage --large-shm --command -- \
+  bash /storage/malnick/colorful-noise/experiments/cluster_e31_job.sh
+
+# local
+python experiments/e31_flowedit_freq.py --part preflight                 # math only
+python experiments/e31_flowedit_freq.py --part gen,analyze --num 1 --steps 8   # smoke
+python experiments/e31_flowedit_freq.py   # full -&gt; results/e31/{&lt;key&gt;/strip.png, index.html}
+# real images: place &lt;key&gt;.png files and pass --real_dir &lt;dir&gt;
+
+# rebuild the HTML explainer offline (no GPU) from report.json + cached strips
+python experiments/e31_flowedit_freq.py --part site
+</code></pre>
+<blockquote>
+<p>Cluster note: ship code with <code>kubectl cp</code> (the <code>/storage</code> checkout is not git; the image
+has no git).</p>
+</blockquote>
+<h2>Status</h2>
+<p>Complete. Preflight + recon gate + full run all passed on runai (<code>e31-flowedit</code>, Succeeded).
+Results above; artifacts in <code>experiments/results/e31/</code> (<code>report.json</code> + per-scene
+<code>&lt;key&gt;/strip.png</code> + self-contained <code>index.html</code>). Real-image editing (<code>--real_dir</code>) untested.</p></article><p class=rnav><a href='thread-text-freq.html'>← Text-frequency conditioning</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_31.md'>source .md</a> · <a href='../../experiments/e31_flowedit_freq.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

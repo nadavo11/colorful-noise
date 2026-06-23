@@ -1,0 +1,188 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E26 — Seed-alignment on SDXL + DPG-Bench + step sweep</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-seed.html'>← Seed steering (“golden noise”)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_26.md'>source .md</a> · <a href='../../experiments/e26_seedalign_sdxl.py'>driver</a></p><article class=report><h1>E25–E26 — Seed alignment: biasing the initial noise toward the prompt</h1>
+<h2>TL;DR</h2>
+<p>Diffusion sampling starts from a random latent "seed" <code>z ~ N(0, I)</code>. There is a well-known
+observation that <strong>the seed leaves traces in the output</strong> — the final generated latent stays
+highly correlated (high cosine similarity) with the seed it started from, a consequence of the
+near-linearity of the probability-flow ODE. So instead of sampling <code>z</code> purely at random, can we
+spend a <em>tiny, cheap</em> amount of optimization to nudge the seed <strong>toward the prompt</strong> before
+generation, and have that bias survive into the image? We optimize the seed <strong>purely in latent
+space</strong> (decode <code>z</code>, score its CLIP-similarity to the text, step uphill) <strong>never running the
+UNet</strong>, while a hard moment constraint keeps <code>z</code> a valid Gaussian sample (<code>‖z‖ = √d</code>). <strong>E25</strong>
+piloted this on SD1.5; <strong>E26</strong> ports it to <strong>SDXL</strong> with long <strong>DPG-Bench</strong> prompts and <strong>sweeps
+N</strong>, the number of inner gradient steps. <strong>Headline:</strong> the nudge is a genuinely <strong>gentle,
+do-no-harm, break-even</strong> operation — a single cheap step (<code>N=1</code>) is the only clearly non-negative
+point and <strong>more steps do not help</strong> (they drift slightly negative / off-manifold). This is a
+deliberately gentle lever: the goal is <strong>not</strong> a large prompt-adherence jump, it is to characterize
+a cheap, do-no-harm "better starting point" for the seed.</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart LR
+  Z[&quot;seed z ~ N(0, I)&quot;] --&gt; D[&quot;VAE.decode(z)&quot;]
+  D --&gt; C[&quot;CLIP-image feature&quot;]
+  T[&quot;prompt → CLIP-text (long-aware)&quot;] --&gt; L
+  C --&gt; L[&quot;loss = − cosine(img, text)  (NO UNet)&quot;]
+  L --&gt;|grad to z| S[&quot;step z, then re-standardize → ‖z‖=√d&quot;]
+  S --&gt;|N times| Z
+  S --&gt; G[&quot;pipe(prompt, latents=z*) → image&quot;]
+</code></pre>
+<h2>Background (plain language)</h2>
+<p><em>The HTML report (<code>results/e26/index.html</code>) carries the same glossary inline and leads each result
+with its figure. Defining every term here keeps this writeup self-contained.</em></p>
+<ul>
+<li><strong>Seed <code>z ~ N(0, I)</code></strong> — diffusion generation starts from a random Gaussian noise latent. For
+  SDXL at 1024px this is a <code>4×128×128</code> array, <code>d = 65536</code> numbers; the sampler denoises it into the
+  final latent the VAE paints into the image.</li>
+<li><strong>The Gaussian-sphere / moment constraint (<code>‖z‖ = √d</code>)</strong> — after <em>every</em> gradient step we
+  <strong>re-standardize</strong> <code>z ← (z − mean) / std</code>, forcing <strong>zero mean and unit variance</strong>. Because
+  <code>‖z‖² = d·(var + mean²)</code>, this pins the norm to <code>‖z‖ = √d</code> <strong>exactly</strong> (SD1.5: <code>√16384 = 128</code>;
+  SDXL: <code>√65536 = 256</code>), i.e. the optimization is a move <strong>on the sphere of radius √d</strong> where a true
+  Gaussian sample lives — not off into low-probability latent regions. Measured <code>‖z*‖</code> equals <code>√d</code>
+  to two decimals on every run.</li>
+<li><strong>The latent-space CLIP objective (no UNet, no x̂₀)</strong> — we do <strong>not</strong> predict the clean latent
+  <code>x̂₀</code> and <strong>never run the UNet</strong> in the optimization. We decode the seed itself and compare it to
+  the prompt in CLIP space:</li>
+</ul>
+<p><code>loss = − cosine( CLIP_image( VAE.decode(z) ), CLIP_text(prompt) )</code></p>
+<p>Gradients flow only through the frozen VAE decoder and frozen CLIP image encoder back to <code>z</code>; the
+  UNet is used <strong>only</strong> in the ordinary generation call afterwards. (An alternative that runs one
+  UNet step to form <code>x̂₀</code> was tried in E25 and was more aggressive / destructive — see below. This
+  latent-space version is the gentler, better-behaved one.)
+- <strong>Long-aware CLIP-T (the metric / target)</strong> — SDXL's two text encoders <strong>and</strong> the CLIP scorer
+  truncate at <strong>77 tokens</strong>, but DPG-Bench prompts run ~55–109 words, so plain CLIP-T cannot read
+  the whole prompt. We instead split the prompt into clauses (each ≤77 tokens), CLIP-encode each,
+  <strong>mean-pool + renormalize</strong>, and use that as <em>both</em> the optimization target and the evaluation
+  metric. Higher = the image matches the (whole) prompt better. (This also reframes the idea: the
+  seed is a side-channel that could carry prompt information the truncated text conditioning drops —
+  a hypothesis for future work.)
+- <strong>Inner-step count <code>N</code></strong> — how many gradient steps we take on the seed before generating. <strong>One</strong>
+  optimization is run to the max <code>N</code> and <strong>snapshotted at each value</strong> in the sweep <code>[1, 2, 3, 5]</code>
+  (a prefix reuses work, so the sweep is nearly free). Re-standardization keeps <code>‖z‖=√d</code> at every
+  snapshot.
+- <strong>The generation columns</strong> — <code>baseline</code> = the untouched random seed <code>z₀</code> (no optimization);
+  <code>N=1</code> = the cheap one-step <strong>linear</strong> nudge; <code>N=2 / N=3 / N=5</code> = more inner steps (snapshots of
+  the same run); <code>N=1*strong</code> = a single <strong>strengthened</strong> step (larger lr, <code>0.20</code> vs <code>0.05</code>) —
+  tests whether one bigger jump beats one small one.
+- <strong>ΔCLIP-T (the headline number, ↑ = good)</strong> — per column, <code>long-CLIP-T(aligned image) −
+  long-CLIP-T(baseline image)</code>. <strong>Positive</strong> = optimizing the seed moved the <em>generated image</em>
+  toward the prompt; <code>0</code> = no net effect; <strong>negative</strong> = it hurt. The question is whether the seed
+  nudge survives into the image, and whether more steps <code>N</code> help.</p>
+<h2>Method</h2>
+<h3>E25 — pilot on SD1.5 (512px, <code>experiments/e25_seedalign.py</code>)</h3>
+<p><code>d = 4·64·64 = 16384</code>, so <code>√d = 128</code>. Standalone <code>openai/clip-vit-large-patch14</code> for the objective
+(SD1.5's own text encoder is not in the joint image/text CLIP space). Knobs are env vars
+(<code>E25_MODE</code>, <code>E25_STEPS</code>, <code>E25_TARGET</code>, <code>E25_LR</code>, <code>E25_DTYPE</code>). It characterizes the two objective
+modes — the <strong>x̂₀ mode</strong> (runs one UNet step) and the <strong>latent mode</strong> (decode <code>z</code> directly, no
+UNet). <em>Which formulation is do-no-harm?</em></p>
+<h3>E26 — SDXL + long prompts + N-sweep (<code>experiments/e26_seedalign_sdxl.py</code>)</h3>
+<p>The E25 latent mode, ported to <strong>SDXL</strong> (1024px, fp16; <code>d = 4·128·128 = 65536</code>, <code>√d = 256</code>). The
+stock SDXL fp16 VAE NaNs on decode, so we swap in <code>madebyollin/sdxl-vae-fp16-fix</code>; dropping the
+UNet from the objective makes this comfortably fit a 24 GB A5000 (only VAE+CLIP backprop). Long,
+dense <strong>DPG-Bench</strong> prompts (<code>experiments/dpg_bench.py</code>, cached from the public ELLA repo;
+<code>load_dpg_prompts</code>) — 10 prompts of ~55–109 words — with the long-aware CLIP-T as target and
+metric. Then <strong>sweep N</strong> over <code>[1, 2, 3, 5]</code> plus a strengthened single step, generate from each
+snapshot (40-step, guidance 7.0), and score Δ long-CLIP-T. <em>Does the seed nudge survive into the
+image on a stronger model with long prompts, and do more steps help?</em></p>
+<h2>Results — E26 (10 DPG prompts, 1 seed; <code>results/e26/</code>)</h2>
+<p><em>Read the figure first, then the numbers. n=1 per cell (single seed), so read </em><em>directions</em><em>, not
+third decimals.</em></p>
+<h3>Δ long-CLIP-T vs number of inner steps N (<code>deltaclip_vs_N.png</code>)</h3>
+<p><strong>What to look for.</strong> The y-axis is Δ long-CLIP-T (aligned − baseline); <strong>0 = no effect</strong>. Faint
+dots are per-prompt deltas; the line is the mean over prompts; the red star is the strengthened
+single step. We are asking whether any <code>N</code> sits clearly <strong>above 0</strong>, and whether the curve
+<strong>rises</strong> with <code>N</code> (more steps help) or <strong>not</strong> (break-even).</p>
+<p><strong>Reading — break-even, and the cheapest setting wins.</strong> Mean <strong>Δ long-CLIP-T</strong> (aligned −
+baseline) by number of steps:</p>
+<table>
+<thead>
+<tr>
+<th>N steps</th>
+<th>1</th>
+<th>1 (strengthened)</th>
+<th>2</th>
+<th>3</th>
+<th>5</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>mean Δ</td>
+<td><strong>+0.0015</strong></td>
+<td>+0.0001</td>
+<td>−0.0004</td>
+<td>−0.0017</td>
+<td>−0.0005</td>
+</tr>
+</tbody>
+</table>
+<p><code>N=1</code> (the one-step linear solution) is the only clearly non-negative point; adding more steps does
+<strong>not</strong> help and drifts slightly negative (off-manifold). The strengthened single step is ~0.
+Per-prompt deltas are tiny (±0.01). A single cheap gradient step captures whatever benefit there is.</p>
+<h3>The images — do the aligned columns stay sane? (<code>grid.png</code>)</h3>
+<p><strong>What to look for.</strong> Rows = DPG prompts (one seed each); columns =
+<code>baseline | N=1 | N=2 | N=3 | N=5 | N=1*strong</code>. Read across each row: do the aligned columns stay
+close to the <code>baseline</code> image (gentle palette / saturation / detail shifts), or does any column
+lose composition / collapse? Do later <code>N</code> drift further from baseline?</p>
+<p><strong>Reading.</strong> The aligned columns stay very close to baseline — gentle palette / saturation / detail
+shifts, <strong>no structural damage</strong> (unlike E25's x̂₀ mode, which produced CLIP-adversarial seeds).
+This is the do-no-harm behavior the latent-space objective was chosen for.</p>
+<p><strong>Constraint check:</strong> every <code>z*</code> has <code>mean≈0, std=1, ‖z‖=256.00 = √d</code> at every snapshot, so each
+step is a move on the Gaussian sphere.</p>
+<p><strong>Interpretation.</strong> On a stronger model with long prompts, the latent-space seed nudge is a
+genuinely <em>gentle, break-even</em> operation, and a <strong>single cheap gradient step captures whatever
+benefit there is</strong>. That is consistent with the original motivation: a one-step linear nudge is a
+sensible, low-cost <em>better starting point</em> for the seed, not a heavy optimizer. It does not, by
+itself, move long-prompt adherence much — which is expected given SDXL's 77-token bottleneck.</p>
+<h2>E25 pilot results — why the latent objective</h2>
+<p>Findings (mean Δ CLIP-T over baseline, 4 prompts × 2 seeds):
+- <strong>Moments / norm:</strong> held exactly (<code>mean≈0, std=1.000, ‖z‖=128.00</code>) in every run — the constraint
+  and the objective are jointly satisfiable.
+- <strong>x̂₀ mode (runs one UNet step in the objective):</strong> the inner objective <strong>over-optimizes</strong> (CLIP
+  cosine shoots to ~0.50, higher than any <em>natural</em> image's ~0.25–0.30) and the seed becomes
+  <strong>CLIP-adversarial</strong> — leopard-print for "cat", swirls for "blue sphere", lost composition. Net
+  <strong>−0.022 to −0.025</strong>: it slightly <em>hurts</em>. Early-stopping at a natural CLIP-T reduces the damage
+  but not the sign.
+- <strong>latent mode (decode <code>z</code> directly, no UNet — the method used in E26):</strong> the <strong>gentlest</strong> and
+  best-behaved. Mean Δ <strong>−0.010</strong> (4↑/4↓), visually stays very close to baseline and behaves like a
+  controlled <strong>palette / global-appearance nudge</strong> that occasionally helps (e.g. nudged a red
+  sphere into existence, kept a bench+umbrella scene and just saturated it).</p>
+<p><strong>Takeaway from E25:</strong> the seed's trace is a <strong>palette / global-appearance</strong> trace, not a
+composition one. The latent-space objective is the right, do-no-harm formulation — which is why E26
+uses it.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>(1)</strong> Single seed per cell on the E26 sweep — read <strong>directions</strong>, not third decimals; the
+  small ΔCLIP-T sign is within noise.</li>
+<li><strong>(2)</strong> SDXL's 77-token bottleneck means the model literally cannot read the whole long prompt at
+  generation time, so seed alignment cannot do much for long-prompt adherence by construction.</li>
+<li><strong>(3)</strong> The robust, reproducible findings are the constraint (<code>‖z‖=√d</code>, moments held) and the
+  do-no-harm behavior, <em>not</em> a CLIP-T win.</li>
+</ul>
+<p><strong>Next:</strong>
+- <strong>Beat the 77-token bottleneck</strong> so the seed can actually carry the long-prompt tail: Long-CLIP /
+  T5-conditioned models (SD3.5 / Flux) — but those are NF4-quantized here, so gradient backprop to
+  the seed is heavy (left for later).
+- <strong>Structure, not just palette:</strong> restrict the nudge to a <strong>low-frequency band of <code>z</code></strong> (ties into
+  the project's spectral toolbox) to bias global layout without touching texture.
+- <strong>Stronger metric than CLIP-T:</strong> the official DPG score (VQA-based) or <code>vqascore.py</code>.</p>
+<h2>Status</h2>
+<ul>
+<li>E25 (SD1.5): <strong>done</strong>, both objective modes characterized.</li>
+<li>E26 (SDXL + DPG-Bench + N-sweep): <strong>done</strong>; <code>√d</code>-sphere constraint verified, N=1 best, effect is
+  gentle / break-even on long-aware CLIP-T.</li>
+<li>The constraint (<code>‖z‖=√d</code>, moments held) and the do-no-harm behavior are the robust, reproducible
+  parts; the small ΔCLIP-T sign is within noise.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># prompts (downloads + caches the DPG-Bench CSV on first call)
+python experiments/dpg_bench.py 8
+
+# SD1.5 pilot (modes via env: E25_MODE=latent|x0, E25_STEPS, E25_TARGET, E25_LR)
+python experiments/e25_seedalign.py            # full
+E25_MODE=latent python experiments/e25_seedalign.py
+
+# SDXL + DPG-Bench + N-sweep (knobs: E26_PROMPTS, E26_LR, E26_STRONG_LR, E26_SIZE=768 if OOM)
+python experiments/e26_seedalign_sdxl.py quick # 2 prompts smoke
+python experiments/e26_seedalign_sdxl.py       # full -&gt; results/e26/{grid.png, deltaclip_vs_N.png, report.json}
+
+# rebuild the HTML explainer offline (no GPU) from report.json + cached figures
+python experiments/e26_seedalign_sdxl.py --part site
+</code></pre></article><p class=rnav><a href='thread-seed.html'>← Seed steering (“golden noise”)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_26.md'>source .md</a> · <a href='../../experiments/e26_seedalign_sdxl.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

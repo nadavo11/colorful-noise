@@ -1,0 +1,294 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E19 — Generation-time spectral style transfer</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_18.md'>source .md</a> · <a href='../../experiments/e19_spectral_style.py'>driver</a></p><article class=report><h1>E18+: spectral style transfer &amp; blending from two images ("AdaIN-in-Fourier")</h1>
+<p><strong>The direction.</strong> SBN clamps a generating latent's per-(channel, radial-band)
+<strong>power</strong> to a single reference. The new idea: drive generation with the spectrum
+of <strong>two</strong> sources. The decomposition that makes this work is already established
+(E7–E14): in latent Fourier space <strong>PHASE (esp. low-band) = content/layout</strong> and
+<strong>per-band MAGNITUDE/POWER = "style"</strong> (radial energy envelope = texture slope;
+DC/low bands = palette/contrast). That is the Gatys/AdaIN content–style split moved
+into frequency space — re-leveling per-band power is <strong>AdaIN on the radial power
+spectrum</strong>, and <code>spectral_ops.psd_match</code> is exactly that operator.</p>
+<p>Lineage: this rejoins where the project began — <code>colorful-noise</code> colored the
+<em>initial</em> noise from a reference; here we condition the <em>whole denoising
+trajectory</em> with two references — and connects to Gatys (style = feature
+correlations), AdaIN/StyleGAN (style = feature moments), and <strong>hybrid images</strong>
+(Oliva–Torralba–Schyns 2006: low-freq of A + high-freq of B).</p>
+<p><strong>Isotropy caveat (stated, then probed — not hidden).</strong> Every operator works on
+<em>radial</em> bands, so it transfers texture-energy + palette, <strong>not</strong> oriented/stroke
+style (Gram matrices would). The experiments measure where that ceiling bites; an
+anisotropic-band variant is a later extension.</p>
+<p>Shared operators live in <code>experiments/style_ops.py</code> (built on <code>spectral_ops</code>);
+SD3.5 VAE encode/decode added to <code>experiments/e17_sd35.py</code>. Model: <strong>SD3.5-medium</strong>
+(true CFG, unpacked latents — simplest <code>ClampPSD3</code> path), consistent across
+E18→E22.</p>
+<hr />
+<h2>E18 — offline two-image spectral recombination (foundation) ✅</h2>
+<p><em>The HTML report (<code>results/e18/index.html</code>, built by <code>e18_site.py</code>) carries the same
+glossary inline and leads each result with its figure. Defining every term here keeps
+this writeup self-contained.</em></p>
+<h3>TL;DR</h3>
+<p>Take the 2-D Fourier transform of a diffusion <strong>latent</strong> and split it: the <strong>phase</strong>
+(esp. low/coarse bands) carries the image's <strong>content/layout</strong>, and the
+per-(channel, radial-band) <strong>magnitude/power</strong> carries its <strong>"style"</strong> (radial
+texture-energy envelope + palette/contrast). Re-leveling per-band power is <strong>AdaIN on
+the radial power spectrum</strong> (<code>spectral_ops.psd_match</code>). E18 tests this <strong>offline, no
+diffusion</strong>: VAE-encode pairs of real images (A = content, B = style), recombine their
+spectra, VAE-decode, score. <strong>It holds — but the win is VAE-dependent and isotropic:</strong>
+restyling A toward B keeps A's layout (CLIP→A ≈ 0.90–0.97) while shifting palette/tone
+toward B; the effect is nearly inert in the <strong>Flux</strong> latent yet <strong>real in the SD3.5</strong>
+latent (roughly <strong>halving</strong> the photo→painting spectral distance), and radial bands
+move <strong>tone/palette, not oriented strokes</strong> (Gram matrices would). The honest win is
+<strong>spectral tone transfer</strong> — content-safe — giving the generation-time methods
+(E19–E22) solid ground.</p>
+<h3>Background (plain language)</h3>
+<ul>
+<li><strong>Latent FFT: phase vs per-band magnitude/power.</strong> Encode an image to a <code>(C,H,W)</code>
+  latent, FFT per channel. Each frequency has a <strong>magnitude</strong> (energy/texture) and a
+  <strong>phase</strong> (where ripples line up). Oppenheim–Lim: <strong>phase carries the recognizable
+  structure</strong>.</li>
+<li><strong>Content = low-band phase; style = radial power envelope.</strong> (From E7–E14.) Low-band
+  <strong>phase</strong> fixes <strong>content/layout/identity</strong>; per-(channel, <strong>radial band</strong>) <strong>power</strong>
+  is the <strong>"style"</strong> — texture-energy slope + palette/contrast (DC + low bands). A
+  <strong>radial band</strong> groups Fourier coefficients into concentric rings by distance from DC
+  (band 0 = coarse, high bands = fine detail).</li>
+<li><strong>psd_match / AdaIN-in-Fourier.</strong> <code>psd_match</code> re-scales a latent so its per-band power
+  hits a target envelope <strong>leaving phase untouched</strong> — AdaIN on the radial power
+  spectrum. <code>strength</code> interpolates the target in log space between A's own power
+  (0 = no change) and B's (1 = full style envelope).</li>
+<li><strong>Isotropy caveat (the stated ceiling).</strong> Every operator works on <strong>radial</strong> bands
+  (no orientation), so it transfers <strong>texture-energy + palette/tone</strong>, <strong>not</strong> oriented
+  brush-strokes (those need anisotropic / Gram statistics). E18 measures where that bites.</li>
+<li><strong>The variants</strong> (one decoded latent per (A, B) pair, <code>e18_spectral_recombine.py</code>):</li>
+<li><code>baseA</code> / <code>baseB</code> — the two originals (content / style).</li>
+<li><code>styleA_s{p}</code> (= <code>restyle_latent</code>) — A's phase + A's within-band texture, per-band
+    power → B at strength <code>p</code>; the <strong>isotropic pure-style</strong> op (AdaIN-in-Fourier; sweep
+    <code>--strengths</code>, default 0.5, 1.0). <em>Ours.</em></li>
+<li><code>phaseA_magB</code> (= <code>band_phase_swap</code>, <code>c=1</code>, <code>mag_from=B</code>) — A's phase + B's <strong>full</strong>
+    magnitude; stronger style but drags B's structure in through the magnitude.</li>
+<li><code>hybrid_c{c}</code> (= <code>band_spectrum_split</code>) — full complex spectrum (phase <strong>and</strong>
+    magnitude) from A inside the lowest-<code>c</code> radial fraction, from B outside it; a latent
+    <strong>hybrid image</strong> (Oliva 2006: coarse-A + fine-B; sweep <code>--cuts</code>, default 0.1/0.25/0.5).</li>
+<li><code>phaseonlyA</code> / <code>magonlyA</code> — Oppenheim–Lim controls (phase-only = recognizable-but-flat;
+    mag-only = textured palette swatch, no layout).</li>
+<li><strong>The metrics.</strong> <strong>CLIP→A</strong> (0–1, <strong>↑</strong> = content kept): CLIP-image cosine of the result
+  to A. <strong>CLIP→B</strong>: cosine to B (style pull; content-dominated, so it moves little).
+  <strong>PSD→A / PSD→B</strong> (<strong>↓</strong> = closer): luminance log-radial-PSD distance to A / B (style /
+  texture-energy distance). <strong>colorful / satur.</strong>: colorfulness + saturation (palette readout).</li>
+</ul>
+<h3>Method</h3>
+<ul>
+<li><strong><code>preflight</code></strong> (no model) — numeric asserts on the recombination algebra:
+  <code>restyle(strength=1)</code> re-levels A's bands to B's power <em>without</em> moving phase
+  (band-power rel-err <strong>2e-6</strong>, phase drift <strong>2e-4</strong>); hybrid endpoints exact
+  (<code>c=1 → A</code>, <code>c=0 → B</code>); every recombination stays real (imag residue ~1e-6).
+  <em>Is the operator algebra correct?</em></li>
+<li><strong><code>analyze</code></strong> — VAE-encode the bank, build all variants per (A, B) pair, VAE-decode,
+  score (CLIP→A/→B, PSD→A/→B, colorful/satur.), save the decoded grid +
+  <code>report_&lt;vae&gt;.json</code>. <code>--vae flux</code> = cached Flux VAE (instant smoke); <code>--vae sd35</code> =
+  the E19+ generation model; <code>--styles</code> swaps a painting set in as B for the
+  cross-domain photo→painting test. <em>Does the premise hold on real images, and how much
+  does it depend on the VAE?</em></li>
+</ul>
+<h3>Results</h3>
+<blockquote>
+<p><strong>Regeneration status: BLOCKED.</strong> There is no <code>results/e18/</code> on the cluster or
+locally, so the figures below cannot currently be re-rendered. <code>e18_site.py</code> /
+<code>--part site</code> are wired to the report/grid filenames and will build the page once a
+run exists; numbers here are carried over from the prior E18 run.</p>
+</blockquote>
+<p><strong>Part <code>analyze</code> (within-photo smoke, Flux VAE) — figure first.</strong>
+Decoded grid: <code>results/e18/grids/recombine_flux.png</code> (rows = (A, B) pairs; columns =
+the variants, left→right). <em>What to look for:</em> across a row, A's scene should persist
+under <strong>restyle</strong> while palette/tone bends toward B; <strong>mag-only</strong> = textured palette
+swatch (no layout); <strong>phase-only</strong> = recognizable but flat.</p>
+<p>Per-variant means (6 real photos, 3 pairs; A↔B baseline CLIP ≈ 0.73):</p>
+<table>
+<thead>
+<tr>
+<th>variant</th>
+<th>CLIP→A (content↑)</th>
+<th>CLIP→B</th>
+<th>colorful</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>baseA / baseB</td>
+<td>1.000 / 0.731</td>
+<td>0.731 / 1.000</td>
+<td>0.098 / 0.147</td>
+</tr>
+<tr>
+<td><strong>styleA_s0.5</strong> <em>(ours)</em></td>
+<td><strong>0.973</strong></td>
+<td>0.710</td>
+<td>0.101</td>
+</tr>
+<tr>
+<td><strong>styleA_s1</strong> <em>(ours)</em></td>
+<td><strong>0.926</strong></td>
+<td>0.676</td>
+<td>0.114</td>
+</tr>
+<tr>
+<td>phaseA_magB</td>
+<td>0.775</td>
+<td>0.579</td>
+<td>0.123</td>
+</tr>
+<tr>
+<td>hybrid_c0.1 → c0.5</td>
+<td>0.676 → 0.835</td>
+<td>~0.64</td>
+<td>~0.11</td>
+</tr>
+<tr>
+<td>magonlyA</td>
+<td>0.516</td>
+<td>0.503</td>
+<td>0.161</td>
+</tr>
+</tbody>
+</table>
+<p><em>Reading:</em> <strong>restyle preserves content</strong> (CLIP→A 0.93–0.97) while colorfulness shifts
+A→B with strength — palette lives in DC/low bands, as predicted. <strong>Trade-off
+confirmed:</strong> wholesale <code>phaseA_magB</code> transfers more style but degrades content
+(CLIP→A 0.775). <strong>Hybrid works:</strong> CLIP→A rises monotonically with the cutoff <code>c</code>
+(0.68→0.84) — more low-band-from-A = more A identity. Controls behave (mag-only =
+textured swatch, phase-only = recognizable-but-flat): Oppenheim–Lim holds in this
+latent.</p>
+<p><strong>Part <code>analyze</code> (cross-domain photo → painting) — the conclusion is VAE-dependent.</strong>
+<code>fetch_styles.py</code> pulls public-domain paintings (Van Gogh / Hokusai / Monet / Vermeer /
+Bruegel); rerun pairs photos (A) × paintings (B), A↔B baseline CLIP ≈ <strong>0.60</strong> (real
+domain gap). Decoded grid: <code>results/e18/grids/recombine_sd35.png</code>. <em>What to look for:</em>
+under restyle, does the photo's palette/tone bend toward the painting while the subject
+stays photographic? Means over the photo→painting pairs:</p>
+<table>
+<thead>
+<tr>
+<th>variant</th>
+<th>CLIP→A</th>
+<th>CLIP→B</th>
+<th>PSD→B (↓ closer)</th>
+<th>colorful (paint=0.17)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>baseA (photo)</td>
+<td>1.000</td>
+<td>0.604</td>
+<td>1.92</td>
+<td>0.098</td>
+</tr>
+<tr>
+<td><strong>styleA_s1 (Flux VAE)</strong></td>
+<td>0.920</td>
+<td>0.619</td>
+<td>1.80</td>
+<td>0.104</td>
+</tr>
+<tr>
+<td><strong>styleA_s1 (SD3.5 VAE)</strong></td>
+<td>0.900</td>
+<td>0.609</td>
+<td><strong>1.03</strong></td>
+<td><strong>0.122</strong></td>
+</tr>
+<tr>
+<td>phaseA_magB (SD3.5)</td>
+<td>0.835</td>
+<td>0.611</td>
+<td>0.57</td>
+<td>0.137</td>
+</tr>
+<tr>
+<td>hybrid_c0.1 (SD3.5)</td>
+<td>0.677</td>
+<td><strong>0.695</strong></td>
+<td>—</td>
+<td>0.110</td>
+</tr>
+</tbody>
+</table>
+<p><em>Reading:</em> <strong>It's VAE-dependent — SD3.5 is the favourable one.</strong> In <strong>Flux</strong> latent
+space isotropic band-power is nearly <strong>inert</strong> across domains (PSD→B 1.92→1.80,
+colorful +0.006) — the earlier "weak style" read was partly a Flux-VAE artifact. In
+<strong>SD3.5</strong> latent space (the actual E19 model) it's <strong>real</strong>: restyling a photo toward a
+painting roughly <strong>halves</strong> the spectral distance (PSD→B 1.92→1.03) and moves
+colorfulness ~30% toward the painting, keeping content (CLIP→A 0.90). <strong>But still
+palette/tone, not strokes:</strong> CLIP→B barely moves (0.604→0.609) — the layout/subject
+stays photographic; what transfers is global palette/tone/spectral-energy, not
+painterly brushwork. The isotropy ceiling holds; the win is "spectral tone transfer."
+Wholesale-magnitude and hybrid remain the heavier (content-costlier / structural)
+levers (phaseA_magB colorful 0.137, PSD→B 0.57; hybrid CLIP→B up to 0.695).</p>
+<h3>Reading of the result</h3>
+<p>The phase=content / power=style decomposition genuinely <strong>recombines two real images in
+latent space</strong>, and the headline op (isotropic restyle = AdaIN-in-Fourier) is
+<strong>content-safe spectral tone transfer</strong>, <strong>real on SD3.5</strong> (the E19 model) and nearly
+inert on Flux. The stronger levers (<code>phaseA_magB</code>, hybrid) buy more style at a content
+cost. <strong>Net for E19:</strong> the AdaIN-in-Fourier clamp on SD3.5 is worth running — framed
+honestly as spectral tone/palette transfer — with the hybrid split as the stronger
+structural blend.</p>
+<h3>Caveats &amp; next</h3>
+<ol>
+<li><strong>Data.</strong> The within-photo smoke run is all natural scenes (A↔B CLIP ≈0.73), so
+   style contrast is mild; the painting/photo set (<code>--styles</code>, CLIP ≈0.60) shows it
+   dramatically.</li>
+<li><strong>Isotropy ceiling.</strong> Radial bands transfer texture-energy + palette, <em>not</em> oriented
+   strokes (Gram matrices would) — the stated scope limit, probed in E19.</li>
+<li><strong>Metric.</strong> Luminance-PSD doesn't cleanly capture a <em>latent</em> power-matching op;
+   CLIP-I + colorfulness + the visual grid are the reliable readouts; E19 measures style
+   match in latent band-power space.</li>
+<li><strong>Next:</strong> E19 moves this into generation (content prompt + style-image envelope).</li>
+</ol>
+<h3>Reproduce</h3>
+<pre><code class="language-bash">cd experiments
+python e18_spectral_recombine.py --part preflight                 # math asserts, no model
+python e18_spectral_recombine.py --part analyze --vae flux --n 6  # cached Flux VAE smoke
+python fetch_styles.py                                            # public-domain paintings
+python e18_spectral_recombine.py --part analyze --vae sd35 \
+       --styles results/e18/styles --n 3 --n_styles 3            # cross-domain (SD3.5 VAE)
+
+# rebuild the self-contained HTML explainer offline (no model) from report.json + grids:
+python e18_spectral_recombine.py --part site
+</code></pre>
+<blockquote>
+<p>Cluster note: <code>/storage</code> is not git — ship code with <code>kubectl cp</code>. To rebuild the
+page locally, <code>kubectl cp</code> the <code>report_&lt;vae&gt;.json</code> + <code>grids/recombine_&lt;vae&gt;.png</code> into
+<code>experiments/results/e18</code>, then <code>python e18_spectral_recombine.py --part site</code>.</p>
+</blockquote>
+<hr />
+<h2>E19 — generation-time spectral style transfer (headline) — ready, needs SD3.5</h2>
+<p><strong>Question.</strong> Generate a <em>content prompt</em> while clamping its spectrum toward a
+<em>style image</em> during denoising: content provides phase + the per-step energy
+trajectory; the style image provides the radial power envelope.</p>
+<p><code>experiments/e19_spectral_style.py</code>: <code>content_ref = record_reference_sd3(content_prompt)</code>;
+<code>style_band = latent_band_power(sd3_vae_encode(style_img))</code>;
+<code>ref = build_style_reference(content_ref, style_band, strength, gmax)</code>; generate
+with <code>ClampPSD3(ref)</code> at cfg≈4.5. <code>strength</code> sweep (0 = plain SBN, 1 = full style
+envelope); <code>gmax</code> clamps per-band gains for stability. Conditions: <code>cfg_hi</code>, <code>sbn</code>,
+<code>style_{sid}_s{p}</code>. Metrics: <strong>content_clip</strong> (CLIP-I to the unstyled cfg_hi image,
+paired) vs <strong>style_clip</strong> / <strong>style_band_dist</strong> (latent), with aesthetic /
+ImageReward / CLIP-T guards. Model-free <code>preflight</code> passes (strength=0 ≡ SBN; gmax
+clamp applied). <code>gen/score/analyze</code> need the SD3.5 download — run on the cluster:</p>
+<pre><code class="language-bash">cd experiments
+python e19_spectral_style.py --part preflight                                 # passes now
+python e19_spectral_style.py --part gen,score,analyze --num_prompts 2 --seeds 4 \
+       --styles &lt;paintings_dir&gt; --num_styles 2 --strengths 0.5,1.0
+</code></pre>
+<h2>E19 follow-on modes — operators already in <code>experiments/style_ops.py</code></h2>
+<p>These are thin variants of the E19 driver (same <code>ClampPSD3</code> path), <strong>not</strong> separate
+top-level experiments — the operators already exist and are unit-tested, so they fold
+into E19 as modes. (This frees the <strong>E20</strong> number for spectral warm-start; see
+<code>EXPERIMENT_20.md</code>. Note an unrelated <strong>E23</strong> real-PSD-clamp thread also exists.)</p>
+<ul>
+<li><strong>hybrid synthesis</strong> — <code>build_hybrid_reference</code> (low-band envelope from A, high from
+  B). Generation-time controls the <em>energy</em> split only (phase from the prompt); the
+  strong offline hybrid is E18's <code>band_spectrum_split</code>. Readout: low-pass(out)→A and
+  high-pass(out)→B?</li>
+<li><strong>spectral morph</strong> — <code>build_morph_reference</code> (geometric interpolation between two
+  style envelopes over α) → a palette/texture morph sequence.</li>
+<li><strong>two-prompt SBN</strong> — <code>blend_references</code> (per-band geometric mean of two cfg=1
+  references) → "a cat" with the spectral signature of "a Van Gogh painting"; no
+  reference image, fully generation-native, cheapest.</li>
+</ul></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_18.md'>source .md</a> · <a href='../../experiments/e19_spectral_style.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

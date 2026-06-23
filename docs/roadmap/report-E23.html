@@ -1,0 +1,151 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E23 — Real-image spectral target (“real-SBN”)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_23.md'>source .md</a> · <a href='../../experiments/e23_real_sbn.py'>driver</a></p><article class=report><h1>E23 — Real-image spectral gap, and correcting toward it ("real-SBN")</h1>
+<p><strong>The direction.</strong> A diffusion model's images are not quite like real photographs — and one
+concrete, measurable way they differ is their <strong>frequency spectrum</strong>. Earlier work in this repo
+(Spectral Band Normalization, "SBN") re-leveled a generated image's per-frequency-band power
+toward a <strong>cfg = 1</strong> reference — but cfg = 1 is just a <em>softer model output</em>, not reality. E23
+replaces that proxy: we <strong>measure</strong> the generated-vs-<strong>real</strong> spectral gap (against 500 real
+photos) and <strong>correct</strong> each generated image's spectrum toward the real-photo spectrum. We call
+that correction <strong>real-SBN</strong>.</p>
+<h2>Schematic</h2>
+<pre><code class="language-mermaid">flowchart LR
+  subgraph T[Build the real-photo target]
+    R[500 real photos&lt;br/&gt;MS-COCO] --&gt; RV[VAE encode] --&gt; TGT[real per-band power&lt;br/&gt;TARGET, per channel]
+  end
+  P[prompt] --&gt; FX[Flux&lt;br/&gt;cfg 3.5] --&gt; GL[generated latent]
+  GL --&gt; PM[&quot;real-SBN = psd_match(s)&lt;br/&gt;mag ← √(target/cur), phase kept&quot;]
+  TGT --&gt; PM
+  PM --&gt; DEC[VAE decode] --&gt; OUT[output image]
+  classDef tgt fill:#eafaf0,stroke:#2da44e;
+  classDef core fill:#fff8c5,stroke:#d4a017;
+  class TGT tgt;
+  class PM core;
+</code></pre>
+<p><em>Phase carries layout/content and is kept untouched; only per-band magnitude (texture/palette) is
+re-leveled toward the real target. <code>strength s</code> dials how far (s = 0 identity, s = 1 full match;
+≈ 0.25 is the visual sweet spot — see below).</em></p>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Latent.</strong> Flux works in a compressed 16-channel 128×128 array; a VAE turns it into the
+  1024×1024 image. All spectral analysis is on latents.</li>
+<li><strong>Fourier / radial band / PSD.</strong> Any latent is a sum of waves at different spatial
+  frequencies (low = coarse structure, high = fine texture). We bin frequencies into ~24 radial
+  rings ("bands"); the <strong>power spectral density (PSD)</strong> is the curve of power vs band — the
+  "fingerprint" of how much coarse vs fine content an image has.</li>
+<li><strong>Phase vs magnitude.</strong> Each frequency has a magnitude (how strong) and a phase (where).
+  In these latents <strong>phase carries layout/content</strong>, per-band <strong>magnitude carries texture +
+  palette</strong>. This split is why we can change texture without moving the content.</li>
+<li><strong>CFG.</strong> Classifier-free guidance — the knob for how strongly the image obeys the prompt.
+  <code>cfg ≈ 3.5</code> is normal; <code>cfg = 1</code> is weak (soft, low-contrast). Higher cfg also <strong>inflates</strong>
+  low-frequency power above the natural level (prior experiment E10).</li>
+</ul>
+<h2>Method</h2>
+<ul>
+<li><strong>The real target.</strong> Encode 500 MS-COCO photos through the Flux VAE; take the mean
+  per-(channel, band) power. This is the universal target (kept <strong>per channel</strong> — the gap is
+  channel-structured, see below). (<code>real_spectral.py</code>, <code>e10_cfg_spectral.py --part coco,real</code>.)</li>
+<li><strong>The operator — <code>psd_match</code> (AdaIN-in-Fourier).</strong> For each (channel, band), multiply the FFT
+  magnitude by <code>sqrt(target / current)</code> and leave the phase alone. Layout preserved; texture and
+  palette re-leveled. (<code>spectral_ops.psd_match</code>, <code>style_ops.restyle_latent</code>.)</li>
+<li><strong><code>strength s</code>.</strong> An exponent on the correction: magnitude × <code>(real/own)^(s/2)</code>. 0 = identity,
+  1 = full match.</li>
+<li><strong>Three ways to apply it.</strong> <em>offline</em> — correct the final latent post-hoc, then decode (the
+  main one); <em>during generation, last step</em> — same correction inside the loop on the last step
+  (matches offline); <em>initial-noise shaping</em> — shape the starting noise (fails; see below). We do
+  <strong>not</strong> correct every step: the real target is a <em>clean</em>-image spectrum, but mid-denoising
+  latents are mostly noise, so matching them every step is apples-to-oranges.</li>
+</ul>
+<h2>Findings</h2>
+<p><strong>1. The gap is bimodal — not just the CFG story.</strong> At the lowest bands the model has <em>more</em>
+power than real (CFG low-frequency inflation); across the mid/high bands it has <em>less</em> (ratio
+≈ 1.2–1.3) — a broad <strong>high-frequency deficit</strong>: generated images are systematically
+under-textured vs real photos. The heatmap shows this is channel-specific (hence a per-channel
+target).</p>
+<p><strong>2. Correcting toward real helps</strong> (means over prompt classes, 8 seeds; full strength offline or
+last-step):</p>
+<table>
+<thead>
+<tr>
+<th>condition</th>
+<th>spec-dist→real ↓</th>
+<th>aesthetic ↑</th>
+<th>ImageReward ↑</th>
+<th>CLIP-T ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cfg 3.5 (baseline)</td>
+<td>0.322</td>
+<td>6.61</td>
+<td>1.56</td>
+<td>0.298</td>
+</tr>
+<tr>
+<td>SBN→cfg 1 (old)</td>
+<td>0.582</td>
+<td>6.76</td>
+<td>1.46</td>
+<td>0.293</td>
+</tr>
+<tr>
+<td>real-SBN offline s=1.0</td>
+<td>0.000</td>
+<td>6.88</td>
+<td>1.51</td>
+<td>0.291</td>
+</tr>
+<tr>
+<td>real-SBN last-step</td>
+<td>0.000</td>
+<td>6.89</td>
+<td>1.51</td>
+<td>0.291</td>
+</tr>
+<tr>
+<td>init-noise shaping</td>
+<td>2.08</td>
+<td>3.90</td>
+<td>−2.28</td>
+<td>0.098</td>
+</tr>
+</tbody>
+</table>
+<p>Biggest aesthetic gain of any condition, ~zero adherence (CLIP-T) cost, and it <strong>beats the old
+cfg-1 SBN</strong> (which moves <em>away</em> from real). The <strong>strength sweep</strong> shows the gain concentrates on
+<strong>photographic portraits</strong> (Δaesthetic +0.55…+0.64). <strong>But 0.5+ introduces grain/artifacts</strong> —
+the high bands have little real signal, so full strength over-amplifies them — so <strong>≈ 0.25 is the
+recommended setting</strong>. (Note: the LAION aesthetic predictor <em>rewards</em> that over-sharpening, so its
+score keeps rising past the point a human prefers — trust the eye.)</p>
+<p><strong>3. Why not just use cfg = 1?</strong> Because cfg = 1, though natural-looking, has <strong>poor prompt
+adherence</strong> — it drops objects/attributes on long compositional prompts. On 6 long prompts
+(market, desk, alley, still-life, fox-scene, blacksmith), the 3-way panels
+(<code>results/e23/adherence/panels/</code>, cfg 1 | cfg 3.5 | real-SBN 0.25) show cfg 1 blurring/dropping
+elements (market crowd, still-life goblet, alley neon/cat, blacksmith details) while cfg 3.5
+renders them and <strong>real-SBN keeps that composition with a more natural tone</strong>. CLIP-T agrees
+directionally (cfg1 0.301 &lt; cfg3.5 0.315 ≈ real-SBN 0.313); B-VQA (BLIP-VQA, the compositional
+T2I-CompBench metric) is the proper score and is being added.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>The gap metric is partly circular</strong>: <code>spec-dist→real</code> measures the channel-mean PSD that
+  full-strength real-SBN directly matches, so its → 0 is by construction. The independent wins are
+  the aesthetic gain and the near-zero adherence cost.</li>
+<li><strong>Init-noise shaping fails</strong> — the flow prior expects white noise; coloring it collapses
+  generation (documented negative).</li>
+<li><strong>Isotropic only</strong> — radial bands carry texture-energy + palette, not oriented structure.</li>
+<li><strong>Next:</strong> a single <strong>fixed per-channel correction curve</strong> (apply the average real/gen ratio to
+  every image, no per-image matching) → would make real-SBN a free, deterministic post-step.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># build the real target (once)
+python e10_cfg_spectral.py --part coco,real --n_coco 500
+# measure gap + corrections + scores + qualitative examples
+python e23_real_sbn.py --part measure,gen,score,examples,analyze --seeds 16 --num_classes 6 \
+    --strength_sweep 0.25,0.5,0.75,1.0
+# cfg1-vs-cfg-vs-realSBN on long complex prompts (B-VQA adherence)
+python e23_real_sbn.py --part adherence --prompt_set complex --strength_sweep 0.1,0.25,0.5 \
+    --rec_strength 0.25 --seeds 8 --vqa
+# HTML explainer (results/e23/index.html)
+python e23_site.py
+</code></pre>
+<p>Code: <code>real_spectral.py</code>, <code>e23_real_sbn.py</code> (driver), <code>e23_site.py</code> (explainer),
+<code>spectral_ops.psd_match</code>, <code>style_ops.restyle_latent</code>, <code>compbench.bvqa_scores</code>.</p></article><p class=rnav><a href='thread-spectral-power.html'>← Spectral-power control (SBN)</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_23.md'>source .md</a> · <a href='../../experiments/e23_real_sbn.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

@@ -1,0 +1,171 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E21 — RF-inversion frequency-band editing (SD3.5) -- gate fails</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_21.md'>source .md</a> · <a href='../../experiments/e21_spectral_edit.py'>driver</a></p><article class=report><h1>E21 — Spectral image editing via RF-inversion + frequency-band locking (SD3.5)</h1>
+<p><strong>The direction.</strong> The spectral-style thread (E18–E19) showed that in latent Fourier space
+<strong>phase carries layout/content</strong> and <strong>per-band magnitude carries texture + palette</strong> — and that
+re-leveling per-band power transfers tone/palette without moving the content. Those experiments
+operated on <em>generated</em> latents. E21 pushes the same decomposition onto <strong>real images</strong>: take a
+real photo, <strong>invert</strong> it back to the noise that would have produced it, then <strong>regenerate with a
+new prompt while LOCKING chosen source frequency bands</strong>. Because low-band <strong>phase</strong> is the
+composition, locking it means the prompt is free to repaint appearance (oil-painting, sketch,
+watercolor) while the layout of the original photo survives — a <em>frequency-decomposed editing
+control</em>. SD3.5 is a <strong>rectified-flow</strong> model, so "inversion" is integrating the velocity field
+backwards (clean → noise), not literal DDIM.</p>
+<blockquote>
+<p><strong>Status / Verdict:</strong> ⚠️ <strong>Code complete; the result is a GATED / pending negative — and the
+gate is the finding.</strong> The whole edit only makes sense if the inversion <em>reconstructs</em> the
+source. On SD3.5 the reverse-flow ODE <strong>drifts</strong>: the implicit fixed-point inversion (and naive
+forward-Euler) fail to round-trip a real image back to itself. The reconstruction CLIP-I to the
+source is only <strong>~0.63–0.74</strong> (a closed round-trip is ~0.94) and the recovered "noise" has std
+<strong>~1.11</strong> instead of the ~1.0 a valid Gaussian seed should have. With a broken gate the
+band-locked <strong>edit was not run</strong> (there is no <code>edit.json</code>). That failure is exactly why <strong>E22</strong>
+exists (pivot to SDXL + DDIM inversion, where the round-trip is reliable). E21 is the documented
+negative that motivates E22.</p>
+</blockquote>
+<h2>Background (plain language)</h2>
+<ul>
+<li><strong>Latent.</strong> SD3.5 denoises in a compressed <code>16×128×128</code> array (at 1024px); a VAE turns it into
+  the RGB image. All spectral surgery happens on the latent, not the pixels.</li>
+<li><strong>Rectified flow (RF).</strong> SD3.5 is not a noise-predictor; it learns a <strong>velocity field</strong>
+  <code>v(x, σ)</code> that flows a clean latent (σ=0) along a straight-ish path to pure noise (σ=1) and
+  back. Generation is the Euler step <code>x += (σ_next − σ_cur)·v(x, σ)</code> walking σ: 1 → 0.</li>
+<li><strong>Inversion (clean → noise).</strong> To edit a <em>real</em> image you first need the noise it came from.
+  RF-inversion integrates the same velocity field in the <strong>opposite</strong> direction, σ: 0 → 1. This
+  is <em>not</em> DDIM inversion; it is the RF-Inversion / FlowEdit recipe.</li>
+<li><strong>Naive vs fixed-point Euler.</strong> Forward Euler evaluates the velocity at the <em>current</em> σ; it is
+  only exact when <code>v</code> does not depend on <code>x</code>. The <strong>fixed-point (implicit) Euler</strong> instead solves
+  <code>x_hi = x_lo + (σ_hi − σ_lo)·v(x_hi, σ_hi)</code> by iterating a few times — it evaluates the velocity
+  at the <em>next</em> σ and is far more accurate for a state-dependent field. E21 uses <code>fp_iters=4</code>.</li>
+<li><strong>FFT phase vs magnitude.</strong> Each spatial frequency of the latent has a <strong>magnitude</strong> (how
+  strong the ripple is → texture power / palette) and a <strong>phase</strong> (where the ripples line up →
+  structure / layout). Oppenheim &amp; Lim: phase carries most recognizable structure.</li>
+<li><strong>Radial band / cut <code>c</code>.</strong> Frequencies are binned into <code>N_BINS=24</code> rings from DC outward; band
+  0 = coarsest layout. A <strong>cut <code>c</code></strong> selects the lowest <code>c</code> fraction of the spectrum — <code>c=0.1</code>
+  locks only the coarsest layout, <code>c=0.25</code> a bit more.</li>
+<li><strong><code>recon_clip_i</code> ↑ (the gate metric).</strong> Invert a real image, regenerate from that noise with
+  the <strong>same</strong> prompt, and measure CLIP image-similarity (CLIP-I) between original and
+  reconstruction. <strong>~0.94 ≈ "round-trip closed"</strong>; lower means the inverted noise is wrong and any
+  <em>edit</em> built on top is meaningless. Higher is better.</li>
+<li><strong><code>noise_std</code> (a drift symptom).</strong> The std of the recovered "noise" latent. A valid Gaussian
+  seed has std <strong>≈ 1.0</strong>; an inflated value (~1.11 here) means the integration overshoots — the
+  recovered latent is off the manifold of true seeds.</li>
+<li><strong>The gate logic.</strong> Reconstruction is the prerequisite for <em>every</em> downstream edit cell. The
+  edit is <strong>only valid if the round-trip closes</strong>; a failed gate <em>invalidates</em> edit numbers rather
+  than merely weakening them, so the edit is gated and not run.</li>
+</ul>
+<h2>Method</h2>
+<ul>
+<li><strong>Model.</strong> SD3.5 (<code>e17_sd35.load_sd35</code>), rectified flow, 1024px, <code>(1,16,128,128)</code> latent,
+  28 steps, <code>encode_prompt</code> with CFG=1 for inversion.</li>
+<li><strong>Inversion operator (<code>invert_sd3</code>).</strong> Walk σ: 0 → 1 over the scheduler's σ grid; at each step
+  do <code>fp_iters=4</code> implicit-Euler iterations of <code>x ← x_lo + (σ_hi − σ_lo)·v(x, σ_hi)</code>. Output: the
+  inverted noise latent (<code>noise_std</code> reported as a sanity check — should be ≈ 1).</li>
+<li><strong>The band-lock callback (<code>BandLock</code>).</strong> A step-end hook applied for the first <code>until</code> fraction
+  of generation steps, then released so the target prompt drives the finish:</li>
+<li><code>mode="phase"</code> — <code>band_phase_swap(src, gen, c, mag_from="B")</code>: keep the <strong>source's</strong> low-band
+    phase (layout) but the <strong>generation's</strong> magnitude and high-band phase. Locks composition.</li>
+<li><code>mode="power"</code> — <code>restyle_latent(...)</code>: re-level per-band power to the source (palette lock).</li>
+<li><strong>Conditions.</strong> Per edit pair (photo, source-prompt, target-prompt): <code>invert_only</code> (baseline,
+  no lock) vs <code>lockphase_c{0.1,0.25}_u{0.6,1.0}</code> vs <code>lockpower</code>. Three edits:
+  photo→oil-painting, photo→pencil-sketch, photo→watercolor.</li>
+<li><strong>Metrics.</strong> <code>struct_clip</code> = CLIP-I to the <strong>source</strong> (composition preserved ↑); <code>edit_clip_t</code>
+  = CLIP-T to the <strong>target prompt</strong> (edit followed ↑). The tension between these two is the whole
+  story: a good editing knob raises both, or trades them along a sensible frontier.</li>
+<li><strong>Preflight (model-free, passes).</strong> Verifies (1) reverse-Euler is <strong>exact on a
+  state-independent</strong> velocity field (round-trip error &lt; 1e-3 — confirming the <em>math</em> is right,
+  so any real-model drift is the <em>field's</em> state-dependence, not a bug), and (2) the band-lock
+  invariants: <code>c=1, mag_from="A"</code> reconstructs the source exactly; <code>mag_from="B"</code> keeps the
+  generation's magnitude.</li>
+</ul>
+<h2>Findings</h2>
+<h3>Reconstruction (the gate) — figure first</h3>
+<p>The HTML report (<code>results/e21/index.html</code>) leads with <code>invert/grid.png</code>: left column = source
+photo, right column = reconstruction (invert to noise, regenerate with the <em>same</em> prompt at
+guidance 1), three photos top to bottom.</p>
+<blockquote>
+<p><strong>What to look for.</strong> A faithful inversion would make each reconstruction <em>match its source</em>
+(same scene, layout, colors). Instead the reconstructions <strong>drift</strong> into different images — the
+round-trip does not close, so the recovered "noise" is not the seed that made the photo.</p>
+</blockquote>
+<p><strong>Interpretation.</strong> Both naive forward-Euler and the <code>fp_iters=4</code> fixed-point inversion fail to
+round-trip a real SD3.5 image. The preflight proves the integrator is <em>exact</em> on a
+state-independent field, so the drift comes from the trained velocity field being strongly
+state-dependent: per-step errors compound over 28 steps and the recovered latent lands off the
+manifold of valid seeds (hence the inflated std). A broken gate makes every downstream edit cell
+uninterpretable — so we report the gate, not edits.</p>
+<p><strong>The numbers</strong> (<code>results/e21/invert.json</code>; ↑ better; every cell misses its target, so all are
+marked as failures rather than highlighting a "best"):</p>
+<table>
+<thead>
+<tr>
+<th>photo</th>
+<th><code>recon_clip_i</code> ↑ (~0.94 = closed)</th>
+<th><code>noise_std</code> (target ~1.0)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>photo_000.jpg</td>
+<td>0.744</td>
+<td>1.109</td>
+</tr>
+<tr>
+<td>photo_001.jpg</td>
+<td>0.663</td>
+<td>1.119</td>
+</tr>
+<tr>
+<td>photo_002.jpg</td>
+<td>0.633</td>
+<td>1.113</td>
+</tr>
+<tr>
+<td><strong>mean</strong></td>
+<td><strong>0.680</strong></td>
+<td><strong>1.114</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Every <code>recon_clip_i</code> sits well below the ~0.94 "round-trip closed" bar, and every <code>noise_std</code> is
+inflated above ~1.0 — both confirm the gate fails.</p>
+<h3>Edit (gated — not run)</h3>
+<p>There is <strong>no <code>edit.json</code></strong>: the band-locked edit only makes sense once the inversion round-trips,
+and on SD3.5 it does not. Running the edit on top of a broken reconstruction would produce numbers
+that <em>look</em> like a structure-vs-edit frontier but actually measure agreement with a <em>drifted</em>
+image, not the source — so the edit <strong>awaits a working inversion</strong>. (The HTML report renders this
+edit subsection gracefully whether or not <code>edit.json</code> exists.)</p>
+<p><strong>Why this matters.</strong> A failed gate doesn't just weaken E21's edit numbers; it invalidates them.
+Rather than tune RF inversion further (RF-Inversion-style controllers are finicky), the thread
+<strong>pivots to an eps-prediction model with reliable DDIM inversion → E22</strong>, carrying the <em>identical</em>
+band-lock editing operators over unchanged.</p>
+<h2>Caveats &amp; next</h2>
+<ul>
+<li><strong>RF inversion is the weak link</strong>, not the band-lock idea. The spectral operators are
+  model-agnostic and unit-checked in preflight; what fails is recovering faithful noise from a
+  real SD3.5 image via Euler integration of a state-dependent field.</li>
+<li>Locking <strong>low-band phase</strong> preserves layout but cannot, by construction, transfer <em>oriented</em>
+  brushstrokes — radial bands are isotropic (the E18 caveat carries over).</li>
+<li>The <code>phase</code> vs <code>power</code> modes answer different questions (composition lock vs palette lock); they
+  are reported side-by-side rather than combined.</li>
+<li><strong>Next = E22:</strong> SDXL + <code>DDIMInverseScheduler</code>. SDXL's <code>4×128×128</code> latent shares SD3.5's
+  <code>(H,W)=128</code> grid, so <code>spectral_ops</code>/<code>style_ops</code> apply with <strong>no changes</strong>; only the
+  inversion backbone is swapped to one that round-trips.</li>
+</ul>
+<h2>Reproduce</h2>
+<pre><code class="language-bash">cd experiments
+# 1) model-free sanity: reverse-Euler exactness + band-lock invariants
+python e21_spectral_edit.py --part preflight
+# 2) THE GATE: invert real photos, reconstruct with same prompt, report CLIP-I fidelity
+python e21_spectral_edit.py --part invert  --num 3 --steps 28
+# 3) edit: invert, regenerate with target prompt under band-lock variants
+python e21_spectral_edit.py --part edit \
+    --num 3 --steps 28 --cfg 4.5 --cuts 0.1,0.25 --untils 0.6,1.0
+# 4) dump the JSON tables
+python e21_spectral_edit.py --part analyze
+
+# 5) rebuild the self-contained HTML explainer offline (NO model load) from
+#    invert.json (+ edit.json if present) + invert/grid.png
+python e21_spectral_edit.py --part site        # or: python e21_site.py
+</code></pre>
+<p>Code: <code>experiments/e21_spectral_edit.py</code> (driver: <code>invert_sd3</code> RF inversion, <code>BandLock</code>
+callback), reusing <code>experiments/spectral_ops.py</code> (<code>band_phase_swap</code>, <code>band_index_map</code>),
+<code>experiments/style_ops.py</code> (<code>restyle_latent</code>, <code>latent_band_power</code>), and
+<code>experiments/e17_sd35.py</code> (<code>load_sd35</code>, <code>sd3_vae_encode/decode</code>, <code>gen_sd3</code>).</p></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_21.md'>source .md</a> · <a href='../../experiments/e21_spectral_edit.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>
