@@ -195,36 +195,48 @@ def forward_edit(pipe, pe, ppe, x_noise, sig, g, traj=None, mode=None, cut=0.25,
 FA_SBN_MODES = ["off", "band power", "mag", "phase", "both"]
 
 
-def gauss_lowpass(pipe, vd_packed, cutoff, renorm):
-    """Gaussian radial low-pass of a PACKED latent/velocity. cutoff in [0,1] (normalized
-    radius); cutoff>=1 is passthrough. Real radially-symmetric mask -> stays real."""
+def _gauss_lowpass_lat(lat, cutoff, renorm):
+    """Gaussian radial low-pass of an UNPACKED (1,16,FH,FW) latent/velocity. cutoff in [0,1]
+    (normalized radius); cutoff>=1 is passthrough. Real radially-symmetric mask -> stays real."""
     if cutoff >= 1.0:
-        return vd_packed
+        return lat
     from latent_spectral_ops import radial_norm
-    lat = unpack(pipe, vd_packed).float()
     rn = radial_norm(FH, FW, lat.device)
     mask = torch.exp(-(rn / max(cutoff, 1e-3)) ** 2)
     out = torch.fft.ifft2(torch.fft.fft2(lat) * mask).real
     if renorm:
         out = out * (lat.norm() / out.norm().clamp_min(1e-8))
+    return out
+
+
+def gauss_lowpass(pipe, vd_packed, cutoff, renorm):
+    """Packed (Flux) wrapper of _gauss_lowpass_lat."""
+    if cutoff >= 1.0:
+        return vd_packed
+    out = _gauss_lowpass_lat(unpack(pipe, vd_packed).float(), cutoff, renorm)
     return pack(pipe, out.to(vd_packed.dtype))
 
 
-def vel_sbn(pipe, vp, v_ref, mode, cut, strength):
-    """Spectrally clamp the CFG velocity `vp` toward reference `v_ref` (=v(pt,c_src)) in the
-    low radial band [0,cut]. vp, v_ref PACKED; unpack -> op -> repack. mode=="off"/cut<=0 is
-    passthrough. Reuses the E37 velocity-SBN ops + the low-band phase lock above."""
+def _vel_sbn_lat(a, r, mode, cut, strength):
+    """Spectrally clamp UNPACKED velocity `a` toward reference `r` in the low radial band
+    [0,cut]. mode=="off"/cut<=0 is passthrough. E37 velocity-SBN ops + low-band phase lock."""
     if mode == "off" or cut <= 0.0:
-        return vp
+        return a
     import velocity_spectral_ops as VEL
-    a = unpack(pipe, vp).float()
-    r = unpack(pipe, v_ref).float()
     if mode in ("band power", "both"):
         a = VEL.bandpower_match_band(a, r, 0.0, cut, strength)
     elif mode == "mag":
         a = VEL.mag_transplant_band(a, r, 0.0, cut, strength)
     if mode in ("phase", "both"):
         a = band_phase_keep(a, r, 0.0, cut)
+    return a
+
+
+def vel_sbn(pipe, vp, v_ref, mode, cut, strength):
+    """Packed (Flux) wrapper of _vel_sbn_lat: clamp `vp` toward `v_ref` (=v(pt,c_src))."""
+    if mode == "off" or cut <= 0.0:
+        return vp
+    a = _vel_sbn_lat(unpack(pipe, vp).float(), unpack(pipe, v_ref).float(), mode, cut, strength)
     return pack(pipe, a.to(vp.dtype))
 
 
@@ -252,5 +264,65 @@ def flowalign(pipe, x0_packed, C_src, C_tar, sig, seed, g, w, zeta,
         vq = flux_velocity(pipe, qt, s_hi, C_src[0], C_src[1], g)
         term = (qt - s_hi * vq) - (pt - s_hi * vp)             # E[q0|qt] - E[p0|pt]
         term = gauss_lowpass(pipe, term, cutoff, term_renorm)
+        xt = xt + (s_lo - s_hi) * (vp - vq) + zeta * term
+    return xt
+
+
+# ---------------------------------------------------------------------------
+# SD3 path (StableDiffusion3Pipeline) -- FlowAlign on the paper's backbone.
+# SD3 latents are UNPACKED (1,16,FH,FW) with the SAME geometry as Flux, so the
+# spectral ops are reused via their `_lat` cores. Differences from Flux: no
+# latent packing, no distilled guidance embed / ids, and the transformer takes
+# timestep in [0, num_train_timesteps] (sigma*1000) instead of Flux's raw sigma.
+# ---------------------------------------------------------------------------
+def sd3_sigmas(pipe, steps):
+    """SD3 sigma grid (steps+1, decreasing, [-1]=0). Shift lives in the scheduler config."""
+    pipe.scheduler.set_timesteps(steps, device="cuda")
+    return pipe.scheduler.sigmas.float()
+
+
+@torch.no_grad()
+def sd3_velocity(pipe, lat, sigma, pe, ppe):
+    """Flow-matching velocity v(x, sigma | conditioning) for SD3 in UNPACKED latent space."""
+    n_train = pipe.scheduler.config.get("num_train_timesteps", 1000)
+    t = torch.full((lat.shape[0],), float(sigma) * n_train, device="cuda", dtype=pipe.dtype)
+    v = pipe.transformer(hidden_states=lat.to(pipe.dtype), timestep=t,
+                         encoder_hidden_states=pe.to(pipe.dtype),
+                         pooled_projections=ppe.to(pipe.dtype), return_dict=False)[0]
+    return v.float()
+
+
+def sd3_encode_prompt(pipe, prompt):
+    """(pe, ppe) float embeddings for a prompt (SD3 encode_prompt returns 4 values)."""
+    pe, _, ppe, _ = pipe.encode_prompt(prompt=prompt, prompt_2=prompt, prompt_3=prompt,
+                                       device="cuda", num_images_per_prompt=1,
+                                       do_classifier_free_guidance=False)
+    return pe.float(), ppe.float()
+
+
+@torch.no_grad()
+def sd3_flowalign(pipe, x0, C_src, C_tar, sig, seed, w, zeta,
+                  sbn_mode="off", sbn_cut=0.0, sbn_strength=1.0,
+                  term_start_cut=1.0, term_end_cut=1.0, term_renorm=False):
+    """FlowAlign on SD3 (UNPACKED latents). Mirrors `flowalign` exactly but with no distilled
+    guidance embed. x0 = unpacked (1,16,FH,FW) source latent; C_src/C_tar = (pe, ppe) cuda
+    tensors. 3 velocity forwards/step. Returns an UNPACKED latent."""
+    steps = len(sig) - 1
+    eps = torch.randn(x0.shape, generator=torch.Generator("cuda").manual_seed(seed),
+                      device="cuda").float()
+    xt = x0.clone()
+    for i in range(steps):
+        frac = i / max(steps - 1, 1)
+        cutoff = term_start_cut + (term_end_cut - term_start_cut) * frac   # anneal low -> high
+        s_hi, s_lo = float(sig[i]), float(sig[i + 1])
+        qt = (1 - s_hi) * x0 + s_hi * eps                      # forward-diffused source
+        pt = xt + qt - x0                                      # == x_tar
+        v_pt_src = sd3_velocity(pipe, pt, s_hi, C_src[0], C_src[1])
+        v_pt_tar = sd3_velocity(pipe, pt, s_hi, C_tar[0], C_tar[1])
+        vp = v_pt_src + w * (v_pt_tar - v_pt_src)              # CFG, source prompt as negative
+        vp = _vel_sbn_lat(vp, v_pt_src, sbn_mode, sbn_cut, sbn_strength)
+        vq = sd3_velocity(pipe, qt, s_hi, C_src[0], C_src[1])
+        term = (qt - s_hi * vq) - (pt - s_hi * vp)            # E[q0|qt] - E[p0|pt]
+        term = _gauss_lowpass_lat(term, cutoff, term_renorm)
         xt = xt + (s_lo - s_hi) * (vp - vq) + zeta * term
     return xt

@@ -101,6 +101,8 @@ def cached_baseline(key, compute):
 MODELS = {
     "sd3.5-medium": {"repo": "stabilityai/stable-diffusion-3.5-medium", "kind": "sd3",
                      "max_seq": 256, "steps": 28, "guidance": 4.5},
+    "sd3-medium":   {"repo": "stabilityai/stable-diffusion-3-medium-diffusers", "kind": "sd3",
+                     "max_seq": 256, "steps": 28, "guidance": 7.0},   # FlowAlign paper backbone
     "flux-dev":     {"repo": "black-forest-labs/FLUX.1-dev",     "kind": "flux", "max_seq": 512, "steps": 16, "guidance": 3.5},
     "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "kind": "flux", "max_seq": 256, "steps": 4,  "guidance": 3.5},
     "ltx":          {"repo": "Lightricks/LTX-Video", "kind": "ltx", "max_seq": 128, "steps": 24, "guidance": 10.0},
@@ -319,6 +321,12 @@ def gen_sd3_demo(prompt, seed, steps, guidance, size, step_override=None):
 def encode(prompt):
     """prompt -> (pe_cpu (1,512,4096), ppe_cpu (1,4096), L real tokens)."""
     with torch.no_grad():
+        if MODEL["kind"] == "sd3":   # SD3 encode_prompt returns a 4-tuple (no text_ids)
+            pe, ppe = _ic.sd3_encode_prompt(PIPE, prompt)
+            pe, ppe = pe.cpu(), ppe.cpu()
+            tok = PIPE.tokenizer_2(prompt, max_length=MODEL["max_seq"], truncation=True,
+                                   return_tensors="pt")
+            return pe, ppe, int(tok.attention_mask.sum())
         pe, ppe, _ = PIPE.encode_prompt(
             prompt=prompt, prompt_2=prompt, device="cuda",
             num_images_per_prompt=1, max_sequence_length=MODEL["max_seq"])
@@ -613,6 +621,17 @@ def _final_latent(pe, ppe, seed, steps, guidance, size):
              generator=torch.Generator("cuda").manual_seed(int(seed)),
              callback_on_step_end=rec).images
     return _flux_unpack(size)(rec.last).float()
+
+
+def _sd3_source_latent(prompt, seed, steps):
+    """SD3 1024px source latent (1,16,FH,FW) from a prompt (real CFG, no packing)."""
+    rec = _RecLast()
+    with torch.no_grad():
+        PIPE(prompt=prompt, height=1024, width=1024, guidance_scale=MODEL["guidance"],
+             num_inference_steps=int(steps), negative_prompt="",
+             generator=torch.Generator("cuda").manual_seed(int(seed)),
+             callback_on_step_end=rec).images
+    return rec.last.float()
 
 
 def flux_reference(prompt, steps, size, ref_seeds=2):
@@ -1609,13 +1628,14 @@ FA_SBN_MODES = _ic.FA_SBN_MODES   # ["off", "band power", "mag", "phase", "both"
 
 def run_flowalign(src_prompt, tar_prompt, real_img, w, zeta, sbn_mode, sbn_cut, sbn_strength,
                   term_start_cut, term_end_cut, term_renorm, seed, steps, gbase):
-    if MODEL["kind"] != "flux":
+    if MODEL["kind"] not in ("flux", "sd3"):
         return None, None, _FLUX_ONLY_NOTE
     if not (src_prompt or "").strip():
         return None, None, "enter the source prompt"
     if not (tar_prompt or "").strip():
         return None, None, "enter the target prompt"
     try:
+        sd3 = MODEL["kind"] == "sd3"
         seed, steps = int(seed), int(steps)
         w, zeta, gbase = float(w), float(zeta), float(gbase)
         sbn_cut, sbn_strength = float(sbn_cut), float(sbn_strength)
@@ -1624,22 +1644,30 @@ def run_flowalign(src_prompt, tar_prompt, real_img, w, zeta, sbn_mode, sbn_cut, 
         peT, ppeT, _ = _encode_cached(tar_prompt)
         C_src = (peS.cuda(), ppeS.cuda())
         C_tar = (peT.cuda(), ppeT.cuda())
-        sig = flux_sigmas(PIPE, steps)
-        gids = _gids(PIPE, gbase)
-        if real_img is not None:
-            x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
-        else:                                            # 1024px source from the prompt itself
-            x0 = pack(PIPE, _final_latent(C_src[0], C_src[1], seed, steps, gbase, 1024))
+        # twists (right) -> plain FlowAlign (left). Dispatch on backbone: SD3 stays in unpacked
+        # latent space (true CFG, no distilled guidance embed); Flux uses packed latents + gids.
+        if sd3:
+            sig = _ic.sd3_sigmas(PIPE, steps)
+            x0 = (vae_encode(PIPE.vae, real_img).cuda() if real_img is not None
+                  else _sd3_source_latent(src_prompt, seed, steps))
+            run = lambda *tw: _ic.sd3_flowalign(PIPE, x0, C_src, C_tar, sig, seed, w, zeta, *tw)
+        else:
+            sig = flux_sigmas(PIPE, steps)
+            gids = _gids(PIPE, gbase)
+            if real_img is not None:
+                x0 = pack(PIPE, vae_encode(PIPE.vae, real_img))
+            else:                                        # 1024px source from the prompt itself
+                x0 = pack(PIPE, _final_latent(C_src[0], C_src[1], seed, steps, gbase, 1024))
+            run = lambda *tw: unpack(PIPE, _ic.flowalign(
+                PIPE, x0, C_src, C_tar, sig, seed, gids, w, zeta, *tw))
         # baseline (left) = plain FlowAlign; depends on the editing-determining inputs only
-        base_key = ("flowalign", src_prompt, tar_prompt, _img_key(real_img), seed, steps,
-                    round(w, 3), round(zeta, 4), round(gbase, 3))
-        base = cached_baseline(base_key, lambda: decode_latent(unpack(PIPE, _ic.flowalign(
-            PIPE, x0, C_src, C_tar, sig, seed, gids, w, zeta)).float()))
-        edited = decode_latent(unpack(PIPE, _ic.flowalign(
-            PIPE, x0, C_src, C_tar, sig, seed, gids, w, zeta,
-            sbn_mode, sbn_cut, sbn_strength, term_start_cut, term_end_cut,
-            bool(term_renorm))).float())
-        desc = (f"FlowAlign · w {w:.1f} · ζ {zeta:.3f} · flux-guidance {gbase:.1f} · "
+        base_key = ("flowalign", MODEL_NAME, src_prompt, tar_prompt, _img_key(real_img), seed,
+                    steps, round(w, 3), round(zeta, 4), round(gbase, 3))
+        base = cached_baseline(base_key, lambda: decode_latent(run().float()))
+        edited = decode_latent(run(sbn_mode, sbn_cut, sbn_strength,
+                                   term_start_cut, term_end_cut, bool(term_renorm)).float())
+        gtxt = "SD3 true CFG" if sd3 else f"flux-guidance {gbase:.1f}"
+        desc = (f"FlowAlign · w {w:.1f} · ζ {zeta:.3f} · {gtxt} · "
                 f"SBN[{sbn_mode}] cut {sbn_cut:.2f} str {sbn_strength:.2f} · "
                 f"terminal cutoff {term_start_cut:.2f}→{term_end_cut:.2f} "
                 f"renorm {'on' if term_renorm else 'off'}")
