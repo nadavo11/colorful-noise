@@ -77,9 +77,17 @@ vanilla frontier: s0.5 `0.088/+0.028` · s0.7 `0.109/+0.040` · s0.8 `0.127/+0.1
   sdg_src_t0.5/0.75, sdg_wht_t0.5 lose.
 - Reversal vs the synthetic chair (there A over-locked, SDG won); on 20 real images A is stronger.
 
-**Confirmation IN FLIGHT (n≈100, τ=0.125/0.25/0.375):** `e47-confa`, `e47-confsdg`. ETA ~03:20.
-Verdicts will be at `/storage/.../experiments/results/e47_conf{A,SDG}/verdict.md` and a watcher
-(bash bg job) will have dumped them. **First morning action: read those two verdict.md.**
+**P5 n=100 confirmation — DONE (WIN HOLDS, margin shrinks):** vanilla frontier (100 imgs)
+s0.5 `0.091/+0.035` · s0.7 `0.112/+0.062` · s0.8 `0.130/+0.098` · s0.9 `0.153/+0.124`.
+- **A WINS confirmed:** A_t0.125 `0.118/+0.076` (+0.002), **A_t0.25 `0.110/+0.062` (+0.0045)** —
+  A_t0.25 won at both n=20 and n=100 (most robust). A_t0.375 loses.
+- **SDG marginal:** sdg_src_t0.125 `0.120/+0.081` (+0.003); sdg_src_t0.25 fell to a **tie**.
+- **Margin collapsed +0.025 (n=20) → +0.0045 (n=100)** — vanilla improved more with more data.
+  Real + consistent but **modest**, method A > SDG. Verdicts:
+  `/storage/.../results/e47_conf{A,SDG}/verdict.md`.
+- **Wins sit at struct ~0.11 (≈ vanilla strength 0.65–0.7), NOT FlowAlign's lighter ~0.30 regime**
+  — so the morning constant-hyperparameter run must check whether a win exists at *that* fixed
+  light operating point (it may not; if so, report where on the strength axis the win lives).
 
 ---
 

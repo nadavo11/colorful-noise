@@ -69,4 +69,18 @@ Vanilla frontier: s0.5 0.088/+0.028 .. s0.7 0.109/+0.040 .. s0.8 0.127/+0.100 ..
   sdg_src_t0.5/0.75 and sdg_wht_t0.5 lose.
 Reversal vs the chair (there A over-locked, SDG won): over 20 real imgs A_t0.25 is the stronger.
 **KEEP light-tau A (and SDG, tentatively); confirming at n=100.** Conf jobs: `--confA` / `--confSDG`
-(taus 0.125/0.25/0.375). (n=100 verdict pending)
+(taus 0.125/0.25/0.375).
+
+## P5 — n=100 confirmation (cluster, 17 steps) — WIN HOLDS but MARGIN SHRINKS
+Vanilla frontier (100 imgs): s0.5 0.091/+0.035 · s0.7 0.112/+0.062 · s0.8 0.130/+0.098 · s0.9 0.153/+0.124.
+- **A (geodesic noise): WINS confirmed.** A_t0.125 0.118/+0.076 (NW, +0.002), **A_t0.25 0.110/+0.062
+  (NW, +0.0045)**; A_t0.375 loses. A_t0.25 won at BOTH n=20 and n=100 -> most robust point.
+- **SDG (geodesic on latent): marginal.** sdg_src_t0.125 0.120/+0.081 (NW, +0.003); sdg_src_t0.25
+  fell to a TIE (was a +0.002 win at n=20); t0.375 + white lose.
+- **Margin collapsed +0.025 (n=20) -> +0.0045 (n=100)**: vanilla improved more than our arms with
+  more data. Effect is **real + consistent but modest, not a blowout.** Method A > SDG for robustness.
+**Verdict: KEEP (modest win).** Geodesic phase-perturbed SDEdit clears the vanilla frontier on
+PIE-Bench n=100 in the mid-frontier (struct ~0.11) region; wins live at light tau (0.125-0.25).
+Open headline: the **constant-hyperparameter** comparison at FlowAlign's SDEdit config (see handoff)
+-- our wins are at struct ~0.11 (≈ vanilla s0.65-0.7), NOT at FlowAlign's lighter ~0.30 regime, so
+the constant-point comparison must check whether a win exists at *that* fixed operating point.
