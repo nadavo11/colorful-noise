@@ -21,6 +21,8 @@ SBN with a guidance fix does not complement** — `cfgzero_sbn` / `cfgpp_sbn` tr
 flat across all eight conditions, so nothing trades adherence for the fidelity differences. On
 this true-CFG model SBN is a spectral *regularizer*, not a fidelity win.
 
+![E17 finding — on true-CFG SD3.5 the high-CFG baselines (cfg_hi/cfgzero/cfgpp) win fidelity, SBN nudges every fidelity metric slightly down, SBN+fix does not complement, and CLIP-T adherence is flat: SBN is a spectral regularizer, not a fidelity win. Numbers from results/e17/report.json.](figs/E17/finding.jpg)
+
 ## Background (plain language)
 
 *The HTML report (`results/e17/index.html`) carries the same glossary inline and leads each
