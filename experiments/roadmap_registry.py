@@ -625,7 +625,7 @@ EXPERIMENTS = [
                 "RF-inv and ties the eta frontier at matched editability, with a usable global knob.",
      "nxt": "Tie at matched editability => need structure headroom: gate the clamp by structure (E42), or drop "
             "inversion entirely for FlowEdit/FlowAlign (E43).",
-     "script": "experiments/e41_calibrate.py", "doc": None, "results": "e41", "image": None},
+     "script": "experiments/e41_calibrate.py", "doc": "docs/experiment-reports/EXPERIMENT_41.md", "results": "e41", "image": None},
 
     {"id": "E42", "title": "DINOv2-structure-gated spectral clamp (lock background, free foreground)",
      "thread": "style", "models": "FLUX.1-dev", "status": "dead-end",
@@ -665,7 +665,7 @@ EXPERIMENTS = [
      "script": "experiments/e43_flowalign.py", "doc": "docs/experiment-reports/EXPERIMENT_43.md", "results": None, "image": None},
 
     {"id": "E44", "title": "Apples-to-apples FlowAlign reproduction (+ ours) on PIE-Bench (SD3-medium)",
-     "thread": "style", "models": "SD3-medium (official FlowAlign)", "status": "active",
+     "thread": "style", "models": "SD3-medium (official FlowAlign)", "status": "paused",
      "motivation": "Validate the E43 win rigorously: first REPRODUCE FlowAlign's published PIE-Bench table on "
                    "SD3-medium with their official code (hard gate), then port our spectral phase-clamp into the "
                    "SAME SD3 FlowAlign loop and show lower Structure Distance at matched edited-CLIP.",
@@ -673,14 +673,15 @@ EXPERIMENTS = [
                "PSNR/LPIPS/MSE/SSIM, whole + edited CLIP) on PIE-Bench (cached HF++ variant, RLE masks; CLIP forced "
                "to ViT-base-patch16 to match the paper). Curve-based win criterion: sweep CFG ω∈{5,7.5,10,13.5} and "
                "compare struct-dist vs edited-CLIP curves (Fig 3a). HP tuned on a disjoint Emu-Edit subset.",
-     "result": "In progress. Foundation smoke (bicycle, cfg13.5) PASS; 20-img mini pipeline PASS with numbers in "
-               "PIE-Bench range (struct 12.4e-3, bgPSNR 28.2, CLIP-edit 22.1, ~9s/edit). Reproduction target from "
-               "arXiv App. E (cfg10, SD3.0): FlowAlign struct 0.028 / bgPSNR 25.5 / CLIP-edit 22.0. Full "
-               "{5,7.5,10,13.5}×700 sweep running on runai.",
-     "verdict": "IN PROGRESS — reproduction gate not yet cleared; target numbers in hand, cfg sweep running with "
-                "base16-CLIP analyze. (Then port sbn_phase into the official SD3 loop.)",
-     "nxt": "Land on FlowAlign's Fig-3a curve at cfg10/700, then port the E43 sbn_phase clamp into the official SD3 "
-            "FlowAlign loop and compare curves at matched edited-CLIP.",
+     "result": "Reproduction CLEARED on the mask-free metrics: the full {5,7.5,10,13.5}x700 sweep ran, and editing at "
+               "512px (the resolution diagnosis -- 1024px over-preserves) lands within ~1.5% on Structure Distance and "
+               "0.2 dB on bg-PSNR of FlowAlign's published cfg10/SD3.0 row (struct 0.028 / bgPSNR 25.5 / CLIP-edit 22.0). "
+               "The 1024 and 512 sweeps + smoke + mini are all in results/e44 (each tag: metrics.json + 700 PNGs).",
+     "verdict": "PARK. FlowAlign reproduced on the mask-free PIE-Bench metrics (mask-dependent bg/edited rows + the "
+                "planned 'beat it' comparison are blocked on acquiring the ORIGINAL PIE-Bench masks -- the cached HF++ "
+                "masks are degenerate). Foundation is sound; the 'port sbn_phase and beat the curve' step waits on masks.",
+     "nxt": "Acquire the original PIE-Bench masks, then port the E43 sbn_phase clamp into the official SD3 FlowAlign "
+            "loop and compare struct-dist vs edited-CLIP curves at matched editability.",
      "script": "experiments/e44_flowalign_repro.py", "doc": "docs/experiment-reports/EXPERIMENT_44.md",
      "results": "e44", "image": None},
 
@@ -720,7 +721,7 @@ EXPERIMENTS = [
      "nxt": "Do NOT publish the temporal win. For any temporal claim: multi-clip real-video set (DAVIS) + a "
             "perceptual flicker metric (source-flow warp is confounded by the edited object). The phase op's honest "
             "value is structure preservation -- evaluate THAT on a real-video edit benchmark.",
-     "script": "experiments/e45_ltx_flowalign.py", "doc": None, "results": None, "image": None},
+     "script": "experiments/e45_ltx_flowalign.py", "doc": "docs/experiment-reports/EXPERIMENT_45.md", "results": None, "image": None},
 
     {"id": "E46", "title": "Seed-phase fast editing -- 0-NFE phase prior vs SDEdit",
      "thread": "fast-edit", "models": "SDXL", "status": "dead-end",
@@ -806,6 +807,6 @@ EXPERIMENTS = [
                 "INTERIOR-only; boundaries are corrupted by circular wrap + the 1+8k VAE asymmetry.",
      "nxt": "P1: temporal-only phase preservation for edit consistency vs E45 phase3d/vanilla, judged on a flicker x "
             "editability frontier (must BEAT it, not sit on it).",
-     "script": "experiments/e48_temporal_phasor.py", "doc": None,
+     "script": "experiments/e48_temporal_phasor.py", "doc": "docs/experiment-reports/EXPERIMENT_48.md",
      "results": None, "image": None},
 ]
