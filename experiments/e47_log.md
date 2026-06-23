@@ -84,3 +84,19 @@ PIE-Bench n=100 in the mid-frontier (struct ~0.11) region; wins live at light ta
 Open headline: the **constant-hyperparameter** comparison at FlowAlign's SDEdit config (see handoff)
 -- our wins are at struct ~0.11 (≈ vanilla s0.65-0.7), NOT at FlowAlign's lighter ~0.30 regime, so
 the constant-point comparison must check whether a win exists at *that* fixed operating point.
+
+### P5b — variance check (paired bootstrap over the 100 images) — ⚠ tempers the KEEP
+The point-estimate "NW of frontier" above is real, but bootstrapping it shows the margin is **not
+statistically separable from zero at n=100.** 4000 resamples over the 100 images (arm + vanilla
+frontier resampled together; margin = arm_clip − interp(vanilla frontier @ arm_struct)):
+- A_t0.25:        margin +0.0046  95% CI [−0.0069,+0.0155]  P(>0)=0.78  ← best
+- A_t0.125:       margin +0.0022  95% CI [−0.0085,+0.0126]  P(>0)=0.65
+- sdg_src_t0.125: margin +0.0029  95% CI [−0.0040,+0.0105]  P(>0)=0.79
+- (A_t0.375, sdg_src_t0.375 negative.)
+
+**Every 95% CI crosses zero**; best arm is only 78% likely to be truly NW of the frontier. So the
+honest read is **directionally positive but inconclusive** — "beats vanilla's frontier" is a
+point-estimate that doesn't yet clear the noise. Decision for the morning: chase significance
+(n≈500, ~5× the run, ~halves the SE) vs accept as a null (5th frontier-trap confirmation) vs
+reframe around the consistent direction. Analysis: `experiments/results/e47_conf{A,SDG}/`,
+plot `docs/experiment-reports/e47_frontier.png`, bootstrap `experiments/e47_analyze.py`.
