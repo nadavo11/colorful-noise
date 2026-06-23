@@ -8,7 +8,7 @@ sdk_version: 5.9.1
 app_file: app.py
 pinned: false
 license: mit
-short_description: Interactive spectral image editing demo for FLUX and SD3.5 experiments.
+short_description: Spectral image editing demo for FLUX and SD3.5.
 ---
 
 # colorful-noise spectral demo

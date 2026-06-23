@@ -3,9 +3,24 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SPACE_ID="${1:-nadavo11/colorful-noise-demo}"
-SPACE_FLAVOR="${SPACE_FLAVOR:-zero-a10g}"
+SPACE_FLAVOR="${SPACE_FLAVOR:-cpu-basic}"
 MODEL_NAME="${MODEL_NAME:-flux-dev}"
+HF_TOKEN_NAME="${HF_TOKEN_NAME:-}"
 STAGE_DIR="${ROOT}/.hf-space-stage"
+
+TOKEN_ARGS=()
+if [[ -n "${HF_TOKEN_NAME}" ]]; then
+  HF_TOKEN_VALUE="$(python - <<'PY' "${HF_TOKEN_NAME}"
+import configparser, sys
+from pathlib import Path
+name = sys.argv[1]
+cfg = configparser.ConfigParser()
+cfg.read(Path.home()/'.cache/huggingface/stored_tokens')
+print(cfg[name]['hf_token'])
+PY
+)"
+  TOKEN_ARGS=(--token "${HF_TOKEN_VALUE}")
+fi
 
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
@@ -26,10 +41,12 @@ hf repo create "${SPACE_ID}" \
   --exist-ok \
   --flavor "${SPACE_FLAVOR}" \
   --secrets HF_TOKEN \
-  --env "MODEL_NAME=${MODEL_NAME}"
+  --env "MODEL_NAME=${MODEL_NAME}" \
+  "${TOKEN_ARGS[@]}"
 
 hf upload "${SPACE_ID}" "${STAGE_DIR}" . \
   --repo-type space \
-  --commit-message "Deploy spectral demo"
+  --commit-message "Deploy spectral demo" \
+  "${TOKEN_ARGS[@]}"
 
 echo "Published to https://huggingface.co/spaces/${SPACE_ID}"
