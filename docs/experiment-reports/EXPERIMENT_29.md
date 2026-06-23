@@ -31,11 +31,21 @@
 
 1. **The output latent is strongly inherited from the seed — across the whole spectrum, not just phase.** Unconditionally, seed→output **phase** circular correlation is ≈ **0.40 (low) / 0.53 (high)**, vs a null of ≈ 0. The link is real and large, but it is *broad-spectrum*: it does not peak at low frequency, and it is essentially flat-to-rising with frequency.
 
+![Phase-inheritance spectrum: circular correlation between seed phase and output phase vs radial frequency. The unconditional map (black dashed) sits at ≈0.4 (low) rising to ≈0.55 (high); raising CFG (1→3→7.5) pulls the whole curve down, most steeply at low frequency. The grey ±2σ permutation null hugs zero everywhere, so there is no measurement floor.](figs/E29/inherit_spectrum.jpg)
+
+![Per-bin phase-correlation heatmap (unconditional, fftshifted; centre = DC). Almost every 2-D Fourier bin is warm (≈0.4–0.7), confirming the inheritance is genuinely spread across the whole spectrum rather than concentrated at a few low frequencies; the radial average of this map is the unconditional curve above.](figs/E29/inherit_heatmap.jpg)
+
 2. **Magnitude is inherited at least as strongly as phase — contradicting our prior.** We expected the model to wash out the seed's power spectrum (it drives the PSD toward natural-image statistics, cf. E23), leaving phase as the surviving carrier. Instead the **magnitude** (log-power) Pearson is ≈ **0.48 (low) / 0.58 (high)**, slightly *above* phase, and the **raw pixel-space** correlation z_T↔z_0 is ≈ **0.76** unconditionally. So with little/no guidance the seed broadly fixes the entire output latent; the "phase = structure" framing describes what the latent *encodes*, not a phase-specific inheritance channel.
+
+![Phase vs magnitude inheritance, unconditional map. The magnitude (log-power) Pearson curve (orange) sits at or slightly above the phase circular-correlation curve (blue) at every radial frequency, and both rise toward high frequency. If phase were a privileged carrier, the blue curve would dominate; it does not.](figs/E29/magnitude_control.jpg)
 
 3. **Guidance erodes inheritance, preferentially in the low-frequency (composition) bands.** Low-band phase correlation falls monotonically with CFG: **0.40 (uncond) → 0.35 (CFG 1) → 0.23 (CFG 3) → 0.15 (CFG 7.5)**; spatial correlation falls **0.76 → 0.70 → ~0.61 → ~0.50**. High-frequency bands are far more stable. Reading: stronger prompts overwrite the coarse layout the seed proposes while leaving fine detail seed-determined — consistent with low frequency = composition.
 
-4. **The link is causal, and a low-band seed edit propagates across the whole output spectrum.** Transplanting a donor seed's phase into the base seed's lowest-`c` band (magnitude held → variance preserved, measured std = **1.000**) moves the output's phase toward the donor: **follow score ≈ 0.66 in the swapped low band, ≈ 0.60–0.63 in higher bands** (0.5 = no effect), roughly flat across `c ∈ {0.1, 0.25, 0.5}`. The above-0.5 follow at *all* bands — even ones not edited — shows the seed's coarse-scale phase conditions the entire downstream structure, not just its own band.
+4. **The link is causal, and the effect is band-localised to exactly the swapped band.** Transplanting a donor seed's phase into the base seed's lowest-`c` band (magnitude held → variance preserved, measured std = **1.000**) moves the output's phase toward the donor **inside that band**: follow score ≈ **0.66 at band 0**, holding **≈0.60–0.66 across the whole swapped region** (0.5 = no effect). Crucially the curve **steps down through 0.5 right at the edge of the swapped band** and falls to ≈0.3 in the untouched higher bands — i.e. those bands revert toward base seed A. The step tracks the cut: `c=0.1` crosses at band ≈5, `c=0.25` at band ≈9, `c=0.5` at band ≈13. This is the clean causal signature — output phase in band *k* is set by seed phase in band *k* — and it confirms the statistical inheritance is a real, per-band, controllable handle.
+
+![Causal transplant follow score per radial band, for three swap cuts c∈{0.1,0.25,0.5}. Each curve stays well above the 0.5 "no-effect" line inside its swapped band (the output phase follows donor B) and steps down through 0.5 to ≈0.3 exactly where the swap stops (the output reverts toward base A). The step edge moves right as c grows — the effect is band-localised, not diffuse.](figs/E29/follow.jpg)
+
+![Qualitative transplant grid (mountain-lake prompt, CFG 7.5). Columns: base seed A's image · donor seed B's image · A′ (A with B's phase in the lowest-c band). Rows: c=0.1, 0.25, 0.5. As c grows, A′ visibly inherits more of B's coarse layout (sky/water split, sun position) while keeping A's magnitude statistics — the low-band seed phase edit re-composes the scene.](figs/E29/transplant_grid.jpg)
 
 ## Caveats & next
 
@@ -45,6 +55,17 @@
 - Phase and magnitude are not fully independent through a nonlinear VAE — "phase = structure" is a strong tendency, not a law.
 - The inheritance being broad-spectrum (magnitude ≈ phase, spatial r ≈ 0.76) at low guidance is itself the headline correction to our prior — phase is *what structure lives in*, but it is not a privileged *inheritance channel*; the seed fixes the whole latent.
 - Next: repeat on Flux/SD3.5 (16-channel, rectified flow) to test architecture-independence; connect the strong seed→output determinism (and its CFG-driven, low-frequency erosion) to the "golden noise" / seed-trace line (E25–E28), where seed edits that change low-band phase should have the most compositional leverage at low CFG.
+
+## Verdict
+
+**MAPPED.** Under deterministic DDIM the seed fixes the *whole* output latent at low guidance (phase circular corr ≈0.40–0.53, magnitude ≈as strong, spatial r ≈0.76, null ≈0) — *not* a phase-specific channel, the correction to our prior. Guidance erodes it most in the low-frequency composition bands (low-band phase corr 0.40→0.15 over CFG 1→7.5). The link is **causal and band-localised**: a low-band seed-phase transplant moves output phase to the donor *inside* the swapped band (follow ≈0.6–0.66) and leaves the rest near the base (≈0.3). Takeaway: **the seed fixes the whole output spectrum at low CFG, per-band and controllably**, which is the lever the seed-edit line (E25–E28) acts on.
+
+## Artifacts
+
+- **Driver:** `experiments/e29_phase_inherit.py` (parts `preflight | gen | analyze | transplant`).
+- **Metrics:** `experiments/e29_phase_ops.py` (Jammalamadaka–SenGupta circular correlation, permutation null, log-magnitude Pearson, phase-diff resultant, follow score), reusing `experiments/spectral_ops.py` (`band_index_map`, `band_phase_swap`, `phase_only`, `_SELF_CONJ`) and `experiments/common.py`.
+- **Results location:** local checkout `experiments/results/e29/` — `report.json` (per-condition spectra + null + magnitude/spatial controls), `transplant.json` (per-band follow scores), `plots/*.png`, `examples/transplant_grid.png`, `index.html`. Not on `/storage` (no `roadmap_results/E29/` archive yet; `/storage` is read-only for this user under SSHFS, so the full-res archive must be pushed centrally).
+- **Figures (this report):** `figs/E29/{inherit_spectrum, inherit_heatmap, magnitude_control, follow, transplant_grid}.jpg`, all derived directly from `results/e29/`.
 
 ## Reproduce
 
