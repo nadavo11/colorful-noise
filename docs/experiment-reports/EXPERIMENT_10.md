@@ -95,6 +95,8 @@ above that, CFG overshoots real.
 | 5 | 1.928 | 1.318 | 126.7 | 77.7 |
 | **real (20)** | **1.229** | **1.074** | **99.6** | **43.7** |
 
+![CFG inflates the latent's spectral power (left, total; right, low band), crossing the real-photo level near w≈3 and overshooting above — the foundational fact the SBN line clamps back. Plotted from results/e10/cfg_spectral.json.](figs/E10/cfg_power.jpg)
+
 **3. The image-space correlate is contrast/saturation.** As CFG rises the decoded images get
 more contrasty and saturated (RMS contrast `0.164 → 0.197 → 0.204`, saturation `0.294 →
 0.396 → 0.464` for `w = 1, 3, 5`) — the familiar "over-cooked high-CFG look" is the
