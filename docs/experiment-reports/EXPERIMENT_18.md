@@ -48,6 +48,8 @@ move **tone/palette, not oriented strokes** (Gram matrices would). The honest wi
 **spectral tone transfer** — content-safe — giving the generation-time methods
 (E19–E22) solid ground.
 
+![E18 method — split the VAE latent's FFT: keep content A's phase, re-level per-band magnitude toward style B (psd_match = AdaIN on the radial power spectrum), iFFT + decode. Result: A's layout kept (CLIP→A 0.90–0.97), B's palette/tone transferred; real on SD3.5 (halves photo→painting spectral distance), near-inert on Flux, tone-only (isotropic).](figs/E18/method.jpg)
+
 ### Background (plain language)
 - **Latent FFT: phase vs per-band magnitude/power.** Encode an image to a `(C,H,W)`
   latent, FFT per channel. Each frequency has a **magnitude** (energy/texture) and a
