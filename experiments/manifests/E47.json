@@ -29,13 +29,21 @@
       "src_t0.125": [0.1201, 0.0807], "src_t0.25": [0.1123, 0.0620],
       "src_t0.375": [0.1122, 0.0498], "white_t0.5": [0.1661, 0.1219]
     },
-    "winners_n100": ["A_t0.125", "A_t0.25", "sdg_src_t0.125"],
-    "headline": "A_t0.25 beats vanilla frontier by +0.0045 CLIP-dir at matched struct (n=100); robust across n=20+n=100",
+    "winners_n100_pointest": ["A_t0.125", "A_t0.25", "sdg_src_t0.125"],
+    "bootstrap_n100": {
+      "method": "4000 paired resamples; margin = arm_clip - interp(vanilla frontier @ arm_struct)",
+      "A_t0.25": {"margin": 0.0046, "ci95": [-0.0069, 0.0155], "p_gt0": 0.78},
+      "A_t0.125": {"margin": 0.0022, "ci95": [-0.0085, 0.0126], "p_gt0": 0.65},
+      "sdg_src_t0.125": {"margin": 0.0029, "ci95": [-0.0040, 0.0105], "p_gt0": 0.79}
+    },
+    "headline": "Point-estimate NW of frontier (A_t0.25 +0.0046) but NOT significant at n=100: every 95% CI crosses 0, best P(>0)=0.78. Directional, not a win.",
     "n20_winners": ["A_t0.25 (+0.025)", "sdg_src_t0.25 (+0.002)"]
   },
   "artifacts": [
     "experiments/results/e47_confA/verdict.md",
     "experiments/results/e47_confSDG/verdict.md",
+    "experiments/e47_analyze.py",
+    "docs/experiment-reports/e47_frontier.png",
     "experiments/results/e47_confA/grid.png",
     "experiments/results/e47_confSDG/grid.png"
   ]

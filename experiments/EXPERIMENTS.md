@@ -1280,13 +1280,16 @@ frontier, filling the s0.7→s0.8 Pareto gap); confirmed at **n=100** — `A_t0.
 only; `t0.25` fell to a tie). The margin **shrank +0.025 (n=20) → +0.0045 (n=100)** as vanilla improved
 with more data. Wins sit at structure ≈ 0.11 (≈ vanilla strength 0.65–0.7).
 
-**Verdict.** **KEEP — the first method in the E41→E47 line to clear the vanilla SDEdit frontier on
-PIE-Bench** (modest, robust). What E46's chord lacked: the **geodesic** (smooth, constant-velocity, no
-antipodal phase-flip) **+ energy/phase decoupling** (structure on phase, edit budget on magnitude at
-fixed strength). Method **A** (geodesic noise) is the more robust winner; the margin is **thin**
-(+0.0045 CLIP-dir at matched structure) — modest, not a blowout. **Open headline:** the
+**Verdict.** **Directional, not yet significant — the strongest lead in the E41→E47 line, not a
+demonstrated win.** The point-estimate sits NW of the vanilla SDEdit frontier (consistent across
+n=20/100 and arms, A>SDG), via the two ingredients E46's chord lacked: the **geodesic** (smooth,
+constant-velocity, no antipodal phase-flip) **+ energy/phase decoupling** (structure on phase, edit
+budget on magnitude at fixed strength). **But a paired bootstrap (4000 resamples) shows the n=100
+margin does not clear the noise** — every 95% CI crosses zero; best arm `A_t0.25` +0.0046 CLIP-dir,
+P(truly-NW)=0.78. So: a promising direction, not a win. **Decide next:** chase significance (n≈500),
+reframe around the consistent direction, or accept as a 5th frontier-trap. Also open: the
 constant-hyperparameter comparison at FlowAlign's SDEdit config (`n_start=10/cfg=7/NFE=33` ≈ strength
-0.30) — our wins are at the mid-frontier, so check whether a win survives at that lighter fixed point.
+0.30) — the point-estimate wins are mid-frontier, so check the lighter fixed point.
 
 **Artifacts.** `experiments/e47_geodesic.py` (harness: `--method {A,sdg,B}`, helpers `sdedit_geodesic`/
 `spectral_geodesic_sdedit`/`geodesic_seed`), `cluster_e47_job.sh`; probe log `experiments/e47_log.md`

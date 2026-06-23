@@ -160,16 +160,17 @@ THREADS = [
             "phase (constant-angular-velocity slerp; tau=0 == vanilla), decoupling energy (magnitude) "
             "from structure (phase) -- and finally clears the vanilla SDEdit frontier on PIE-Bench.",
         "proceed":
-            "ACTIVE / LEAD. E47 is the first method in the E41->E47 line to beat the vanilla SDEdit "
-            "frontier (PIE-Bench n=100), though the margin is MODEST (A_t0.25 +0.0045 CLIP-dir at "
-            "matched structure; it shrank from +0.025 at n=20 as vanilla improved with more data). "
-            "Method A (geodesic noise in SDEdit) > SDG (geodesic on the noised latent). Open headline: "
-            "a CONSTANT-hyperparameter comparison at FlowAlign's SDEdit config (n_start=10/cfg=7/NFE=33 "
-            "~ strength 0.30) -- our wins sit at struct ~0.11 (~ vanilla s0.65-0.7), so check if a win "
-            "survives at that lighter fixed operating point. Direction: drop the geodesic onto inversion "
-            "editors that use SDEdit-style partial noising at generation time. Distinct from Colorful-"
-            "Noise (low-freq MAGNITUDE for color/structure generation) and Phi-Noise (phase INJECT for "
-            "video motion): we GEODESIC-interpolate PHASE as an editing perturbation with tau=0==vanilla.",
+            "ACTIVE / LEAD (directional, not yet significant). E47's point-estimate sits NW of the "
+            "vanilla SDEdit frontier (PIE-Bench n=100, consistent across n=20/100 and arms, A>SDG) -- "
+            "but a paired bootstrap shows the margin is NOT separable from zero (best arm A_t0.25 "
+            "+0.0046 CLIP-dir, P(truly-NW)=0.78; all 95% CIs cross 0). So it's the most promising lead, "
+            "not a demonstrated win. Decide: chase significance (n~500), reframe around the consistent "
+            "direction, or accept as a 5th frontier-trap. Method A (geodesic noise) > SDG (geodesic on "
+            "the noised latent). Open: CONSTANT-hyperparameter comparison at FlowAlign's SDEdit config "
+            "(n_start=10/cfg=7/NFE=33 ~ strength 0.30; point-estimate wins sit at struct ~0.11 ~ vanilla "
+            "s0.65-0.7). Direction: drop the geodesic onto inversion editors that use SDEdit-style "
+            "partial noising. Distinct from Colorful-Noise (low-freq MAGNITUDE for generation) and "
+            "Phi-Noise (phase INJECT for video motion): we GEODESIC-interpolate PHASE for editing, tau=0==vanilla.",
     },
     {
         "id": "text-freq",
@@ -764,21 +765,24 @@ EXPERIMENTS = [
                "boost); tau=0 == vanilla (validated). Variants: A = geodesic NOISE injected into SDEdit (keeps x0 term); "
                "SDG = geodesic on the noised LATENT phase. Contrast vs E46's chord (variable speed + antipodal flip) and "
                "vs A's double-anchor (energy/phase decoupling). Confirmed local chair -> n=20 -> n=100 on the cluster.",
-     "result": "Variant B (full-gen geodesic seed, no x0) is dominated (KILL). On real PIE-Bench, LIGHT-tau wins: "
-               "n=20 A_t0.25 = 0.108/+0.065 (+0.025 over the frontier, filling the s0.7->s0.8 Pareto gap); n=100 "
-               "A_t0.25 = 0.110/+0.062 (+0.0045) and A_t0.125 = 0.118/+0.076 both beat the frontier; SDG marginal "
-               "(sdg_src_t0.125 only; t0.25 fell to a tie). Margin shrank +0.025 (n=20) -> +0.0045 (n=100) as vanilla "
-               "improved with more data. Wins sit at struct ~0.11 (~ vanilla s0.65-0.7).",
-     "verdict": "KEEP (modest, robust win). FIRST method in the E41->E47 line to clear the vanilla SDEdit frontier on "
-                "PIE-Bench. What E46's chord/seed-transplant lacked: the GEODESIC (smooth, constant-velocity, no "
-                "antipodal flip) + ENERGY/PHASE DECOUPLING (structure rides on phase, edit budget on magnitude at fixed "
-                "strength). Method A (geodesic noise) more robust than SDG. Margin is THIN (+0.0045 CLIP-dir at matched "
-                "structure) -- modest, not a blowout.",
-     "nxt": "CONSTANT-hyperparameter comparison at FlowAlign's SDEdit config (n_start=10/cfg=7/NFE=33 ~ strength 0.30): "
-            "our wins are at struct ~0.11 (s~0.65-0.7), so check if a win survives at that lighter fixed point. "
-            "Direction: drop the geodesic onto inversion editors that use SDEdit-style partial noising at generation "
-            "time. Differentiate from Colorful-Noise (low-freq MAGNITUDE, generation) and Phi-Noise (phase INJECT, "
-            "video motion). Then scale to the full PIE-Bench with masked background/CLIP-I metrics.",
+     "result": "Variant B (full-gen geodesic seed, no x0) is dominated (KILL). On real PIE-Bench the point-estimate "
+               "favours LIGHT-tau: n=20 A_t0.25 = 0.108/+0.065 (+0.025 over the frontier); n=100 A_t0.25 = 0.110/+0.062 "
+               "(+0.0046) and A_t0.125 = 0.118/+0.076 both above the frontier; SDG marginal. BUT a paired bootstrap "
+               "(4000 resamples over the 100 imgs) shows the margin is NOT separable from zero: every 95% CI crosses 0 "
+               "(A_t0.25 +0.0046 CI[-0.0069,+0.0155] P(>0)=0.78; A_t0.125 P=0.65; sdg_src_t0.125 P=0.79). The margin "
+               "also shrank +0.025 (n=20) -> +0.0046 (n=100) as vanilla improved with more data.",
+     "verdict": "DIRECTIONAL, NOT YET SIGNIFICANT. The strongest lead in the E41->E47 line: the point-estimate sits NW "
+                "of the vanilla SDEdit frontier (consistent across n=20/100 and across arms, A>SDG), via a principled "
+                "mechanism E46's chord lacked -- the GEODESIC (smooth, constant-velocity, no antipodal flip) + "
+                "ENERGY/PHASE DECOUPLING (structure on phase, edit budget on magnitude at fixed strength). BUT the n=100 "
+                "advantage does NOT clear the noise (best arm only 78% likely truly-NW; all 95% CIs cross zero). A "
+                "promising direction, not yet a demonstrated win.",
+     "nxt": "Decide: (a) chase significance -- n~500 (~5x the run, ~halves the SE); (b) reframe around the consistent "
+            "direction; or (c) accept as a 5th frontier-trap. Also: CONSTANT-hyperparameter comparison at FlowAlign's "
+            "SDEdit config (n_start=10/cfg=7/NFE=33 ~ strength 0.30) -- our point-estimate wins are at struct ~0.11 "
+            "(s~0.65-0.7), so check the lighter fixed point. Direction: drop the geodesic onto inversion editors that "
+            "use SDEdit-style partial noising. Differentiate from Colorful-Noise (low-freq MAGNITUDE, generation) and "
+            "Phi-Noise (phase INJECT, video motion).",
      "script": "experiments/e47_geodesic.py", "doc": "docs/experiment-reports/EXPERIMENT_47.md",
      "results": None, "image": None},
 

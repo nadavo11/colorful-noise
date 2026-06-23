@@ -101,18 +101,38 @@ vanilla SDEdit strength frontier {0.5,0.6,0.7,0.8,0.9}. 17 NFE (FlowAlign sampli
 | sdg_src_t0.125 | 0.120 | +0.081 | WIN +0.003 |
 | sdg_src_t0.25 | 0.112 | +0.062 | tie |
 
-The margin **collapsed +0.025 (n=20) → +0.0045 (n=100)** because vanilla improved more than our arms
-when averaged over 100 images. Wins sit at structure ≈ 0.11 (≈ vanilla strength 0.65–0.7).
+The margin **collapsed +0.025 (n=20) → +0.0046 (n=100)** because vanilla improved more than our arms
+when averaged over 100 images. The point-estimate wins sit at structure ≈ 0.11 (≈ vanilla strength
+0.65–0.7).
+
+- **P5b (variance check — paired bootstrap, the decisive caveat).** 4000 resamples over the 100
+  images (each arm and the vanilla frontier resampled *together*; margin = arm clip − interp(frontier
+  @ arm struct)). **Every 95% CI crosses zero:**
+
+| arm | margin | 95% CI | P(margin > 0) |
+|---|---|---|---|
+| A_t0.25 | +0.0046 | [−0.0069, +0.0155] | **0.78** |
+| sdg_src_t0.125 | +0.0029 | [−0.0040, +0.0105] | 0.79 |
+| A_t0.125 | +0.0022 | [−0.0085, +0.0126] | 0.65 |
+
+The best arm is only **78% likely to be truly NW** of the frontier. So the n=100 advantage is a
+point-estimate that **does not clear the noise.** (Analysis: `experiments/e47_analyze.py`; frontier
+plot `docs/experiment-reports/e47_frontier.png`.)
 
 ## Verdict
 
-**KEEP (modest, robust win).** E47 is the **first method in the E41→E47 line to clear the vanilla
-SDEdit frontier on PIE-Bench**. The two ingredients E46 lacked: the **geodesic** (smooth,
-constant-velocity, no antipodal flip) and the **energy/phase decoupling** (structure on phase, edit
-budget on magnitude at a fixed strength). **Method A** (geodesic noise) is the more reliable winner.
-The margin is **thin** (+0.0045 CLIP-directional at matched structure) — a real, reproducible edge,
-not a blowout. Honest framing for the meeting: *we turned E46's KILL into a modest WIN by interpolating
-phase correctly and decoupling it from energy.*
+**Directional, not yet significant — the strongest lead in the E41→E47 line, but not a demonstrated
+win.** The point-estimate sits NW of the vanilla SDEdit frontier (consistent across n=20/100 and across
+arms, A>SDG), via the two ingredients E46 lacked: the **geodesic** (smooth, constant-velocity, no
+antipodal flip) and the **energy/phase decoupling** (structure on phase, edit budget on magnitude at a
+fixed strength). **But the paired bootstrap shows the n=100 margin does not separate from zero**
+(every 95% CI crosses 0; best arm P=0.78). So this is a **promising direction, not a win.**
+
+Honest framing for the meeting: *we turned E46's KILL into a directionally-positive, principled lead —
+interpolating phase correctly (geodesic) and decoupling it from energy — but it is not yet
+statistically a win at n=100.* **Decide next:** (a) chase significance with n≈500 (~5× the run,
+~halves the SE), (b) reframe the contribution around the consistent direction + mechanism, or
+(c) accept it as a 5th frontier-trap confirmation.
 
 ## Difference from the two closest papers
 
