@@ -1260,3 +1260,36 @@ cross-modal structure transfer).
 `e46_probe1.py` (P1), `e46_chair.py` (P2), `e46_gamma.py` / `e46_inject.py` / `e46_coloramp.py` /
 `e46_softinject.py` (P3); probe log `experiments/e46_log.md`; grids under `experiments/results/e46*`.
 See `docs/experiment-reports/EXPERIMENT_46.md`.
+
+## E47 — Geodesic phase-perturbed SDEdit: apples-to-apples structure-preserving editing (SDXL)
+
+**Method.** Inversion + FlowEdit/FlowAlign editors are slow (extra inversion pass / >2 NFE/step);
+SDEdit is fast but loses structure. E46 killed seed-phase transplant via a *chord* mix (frontier-trap).
+E47 reframes it as a **geodesic** perturbation of the SDEdit noised latent: keep `x_std`'s **magnitude**
+(the correct strength-`s` energy) and rotate only its **phase** a fraction `τ` along the geodesic
+(constant-angular-velocity slerp, shortest signed arc) toward the source phase (structure-restore) or
+white (edit-boost); **τ=0 ≡ vanilla SDEdit** (validated). This **decouples energy (magnitude) from
+structure (phase)**. Variants: **A** = geodesic *noise* injected into SDEdit (keeps the `√ᾱ·x₀` term);
+**SDG** = geodesic on the noised *latent* phase. Eval: SDXL, PIE-Bench (`PIE_Bench_pp`), 17 NFE,
+DINO-struct × CLIP-directional vs the full vanilla strength frontier {0.5–0.9}.
+
+**Key result.** Variant **B** (full-gen geodesic seed, no `x₀`) is dominated (KILL — OOD white
+magnitude). On real PIE-Bench, **light-τ wins**: n=20 `A_t0.25` = 0.108/+0.065 (**+0.025** over the
+frontier, filling the s0.7→s0.8 Pareto gap); confirmed at **n=100** — `A_t0.25` = 0.110/+0.062
+(**+0.0045**) and `A_t0.125` = 0.118/+0.076 both beat the frontier; **SDG** marginal (`sdg_src_t0.125`
+only; `t0.25` fell to a tie). The margin **shrank +0.025 (n=20) → +0.0045 (n=100)** as vanilla improved
+with more data. Wins sit at structure ≈ 0.11 (≈ vanilla strength 0.65–0.7).
+
+**Verdict.** **KEEP — the first method in the E41→E47 line to clear the vanilla SDEdit frontier on
+PIE-Bench** (modest, robust). What E46's chord lacked: the **geodesic** (smooth, constant-velocity, no
+antipodal phase-flip) **+ energy/phase decoupling** (structure on phase, edit budget on magnitude at
+fixed strength). Method **A** (geodesic noise) is the more robust winner; the margin is **thin**
+(+0.0045 CLIP-dir at matched structure) — modest, not a blowout. **Open headline:** the
+constant-hyperparameter comparison at FlowAlign's SDEdit config (`n_start=10/cfg=7/NFE=33` ≈ strength
+0.30) — our wins are at the mid-frontier, so check whether a win survives at that lighter fixed point.
+
+**Artifacts.** `experiments/e47_geodesic.py` (harness: `--method {A,sdg,B}`, helpers `sdedit_geodesic`/
+`spectral_geodesic_sdedit`/`geodesic_seed`), `cluster_e47_job.sh`; probe log `experiments/e47_log.md`
+(P0–P5); handoff `experiments/e47_handoff.md`; manifest `experiments/manifests/E47.json`; verdicts +
+grids under `experiments/results/e47_conf{A,SDG}` (on /storage). See
+`docs/experiment-reports/EXPERIMENT_47.md`.

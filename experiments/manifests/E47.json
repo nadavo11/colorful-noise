@@ -1,0 +1,42 @@
+{
+  "eid": "E47",
+  "logged": "2026-06-23",
+  "git_commit": "aae585f",
+  "source": "cluster",
+  "config": {
+    "model": "stabilityai/stable-diffusion-xl-base-1.0",
+    "benchmark": "PIE_Bench_pp (HF UB-CVML-Group)",
+    "n_per_type": 10,
+    "n_images_approx": 100,
+    "steps_nfe": 17,
+    "guidance": 5.0,
+    "img_size": 1024,
+    "strength_method_arms": 0.8,
+    "vanilla_strengths": [0.5, 0.6, 0.7, 0.8, 0.9],
+    "taus": [0.125, 0.25, 0.375],
+    "metric": "DINO structure-distance (down) x CLIP-directional (up)",
+    "win_def": "NW of the vanilla SDEdit strength frontier"
+  },
+  "metrics": {
+    "vanilla_frontier": {
+      "s0.5": [0.0908, 0.0350], "s0.6": [0.1045, 0.0488], "s0.7": [0.1123, 0.0624],
+      "s0.8": [0.1302, 0.0982], "s0.9": [0.1527, 0.1236]
+    },
+    "A_geodesic_noise": {
+      "t0.125": [0.1180, 0.0759], "t0.25": [0.1097, 0.0624], "t0.375": [0.1085, 0.0482]
+    },
+    "SDG_geodesic_latent": {
+      "src_t0.125": [0.1201, 0.0807], "src_t0.25": [0.1123, 0.0620],
+      "src_t0.375": [0.1122, 0.0498], "white_t0.5": [0.1661, 0.1219]
+    },
+    "winners_n100": ["A_t0.125", "A_t0.25", "sdg_src_t0.125"],
+    "headline": "A_t0.25 beats vanilla frontier by +0.0045 CLIP-dir at matched struct (n=100); robust across n=20+n=100",
+    "n20_winners": ["A_t0.25 (+0.025)", "sdg_src_t0.25 (+0.002)"]
+  },
+  "artifacts": [
+    "experiments/results/e47_confA/verdict.md",
+    "experiments/results/e47_confSDG/verdict.md",
+    "experiments/results/e47_confA/grid.png",
+    "experiments/results/e47_confSDG/grid.png"
+  ]
+}

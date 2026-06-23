@@ -145,6 +145,33 @@ THREADS = [
             "determinism. Do not invest further in seed optimisation for adherence.",
     },
     {
+        "id": "fast-edit",
+        "title": "Fast structure-preserving editing",
+        "status": "active",
+        "summary": "Make cheap SDEdit keep structure like slow inversion -- via a geodesic phase nudge.",
+        "narrative":
+            "Inversion-based editors and FlowEdit/FlowAlign-style training-free editors get good, "
+            "structure-faithful edits but are SLOW (inversion = a full extra pass, 17+17 NFE; "
+            "FlowEdit/AlignFlow > 2 NFE/step, 33 NFE). SDEdit is fast (one partial pass) but loses "
+            "structure. This thread asks: can a near-free spectral move buy back SDEdit's structure "
+            "without paying NFE? E46 transplanted the source FFT phase into a seed via a CHORD mix "
+            "and KILLed it (frontier-trap; the chord has variable angular speed + an antipodal flip). "
+            "E47 reframes it as an apples-to-apples GEODESIC perturbation of the SDEdit noised latent's "
+            "phase (constant-angular-velocity slerp; tau=0 == vanilla), decoupling energy (magnitude) "
+            "from structure (phase) -- and finally clears the vanilla SDEdit frontier on PIE-Bench.",
+        "proceed":
+            "ACTIVE / LEAD. E47 is the first method in the E41->E47 line to beat the vanilla SDEdit "
+            "frontier (PIE-Bench n=100), though the margin is MODEST (A_t0.25 +0.0045 CLIP-dir at "
+            "matched structure; it shrank from +0.025 at n=20 as vanilla improved with more data). "
+            "Method A (geodesic noise in SDEdit) > SDG (geodesic on the noised latent). Open headline: "
+            "a CONSTANT-hyperparameter comparison at FlowAlign's SDEdit config (n_start=10/cfg=7/NFE=33 "
+            "~ strength 0.30) -- our wins sit at struct ~0.11 (~ vanilla s0.65-0.7), so check if a win "
+            "survives at that lighter fixed operating point. Direction: drop the geodesic onto inversion "
+            "editors that use SDEdit-style partial noising at generation time. Distinct from Colorful-"
+            "Noise (low-freq MAGNITUDE for color/structure generation) and Phi-Noise (phase INJECT for "
+            "video motion): we GEODESIC-interpolate PHASE as an editing perturbation with tau=0==vanilla.",
+    },
+    {
         "id": "text-freq",
         "title": "Text-frequency conditioning",
         "status": "mapped",
@@ -695,7 +722,7 @@ EXPERIMENTS = [
      "script": "experiments/e45_ltx_flowalign.py", "doc": None, "results": None, "image": None},
 
     {"id": "E46", "title": "Seed-phase fast editing -- 0-NFE phase prior vs SDEdit",
-     "thread": "seed", "models": "SDXL", "status": "dead-end",
+     "thread": "fast-edit", "models": "SDXL", "status": "dead-end",
      "motivation": "Inversion editors pay many NFE; FlowEdit/FlowAlign cost >2 NFE/step; SDEdit is cheap but "
                    "unreliable. Transplant the source's FFT PHASE (where structure lives) into a fresh seed for "
                    "~0 NFE, then run one fast generation toward the target -- can a free phase prior make SDEdit "
@@ -722,5 +749,59 @@ EXPERIMENTS = [
      "nxt": "Only useful where there is NO x0 to carry (layout-conditioned T2I / cross-modal structure transfer). "
             "If revisited: matched-editability vanilla-strength sweep; confirm P1 on official PIE-Bench (cluster).",
      "script": "experiments/e46_seedphase.py", "doc": "docs/experiment-reports/EXPERIMENT_46.md",
+     "results": None, "image": None},
+
+    {"id": "E47", "title": "Geodesic phase-perturbed SDEdit -- apples-to-apples structure-preserving editing",
+     "thread": "fast-edit", "models": "SDXL (PIE-Bench)", "status": "active",
+     "motivation": "Inversion + FlowEdit/FlowAlign editors are SLOW (extra inversion pass / >2 NFE/step); SDEdit is "
+                   "fast but loses structure. E46 KILLed seed-phase transplant via a CHORD mix (frontier-trap). Can a "
+                   "mathematically-clean GEODESIC phase perturbation of the SDEdit latent -- decoupling energy from "
+                   "structure -- finally beat vanilla SDEdit at matched editability, for fast AND good editing?",
+     "method": "SDXL, PIE-Bench (HF PIE_Bench_pp), 17 NFE (FlowAlign sampling budget), DINO-struct x CLIP-directional "
+               "vs the full vanilla SDEdit strength frontier {0.5..0.9}. Op: keep the SDEdit noised-latent's MAGNITUDE "
+               "(the correct strength-s energy) and rotate only its PHASE a fraction tau along the geodesic (constant-"
+               "angular-velocity slerp, shortest signed arc) toward source phase (structure-restore) or white (edit-"
+               "boost); tau=0 == vanilla (validated). Variants: A = geodesic NOISE injected into SDEdit (keeps x0 term); "
+               "SDG = geodesic on the noised LATENT phase. Contrast vs E46's chord (variable speed + antipodal flip) and "
+               "vs A's double-anchor (energy/phase decoupling). Confirmed local chair -> n=20 -> n=100 on the cluster.",
+     "result": "Variant B (full-gen geodesic seed, no x0) is dominated (KILL). On real PIE-Bench, LIGHT-tau wins: "
+               "n=20 A_t0.25 = 0.108/+0.065 (+0.025 over the frontier, filling the s0.7->s0.8 Pareto gap); n=100 "
+               "A_t0.25 = 0.110/+0.062 (+0.0045) and A_t0.125 = 0.118/+0.076 both beat the frontier; SDG marginal "
+               "(sdg_src_t0.125 only; t0.25 fell to a tie). Margin shrank +0.025 (n=20) -> +0.0045 (n=100) as vanilla "
+               "improved with more data. Wins sit at struct ~0.11 (~ vanilla s0.65-0.7).",
+     "verdict": "KEEP (modest, robust win). FIRST method in the E41->E47 line to clear the vanilla SDEdit frontier on "
+                "PIE-Bench. What E46's chord/seed-transplant lacked: the GEODESIC (smooth, constant-velocity, no "
+                "antipodal flip) + ENERGY/PHASE DECOUPLING (structure rides on phase, edit budget on magnitude at fixed "
+                "strength). Method A (geodesic noise) more robust than SDG. Margin is THIN (+0.0045 CLIP-dir at matched "
+                "structure) -- modest, not a blowout.",
+     "nxt": "CONSTANT-hyperparameter comparison at FlowAlign's SDEdit config (n_start=10/cfg=7/NFE=33 ~ strength 0.30): "
+            "our wins are at struct ~0.11 (s~0.65-0.7), so check if a win survives at that lighter fixed point. "
+            "Direction: drop the geodesic onto inversion editors that use SDEdit-style partial noising at generation "
+            "time. Differentiate from Colorful-Noise (low-freq MAGNITUDE, generation) and Phi-Noise (phase INJECT, "
+            "video motion). Then scale to the full PIE-Bench with masked background/CLIP-I metrics.",
+     "script": "experiments/e47_geodesic.py", "doc": "docs/experiment-reports/EXPERIMENT_47.md",
+     "results": None, "image": None},
+
+    {"id": "E48", "title": "Temporal-axis Fourier phasor on LTX latents -- motion-carrier sanity",
+     "thread": "style", "models": "LTX-Video", "status": "active",
+     "motivation": "Follow-on to E45. Is the LTX latent's TEMPORAL phase a faithful, manipulable motion carrier? "
+                   "A linear temporal phasor is a CIRCULAR shift (re-timing/interpolation only, no genuinely-new "
+                   "frames); the intended deliverable is temporal-only phase preservation for edit CONSISTENCY.",
+     "method": "Fourier shift theorem on the temporal (F) axis: fft_F(z)*exp(-2pi j k.Delta/F) <=> circular frame "
+               "shift by Delta. Three escalating checks: (1) operator correctness in latent space (integer phasor == "
+               "torch.roll, roundtrip, half+half); (2) VAE shift-equivariance (Delta=1, decode(shift) vs pixel-roll "
+               "decode); (3) fractional Delta=0.5 coherence vs a latent-lerp baseline. Real clip cockatoo.mp4 704x480 "
+               "49f, LTX latent (1,128,7,15,22), tcr=8; cluster A5000. Reuses E45 ltx_encode/decode.",
+     "result": "Operator correct (integer==roll max|err| 1.2e-6; roundtrip 1.4e-6; half+half 1.9e-6). VAE temporal "
+               "shift-equivariance Delta=1: all-frames PSNR 19.8 dB but INTERIOR[16:33] = 37.7 dB (the low all-frames "
+               "number is expected boundary corruption: circular wrap + the LTX VAE frame0=1px / rest=8px asymmetry). "
+               "Fractional Delta=0.5: PSNR(phasor, latent-lerp) 12.5 dB -- band-limited sinc interp, not a blend.",
+     "verdict": "KEEP. The operator is correct and the LTX latent temporal axis is shift-equivariant in the interior "
+                "(37.7 dB) -- temporal phase is a faithful, manipulable motion carrier, so the deliverable "
+                "(temporal-only phase preservation for edit consistency) is worth building. Caveat: equivariance is "
+                "INTERIOR-only; boundaries are corrupted by circular wrap + the 1+8k VAE asymmetry.",
+     "nxt": "P1: temporal-only phase preservation for edit consistency vs E45 phase3d/vanilla, judged on a flicker x "
+            "editability frontier (must BEAT it, not sit on it).",
+     "script": "experiments/e48_temporal_phasor.py", "doc": None,
      "results": None, "image": None},
 ]
