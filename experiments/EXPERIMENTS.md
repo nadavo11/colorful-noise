@@ -937,9 +937,11 @@ band (magnitude held → variance preserved, std=1.000), regenerate, measure fol
   privileged inheritance channel (a correction to our prior).
 - **CFG erodes inheritance, preferentially in low-freq (composition) bands:** low-band phase
   corr 0.40 (uncond) → 0.35 → 0.23 → 0.15 across CFG.
-- **Causal + propagating:** the low-band transplant gives follow-score ≈ **0.66** in the
-  swapped band and 0.60–0.63 in *higher* bands too (0.5 = no effect) — the seed's coarse phase
-  conditions the entire downstream structure.
+- **Causal + band-localised** (corrected): the low-band transplant gives follow-score ≈ **0.66**
+  *inside* the swapped band, stepping down through ~0.5 to ≈**0.3** in the untouched higher bands
+  (0.5 = no effect) — the effect stays in the band you swap, it does **not** propagate to condition
+  the whole downstream spectrum. (The broad observational correlation above is the seed correlating
+  with the whole output; the causal transplant is band-local.)
 
 **Artifacts.** `experiments/e29_phase_inherit.py`, `e29_phase_ops.py`, `e29_site.py`;
 `results/e29/{report.json, transplant.json, index.html}`. See EXPERIMENT_29.md.

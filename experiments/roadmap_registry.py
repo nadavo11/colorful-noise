@@ -455,7 +455,9 @@ EXPERIMENTS = [
      "method": "Per-band circular correlation seed-phase vs output-phase over many seeds + CFG sweep; "
                "causal phase transplant with a follow score.",
      "result": "Strong BROAD-spectrum inheritance (phase ~0.4, magnitude >= phase, pixel r ~0.76, null "
-               "~0); CFG erodes it most in low-freq bands; transplant confirms causality (follow ~0.66).",
+               "~0); CFG erodes it most in low-freq bands; the causal transplant is BAND-LOCALISED "
+               "(follow ~0.66 inside the swapped band, stepping to ~0.3 in untouched higher bands -- not "
+               "propagating to the whole spectrum).",
      "verdict": "The seed fixes the WHOLE output spectrum at low CFG -- not a phase-specific channel.",
      "nxt": "Repeat on Flux/SD3.5 (rectified flow) for architecture-independence.",
      "script": "experiments/e29_phase_inherit.py", "doc": "docs/experiment-reports/EXPERIMENT_29.md", "results": "e29", "image": None},
