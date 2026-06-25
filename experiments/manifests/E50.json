@@ -1,0 +1,61 @@
+{
+  "eid": "E50",
+  "logged": "2026-06-25",
+  "git_commit": "6ea3f10",
+  "source": "run",
+  "script": "e50_spectral_kontext_pilot/lib/run_kontext.py",
+  "config": {
+    "phase": "e50-spectral-kontext-pilot-v1",
+    "model": "FLUX.1-Kontext-dev (4-bit NF4)",
+    "seed": 0,
+    "steps": 20,
+    "guidance": 2.5,
+    "n_generations": 66,
+    "experiments": {
+      "spectral_source": 30,
+      "spectral_reference": 24,
+      "prompt_variants": 12
+    },
+    "edit_ids": [
+      "pie_6_0",
+      "pie_7_0",
+      "pie_1_0",
+      "pie_2_1",
+      "pie_8_0",
+      "pie_9_1"
+    ],
+    "leak_ids": [
+      "leak_0_adversarial",
+      "leak_3_adversarial",
+      "leak_6_adversarial",
+      "leak_7_adversarial",
+      "leak_8_adversarial",
+      "leak_9_adversarial"
+    ],
+    "fixture": "reuses E49 (baseline-establishment-v1) subsets"
+  },
+  "metrics": {
+    "ref_content_raw_leakgap": 0.7692,
+    "ref_content_raw_clipIstyle": 0.4628,
+    "ref_contentphase_styleamp_leakgap": 0.2444,
+    "ref_contentphase_styleamp_clipIstyle": 0.5839,
+    "ref_stylephase_contentamp_leakgap": -0.5579,
+    "ref_stylephase_contentamp_dinocontent": 0.013,
+    "src_raw_dinocontent": 0.655,
+    "src_raw_clipTgain": 0.0459,
+    "src_lowband_clipTgain": 0.0485,
+    "src_amplitudeonly_dinocontent": 0.1374,
+    "prompt_neutral_leakgap": 0.7458,
+    "prompt_contentpreserving_leakgap": 0.7847,
+    "prompt_antileakage_leakgap": 0.6331,
+    "verdict_code": "PROCEED_INTERNAL_KONTEXT_SURGERY"
+  },
+  "artifacts": [
+    "e50_spectral_kontext_pilot/reports/e50_spectral_kontext_pilot.html",
+    "e50_spectral_kontext_pilot/metrics/e50_metrics.csv",
+    "e50_spectral_kontext_pilot/metrics/e50_summary.json",
+    "e50_spectral_kontext_pilot/videos/e50_kontext_spectral_walkthrough.mp4",
+    "e50_spectral_kontext_pilot/figures/grids/reference_spectral_grid.png",
+    "e50_spectral_kontext_pilot/data/manifests/e50_results.jsonl"
+  ]
+}

@@ -851,4 +851,44 @@ EXPERIMENTS = [
             "the low-leakage control. P2: scale the pilot subset (50+/benchmark) on Kontext once the spectral op is wired.",
      "script": "baseline_establishment/lib/runner.py", "doc": "docs/experiment-reports/EXPERIMENT_49.md",
      "results": None, "image": None},
+
+    {"id": "E50", "title": "Spectral Kontext pilot -- do frequency-domain input/reference edits improve FLUX.1-Kontext-dev?",
+     "thread": "style", "models": "FLUX.1-Kontext-dev (4-bit NF4); E49 Redux + VGG-Gram(Gatys) as controls",
+     "status": "done",
+     "motivation": "E49 established FLUX.1-Kontext-dev as the strongest accessible no-training substrate. E50 is the "
+                   "first spectral pilot ON that competent substrate: now that a real editor sits underneath, do "
+                   "training-free frequency-domain manipulations of its INPUTS (source image, content x style reference "
+                   "composite) or its INSTRUCTION buy a better content/style tradeoff or less reference semantic leakage? "
+                   "Focused pilot on the exact E49 subsets, not a benchmark sweep.",
+     "method": "66 FLUX.1-Kontext-dev generations (4-bit NF4, native 1024px, 20 steps, g=2.5, seed 0), three "
+               "training-free interventions, no per-example optimisation. (A) SPECTRAL SOURCE: feed Kontext the source "
+               "image after raw / phase-only / amplitude-only / low-band / high-band FFT decomposition (6 PIE-Bench "
+               "tasks x 5 ops = 30). (B) SPECTRAL REFERENCE: feed Kontext an FFT content x style composite "
+               "(content_raw / content-phase+style-amp / style-phase+content-amp / style-high-on-content) on 6 "
+               "adversarial leakage pairs (=24). (C) PROMPT VARIANTS: neutral / content-preserving / anti-leakage "
+               "instruction on the content image, 4 pairs (=12). Exp D (latent/timestep banded edits) deferred to E51. "
+               "Per-channel 2D FFT operators in numpy (spectral.py); E49 metric suite reused for direct comparison. "
+               "Code in e50_spectral_kontext_pilot/.",
+     "result": "SPECTRAL REFERENCE (the clean mechanistic result): PHASE carries the copy-able semantics -- "
+               "style-phase+content-amp catastrophically leaks (DINO-content 0.01, leak_gap -0.56: the style ref's "
+               "objects fully replace the content). AMPLITUDE carries texture -- content-phase+style-amp raises CLIP-I "
+               "style adherence 0.46->0.58 but at a content cost (DINO-content 0.85->0.50, leak_gap +0.77->+0.24): a "
+               "move ALONG the Pareto front, not above it. style-high-on-content == raw baseline (Kontext re-renders the "
+               "high-freq graft away). SPECTRAL SOURCE: raw is needed for identity (DINO-content raw 0.66 vs amplitude-only "
+               "0.14); low-band source preserves edit gain (clipT_gain +0.049 vs raw +0.046) but drops content (0.56). "
+               "PROMPT: leakage is NOT mainly a prompt problem -- neutral already gives leak_gap +0.75; content-preserving "
+               "wording is best (+0.78), and the explicit anti-leakage instruction BACKFIRES (+0.63, lower content "
+               "preservation) by priming the very concepts it negates.",
+     "verdict": "PROCEED_INTERNAL_KONTEXT_SURGERY. External, training-free FFT edits of Kontext's inputs/references do "
+                "NOT beat raw Kontext's content/style/leakage tradeoff -- amplitude transfer trades content for style "
+                "rather than improving the frontier, and high-freq grafts are re-rendered away. BUT the diagnostics are "
+                "clean and actionable: phase=semantics (leakage lever), amplitude=texture (style lever), low-frequency is "
+                "sufficient for instruction-following. That localises where to intervene NEXT -- inside Kontext "
+                "(features/attention or timestep-banded latents), not at the pixel input.",
+     "nxt": "E51: move the same phase/amplitude/band decomposition INSIDE Kontext -- timestep-banded latent edits "
+            "(early low-freq content lock, late high-freq style injection) and/or attention-feature interventions, "
+            "probed on the adversarial leakage pairs where the phase->semantics signal is cleanest. Scale the subset "
+            "once the internal op is wired.",
+     "script": "e50_spectral_kontext_pilot/lib/run_kontext.py", "doc": "docs/experiment-reports/EXPERIMENT_50.md",
+     "results": None, "image": None},
 ]

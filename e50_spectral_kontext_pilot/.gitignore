@@ -1,0 +1,4 @@
+# Heavy run artifacts: raw 1024px Kontext output PNGs are reproducible from the manifests + lib/.
+# Keep the manifests (mechanical record) tracked; drop the pixels.
+outputs/**/*.png
+logs/*.log

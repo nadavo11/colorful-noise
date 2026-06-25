@@ -1,0 +1,208 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E50 — Spectral Kontext pilot -- do frequency-domain input/reference edits improve FLUX.1-Kontext-dev?</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_50.md'>source .md</a> · <a href='../../e50_spectral_kontext_pilot/lib/run_kontext.py'>driver</a></p><article class=report><h1>EXPERIMENT 50 — Spectral Kontext Pilot</h1>
+<p><strong>Thread:</strong> <code>style</code> (Spectral style transfer &amp; editing) · <strong>Status:</strong> done ·
+<strong>Verdict:</strong> <strong>PROCEED_INTERNAL_KONTEXT_SURGERY</strong></p>
+<blockquote>
+<p>First spectral pilot on the substrate E49 picked. <strong>External, training-free FFT edits of
+FLUX.1-Kontext-dev's inputs/references do not beat raw Kontext's content/style/leakage tradeoff —
+but they yield a clean mechanistic map (phase = semantics, amplitude = texture, low-frequency =
+enough to edit) that says the next intervention belongs <em>inside</em> the model.</strong></p>
+</blockquote>
+<h2>Why</h2>
+<p>E49 established <strong>FLUX.1-Kontext-dev</strong> as the strongest accessible no-training substrate. E50 asks
+the first real spectral question on top of it: now that a competent editor sits underneath, do
+<strong>frequency-domain manipulations of its inputs</strong> (source image, or a content×style reference
+composite) or its <strong>instruction</strong> improve the content/style tradeoff, or reduce reference semantic
+leakage? Focused pilot on the exact E49 subsets — comparable one-to-one to the E49 Kontext baseline.</p>
+<h2>Setup</h2>
+<p><strong>66 Kontext generations</strong> (4-bit NF4, native 1024px, 20 steps, g=2.5, seed 0), training-free, no
+per-example optimization. Three interventions:</p>
+<table>
+<thead>
+<tr>
+<th>exp</th>
+<th>site</th>
+<th>variants</th>
+<th>n</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A — spectral source</strong></td>
+<td>model input image</td>
+<td>raw / phase-only / amplitude-only / low-band / high-band</td>
+<td>30 (6 PIE tasks ×5)</td>
+</tr>
+<tr>
+<td><strong>B — spectral reference</strong></td>
+<td>input = FFT content×style composite</td>
+<td>content_raw / content-phase+style-amp / style-phase+content-amp / style-high-on-content</td>
+<td>24 (6 leak pairs ×4)</td>
+</tr>
+<tr>
+<td><strong>C — prompt variants</strong></td>
+<td>text instruction</td>
+<td>neutral / content-preserving / anti-leakage</td>
+<td>12 (4 pairs ×3)</td>
+</tr>
+<tr>
+<td>D — latent/timestep</td>
+<td><em>deferred to E51</em></td>
+<td>non-invasive pilot</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Operators: per-channel 2-D FFT (numpy), A=|F|, P=∠F, recon=Re(ifft(A·e^{iP})); radial bands
+low&lt;0.15 / mid 0.15–0.45 / high&gt;0.45 of Nyquist. Subsets: PIE-Bench <code>pie_{6_0,7_0,1_0,2_1,8_0,9_1}</code>
+(color/material/object-replace/object-add/global/style); adversarial pairs
+<code>leak_{0,3,6,7,8,9}_adversarial</code> (photo content × WikiArt style). E49 metric suite reused. Controls
+(no new gen): E49 Kontext (1024px), Redux (high-leak), VGG-Gram/Gatys (low-leak).</p>
+<h2>Headline numbers</h2>
+<h3>B — spectral reference composites (the clean result)</h3>
+<table>
+<thead>
+<tr>
+<th>reference op</th>
+<th>DINO content</th>
+<th>CLIP-I style</th>
+<th>DINO style (leak)</th>
+<th><strong>leak_gap</strong> (content−style)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>content_raw (baseline)</td>
+<td><strong>0.85</strong></td>
+<td>0.46</td>
+<td>0.08</td>
+<td><strong>+0.77</strong></td>
+</tr>
+<tr>
+<td>content-phase + style-amp</td>
+<td>0.50</td>
+<td><strong>0.58</strong></td>
+<td>0.25</td>
+<td>+0.24</td>
+</tr>
+<tr>
+<td>style-phase + content-amp</td>
+<td><strong>0.01</strong></td>
+<td>0.77</td>
+<td>0.57</td>
+<td><strong>−0.56</strong></td>
+</tr>
+<tr>
+<td>style-high-on-content</td>
+<td>0.85</td>
+<td>0.46</td>
+<td>0.09</td>
+<td>+0.77</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Phase carries the copy-able semantics.</strong> <code>style-phase+content-amp</code> catastrophically leaks
+  (DINO-content 0.01) — the style reference's objects fully replace the content. A face leaks into
+  the architecture pair; the abstract pair imports the painting's shapes.</li>
+<li><strong>Amplitude carries texture.</strong> <code>content-phase+style-amp</code> raises style adherence (0.46→<strong>0.58</strong>)
+  but at a content cost (0.85→0.50, leak_gap +0.77→+0.24) — a move <em>along</em> the Pareto front, not above it.</li>
+<li><strong><code>style-high-on-content</code> ≈ baseline</strong> — Kontext re-renders the high-frequency graft away.</li>
+</ul>
+<h3>A — spectral source decomposition (instruction edits)</h3>
+<table>
+<thead>
+<tr>
+<th>source op</th>
+<th>DINO content</th>
+<th>CLIP-T gain</th>
+<th>LPIPS↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>raw</td>
+<td><strong>0.66</strong></td>
+<td>+0.046</td>
+<td><strong>0.39</strong></td>
+</tr>
+<tr>
+<td>low_band</td>
+<td>0.56</td>
+<td><strong>+0.049</strong></td>
+<td>0.45</td>
+</tr>
+<tr>
+<td>phase_only</td>
+<td>0.54</td>
+<td>+0.045</td>
+<td>0.61</td>
+</tr>
+<tr>
+<td>high_band</td>
+<td>0.44</td>
+<td>+0.044</td>
+<td>0.59</td>
+</tr>
+<tr>
+<td>amplitude_only</td>
+<td><strong>0.14</strong></td>
+<td>+0.033</td>
+<td>0.74</td>
+</tr>
+</tbody>
+</table>
+<p>Raw source is needed to preserve identity; <strong>low-frequency is sufficient for (marginally better)
+instruction-following</strong> but costs content; amplitude-only destroys structure (Kontext hallucinates a
+new scene).</p>
+<h3>C — prompt formulation (leakage resistance)</h3>
+<table>
+<thead>
+<tr>
+<th>instruction</th>
+<th>leak_gap</th>
+<th>DINO content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>content-preserving</td>
+<td><strong>+0.78</strong></td>
+<td><strong>0.87</strong></td>
+</tr>
+<tr>
+<td>neutral</td>
+<td>+0.75</td>
+<td>0.83</td>
+</tr>
+<tr>
+<td>anti-leakage</td>
+<td>+0.63</td>
+<td>0.72</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Leakage is not mainly a prompt problem</strong> — neutral already scores +0.75. Positive
+"preserve identity/layout/shapes" wording helps slightly; the explicit <strong>anti-leakage instruction
+backfires</strong> (+0.63), apparently priming the very objects/people/layout it tells the model to avoid.</p>
+<h2>Verdict</h2>
+<p><strong>PROCEED_INTERNAL_KONTEXT_SURGERY.</strong> No external training-free FFT edit of Kontext's
+inputs/references improved its tradeoff over raw Kontext: amplitude transfer trades content for
+style rather than pushing the frontier out, phase transfer is pure leakage, high-frequency grafts
+are re-rendered away. But the pilot is not a dead end — it produced a clean, actionable map of
+<strong>which spectral structure controls which visual concept</strong> (phase→semantics/leakage,
+amplitude→texture, low-band→edit-following). That map localises the next intervention <strong>inside</strong> the
+model rather than at the pixel input.</p>
+<h2>Next (E51)</h2>
+<p>Move the same phase/amplitude/band decomposition <strong>inside</strong> Kontext: timestep-banded latent edits
+(early low-frequency content lock, late high-frequency style injection) and/or attention-feature
+interventions, probed on the adversarial leakage pairs where the phase→semantics signal is cleanest.
+Scale the subset once the internal operator is wired.</p>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>e50_spectral_kontext_pilot/reports/e50_spectral_kontext_pilot.html</code> (19-section, self-contained)</li>
+<li>Metrics: <code>e50_spectral_kontext_pilot/metrics/e50_metrics.csv</code> (66 rows) + <code>e50_summary.json</code></li>
+<li>Figures: <code>e50_spectral_kontext_pilot/figures/</code> — grids (source/reference/prompt), <code>fourier/</code>,
+  <code>representation_visuals/</code> (heatmaps, scatters, prompt bar), <code>best_cases/</code>, <code>worst_cases/</code>, <code>leakage_cases/</code></li>
+<li>Video: <code>e50_spectral_kontext_pilot/videos/e50_kontext_spectral_walkthrough.mp4</code></li>
+<li>Manifest: <code>experiments/manifests/E50.json</code> · Code: <code>e50_spectral_kontext_pilot/lib/</code></li>
+</ul></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_50.md'>source .md</a> · <a href='../../e50_spectral_kontext_pilot/lib/run_kontext.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

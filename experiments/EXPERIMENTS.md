@@ -1336,3 +1336,36 @@ source→target ⇒ real CLIP-T-gain signal) and the **adversarial leakage pairs
 self-contained), `metrics/baseline_establishment_metrics.csv` (164 rows) + `…_summary.json`,
 `figures/` (grids, best/worst, leakage, representation visuals), `videos/baseline_walkthrough.mp4`,
 manifest `experiments/manifests/E49.json`. See `docs/experiment-reports/EXPERIMENT_49.md`.
+
+## E50 — Spectral Kontext pilot: do frequency-domain input/reference edits improve FLUX.1-Kontext-dev?
+
+**Method.** First spectral pilot on the E49 substrate. **66 FLUX.1-Kontext-dev generations**
+(4-bit NF4, native 1024px, 20 steps, g=2.5, seed 0), training-free, no per-example optimisation,
+three interventions on the exact E49 subsets: **(A) spectral source** — feed Kontext the source
+image after raw / phase-only / amplitude-only / low-band / high-band FFT decomposition (6 PIE-Bench
+tasks ×5 = 30); **(B) spectral reference** — feed Kontext an FFT content×style composite
+(content_raw / content-phase+style-amp / style-phase+content-amp / style-high-on-content) on 6
+adversarial leakage pairs (=24); **(C) prompt variants** — neutral / content-preserving /
+anti-leakage (4 pairs ×3 = 12). Exp D (latent/timestep) deferred to E51. Per-channel 2-D FFT
+operators (numpy), E49 metric suite reused. Code in `e50_spectral_kontext_pilot/`.
+
+**Key result.** *Reference composites* give the clean mechanistic read: **phase carries copy-able
+semantics** — style-phase+content-amp catastrophically leaks (DINO-content **0.01**, leak_gap
+**−0.56**; the style ref's objects replace the content); **amplitude carries texture** —
+content-phase+style-amp lifts CLIP-I style **0.46→0.58** but at a content cost (DINO-content
+0.85→0.50, leak_gap +0.77→+0.24), a move *along* the Pareto front; style-high-on-content ≈ baseline
+(Kontext re-renders the graft away). *Source*: raw needed for identity (DINO-content raw 0.66 vs
+amplitude-only 0.14); low-band keeps edit gain (+0.049 vs raw +0.046) but drops content. *Prompt*:
+leakage is **not** mainly a prompt problem — neutral already +0.75; content-preserving best (+0.78);
+the explicit **anti-leakage instruction backfires** (+0.63) by priming what it negates.
+
+**Verdict.** **PROCEED_INTERNAL_KONTEXT_SURGERY.** External training-free FFT edits of Kontext's
+inputs/references do not beat raw Kontext's content/style/leakage tradeoff, but the diagnostics
+(phase=semantics, amplitude=texture, low-band=enough-to-edit) localise the next intervention
+**inside** the model — timestep-banded latent / attention edits (E51), probed on the adversarial
+leakage pairs.
+
+**Artifacts.** `e50_spectral_kontext_pilot/reports/e50_spectral_kontext_pilot.html` (19-section,
+self-contained), `metrics/e50_metrics.csv` (66 rows) + `e50_summary.json`, `figures/` (grids,
+fourier, representation visuals, best/worst/leakage), `videos/e50_kontext_spectral_walkthrough.mp4`,
+manifest `experiments/manifests/E50.json`. See `docs/experiment-reports/EXPERIMENT_50.md`.

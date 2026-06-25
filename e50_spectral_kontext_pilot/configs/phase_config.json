@@ -1,0 +1,53 @@
+{
+  "phase": "e50-spectral-kontext-pilot-v1",
+  "seed": 0,
+  "gen_size": 512,
+  "steps": 20,
+  "guidance": 2.5,
+  "primary_model": "black-forest-labs/FLUX.1-Kontext-dev (4-bit NF4)",
+  "edit_ids": [
+    "pie_6_0",
+    "pie_7_0",
+    "pie_1_0",
+    "pie_2_1",
+    "pie_8_0",
+    "pie_9_1"
+  ],
+  "leak_ids": [
+    "leak_0_adversarial",
+    "leak_3_adversarial",
+    "leak_6_adversarial",
+    "leak_7_adversarial",
+    "leak_8_adversarial",
+    "leak_9_adversarial"
+  ],
+  "prompt_leak_ids": [
+    "leak_0_adversarial",
+    "leak_3_adversarial",
+    "leak_6_adversarial",
+    "leak_7_adversarial"
+  ],
+  "source_ops": [
+    "raw",
+    "phase_only",
+    "amplitude_only",
+    "low_band",
+    "high_band"
+  ],
+  "ref_ops": [
+    "content_raw",
+    "content_phase_style_amp",
+    "style_phase_content_amp",
+    "style_high_on_content"
+  ],
+  "prompts": [
+    "neutral",
+    "content_preserving",
+    "anti_leakage"
+  ],
+  "controls": {
+    "kontext_e49": "E49 FLUX.1-Kontext-dev baseline (native 1024px) \u2014 cross-phase reference",
+    "redux_e49": "E49 FLUX Redux \u2014 high-style / high-leakage reference point",
+    "styleid_e49": "E49 VGG-19 Gram (Gatys) control \u2014 low-leakage classical stylisation point"
+  }
+}
