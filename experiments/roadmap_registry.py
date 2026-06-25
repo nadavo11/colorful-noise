@@ -811,4 +811,44 @@ EXPERIMENTS = [
             "editability frontier (must BEAT it, not sit on it).",
      "script": "experiments/e48_temporal_phasor.py", "doc": "docs/experiment-reports/EXPERIMENT_48.md",
      "results": None, "image": None},
+
+    {"id": "E49", "title": "Baseline establishment -- which no-training editor is a worthy substrate for spectral work",
+     "thread": "style", "models": "FLUX img2img, FLUX Redux, FLUX IP-Adapter (XLabs), FLUX.1-Kontext-dev, VGG-19 Gram (Gatys) control",
+     "status": "done",
+     "motivation": "Phase 1 returned NO_GO for naive spectral interventions on WEAK FLUX pipelines (vanilla img2img, "
+                   "Redux). That is a statement about the substrate, not the idea: a frequency-domain edit needs a "
+                   "competent editor underneath it to act on. Before any further spectral work, establish which "
+                   "training-free baseline is actually competent at real-world instruction editing and reference "
+                   "stylisation, and on which tasks -- so the next spectral phase is built on solid ground.",
+     "method": "Five training-free baselines (no LoRA/finetune/DreamBooth/adapters/per-image codes), all FLUX 4-bit "
+               "NF4 on one RTX A5000: img2img, Redux (SigLIP prior), IP-Adapter (XLabs; InstantStyle analog), "
+               "Kontext-dev (native 1024px), and a classical VGG-19 Gram (Gatys 2016) control (NOT the StyleID "
+               "attention-injection method; legacy registry key 'styleid'). Data: MagicBrush dev (18), PIE-Bench++ "
+               "(24 across 8 task types), WikiArt style bank (12) and a custom 20-pair content x style leakage set "
+               "(aligned + adversarial). 164 generations. Metric suite: CLIP-I/DINO/SigLIP/LPIPS/colour-hist content "
+               "preservation; CLIP-T target + CLIP-T gain (target-source) edit correctness; CLIP-I/DINO to style ref + "
+               "colour-hist + Fourier-amplitude for style; DINO/CLIP-I to the style image as the leakage proxy. "
+               "Two-env split forced by hardware (uv diffusers-0.38 for FLUX; anaconda for StyleID+metrics). "
+               "Code in baseline_establishment/.",
+     "result": "EDITING (n=42 img2img, 62 kontext): Kontext is the only competent editor -- CLIP-T gain +0.017 with "
+               "DINO-content 0.813; img2img has NEGATIVE gain -0.019 (renoises but does not follow the instruction) at "
+               "DINO-content 0.757. STYLE/LEAKAGE (20 pairs each): Redux has the highest raw style adherence "
+               "(CLIP-I-style 0.80) but the WORST leakage (DINO-style 0.69) and destroys content (DINO-content 0.013); "
+               "IP-Adapter similar (0.79 / 0.52 / 0.028). StyleID and Kontext are the content-preserving, low-leakage "
+               "options (leakage-resistance DINO_content-DINO_style: Kontext +0.72, StyleID +0.45, IP-Adapter -0.49, "
+               "Redux -0.68). Qwen-Image-Edit NOT RUN (20B exceeds 25GB VRAM / disk budget; Kontext substituted).",
+     "verdict": "PROCEED_WITH_FLUX_KONTEXT, i.e. FLUX.1-Kontext-dev is the STRONGEST ACCESSIBLE no-training substrate "
+                "under current compute constraints (NOT a global best-editor claim -- the stronger open editor "
+                "Qwen-Image-Edit, 20B, was not run and is untested, not beaten). Among baselines actually run, Kontext is "
+                "simultaneously the best instruction editor (positive CLIP-T gain, "
+                "top content preservation) and the most leakage-resistant reference styliser -- the worthy substrate the "
+                "Phase-1 weak baselines were not. Redux/IP-Adapter confirm the Phase-1 weakness (high reference-content "
+                "leakage). The VGG-Gram (Gatys) control is the clean low-leakage classical reference for style transfer. Most informative "
+                "subsets for the spectral phase: PIE-Bench colour/material/object-replace (clean source->target gives a "
+                "real CLIP-T-gain signal) and the adversarial leakage pairs.",
+     "nxt": "P1: run the next spectral/frequency-domain intervention on FLUX.1-Kontext-dev as the editing substrate, "
+            "using PIE-Bench colour/material/object-replace + the adversarial leakage pairs as the eval, with the VGG-Gram control as "
+            "the low-leakage control. P2: scale the pilot subset (50+/benchmark) on Kontext once the spectral op is wired.",
+     "script": "baseline_establishment/lib/runner.py", "doc": "docs/experiment-reports/EXPERIMENT_49.md",
+     "results": None, "image": None},
 ]

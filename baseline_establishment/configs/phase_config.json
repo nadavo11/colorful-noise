@@ -1,0 +1,28 @@
+{
+  "phase": "baseline-establishment-v1",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "gen_size": 512,
+  "infer_steps": 28,
+  "guidance": 2.5,
+  "models": {
+    "flux_img2img": "black-forest-labs/FLUX.1-dev (12B rectified-flow, 4-bit NF4)",
+    "flux_redux": "FLUX.1-Redux-dev SigLIP prior + FLUX.1-dev base (4-bit)",
+    "flux_ipadapter": "XLabs-AI/flux-ip-adapter on FLUX.1-dev (4-bit)",
+    "flux_kontext": "black-forest-labs/FLUX.1-Kontext-dev (12B in-context editor, 4-bit)",
+    "styleid": "VGG-19 Gram-matrix optimization (Gatys, training-free)",
+    "qwen_image_edit": "Qwen/Qwen-Image-Edit (20B) \u2014 NOT RUN (hardware-infeasible)"
+  },
+  "pie_configs": {
+    "1_change_object_80": "object_replace",
+    "2_add_object_80": "object_add",
+    "3_delete_object_80": "object_remove",
+    "4_change_attribute_content_40": "attribute",
+    "6_change_attribute_color_40": "color",
+    "7_change_attribute_material_40": "material",
+    "9_change_background_80": "global"
+  }
+}

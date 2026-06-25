@@ -1298,3 +1298,41 @@ constant-hyperparameter comparison at FlowAlign's SDEdit config (`n_start=10/cfg
 (P0–P5); handoff `experiments/e47_handoff.md`; manifest `experiments/manifests/E47.json`; verdicts +
 grids under `experiments/results/e47_conf{A,SDG}` (on /storage). See
 `docs/experiment-reports/EXPERIMENT_47.md`.
+
+## E49 — Baseline establishment: which no-training editor is a worthy spectral substrate (FLUX family + VGG-Gram control)
+
+**Method.** Five training-free baselines (no LoRA/finetune/DreamBooth/adapters/per-image codes),
+all FLUX 4-bit NF4 on one RTX A5000: **img2img**, **Redux** (SigLIP prior), **IP-Adapter** (XLabs,
+InstantStyle analog), **Kontext-dev** (native 1024px), and a classical **VGG-19 Gram (Gatys 2016)
+control** (the registry key `styleid` is legacy — this is the Gatys Gram method, **not** the StyleID
+attention-injection method of Chung et al. 2024).
+Data: MagicBrush dev (18), PIE-Bench++ (24 across 8 task types), WikiArt style bank (12), and a custom
+20-pair content×style **leakage** set (aligned + adversarial). 164 generations. Metric suite:
+CLIP-I/DINO/SigLIP/LPIPS/colour-hist (content preservation), CLIP-T target + **CLIP-T gain**
+(target−source; edit correctness), CLIP-I/DINO-to-style + colour-hist + Fourier-amplitude (style), and
+DINO/CLIP-I-to-style-image as the **reference-leakage** proxy. Code in `baseline_establishment/`.
+Qwen-Image-Edit **not run** (20B exceeds the 25 GB VRAM / disk budget; Kontext substituted, documented).
+
+**Key result.** *Editing* — **Kontext is the only competent editor**: CLIP-T gain **+0.017** at DINO-content
+**0.813**; **img2img has a NEGATIVE gain −0.019** (renoises globally but does not follow the instruction)
+at DINO-content 0.757. *Style/leakage* — **Redux** has the highest raw style adherence (CLIP-I-style
+**0.80**) but the **worst leakage** (DINO-style **0.69**) and destroys content (DINO-content 0.013);
+IP-Adapter similar (0.79 / 0.52 / 0.028). **StyleID and Kontext are the content-preserving, low-leakage
+options** — leakage-resistance (DINO_content − DINO_style): **Kontext +0.72, StyleID +0.45**, IP-Adapter
+−0.49, Redux −0.68. The style grid visually confirms Redux/IP-Adapter importing the reference's objects
+while StyleID/Kontext keep the content scene.
+
+**Verdict.** **PROCEED_WITH_FLUX_KONTEXT** — i.e. **FLUX.1-Kontext-dev is the strongest *accessible*
+no-training substrate under current compute constraints**, not a global best-editor claim (the stronger
+open editor Qwen-Image-Edit, 20B, was not run, so it is untested rather than beaten). Among the baselines
+actually run, Kontext is simultaneously the best instruction editor
+(positive CLIP-T gain, top content preservation) and the most leakage-resistant reference styliser —
+the worthy substrate the Phase-1 weak baselines were not. Redux/IP-Adapter reproduce the Phase-1
+weakness (high reference-content leakage); the VGG-Gram (Gatys) control is the clean low-leakage classical control. Most
+informative subsets for the spectral phase: **PIE-Bench colour/material/object-replace** (clean
+source→target ⇒ real CLIP-T-gain signal) and the **adversarial leakage pairs**.
+
+**Artifacts.** `baseline_establishment/reports/baseline_establishment_report.html` (16-section,
+self-contained), `metrics/baseline_establishment_metrics.csv` (164 rows) + `…_summary.json`,
+`figures/` (grids, best/worst, leakage, representation visuals), `videos/baseline_walkthrough.mp4`,
+manifest `experiments/manifests/E49.json`. See `docs/experiment-reports/EXPERIMENT_49.md`.

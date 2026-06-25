@@ -1,0 +1,181 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E49 — Baseline establishment -- which no-training editor is a worthy substrate for spectral work</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_49.md'>source .md</a> · <a href='../../baseline_establishment/lib/runner.py'>driver</a></p><article class=report><h1>EXPERIMENT 49 — Baseline establishment for the spectral-editing substrate</h1>
+<p><strong>Thread:</strong> <code>style</code> (Spectral style transfer &amp; editing) · <strong>Status:</strong> done ·
+<strong>Verdict:</strong> <strong>PROCEED_WITH_FLUX_KONTEXT</strong></p>
+<blockquote>
+<p><strong>Scope of the verdict (read first).</strong> This is <strong>not</strong> a global claim that Kontext beats all
+editors. It says: <strong>FLUX.1-Kontext-dev is the strongest <em>accessible no-training</em> substrate under
+current compute constraints.</strong> Qwen-Image-Edit (20B) — the one stronger open editor we wanted —
+was <strong>not run</strong> because its weights exceed the current VRAM/disk budget (single 25 GB A5000), so
+it is untested here, not beaten. The "StyleID" slot is the <strong>classical VGG-19 Gram (Gatys 2016)
+control</strong>, <em>not</em> the StyleID attention-injection method (Chung et al. 2024) — see Setup.</p>
+</blockquote>
+<h2>Why</h2>
+<p>Phase 1 returned <strong>NO_GO</strong> for naive spectral interventions — but <em>on weak FLUX pipelines</em>
+(vanilla img2img, Redux). That is a statement about the substrate, not the idea: a frequency-domain
+edit needs a competent editor underneath it to have anything to act on. This phase establishes,
+empirically and training-free, <strong>which no-training baseline is actually competent</strong> at real-world
+instruction editing and reference stylisation, and on which tasks — so the next spectral phase starts
+on solid ground.</p>
+<h2>Setup</h2>
+<p>Five <strong>training-free</strong> baselines (no LoRA / finetune / DreamBooth / learned adapters / per-image latent
+codes), all FLUX transformers 4-bit NF4 on one RTX A5000:</p>
+<table>
+<thead>
+<tr>
+<th>slot</th>
+<th>model</th>
+<th>role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>weak sanity</td>
+<td>FLUX img2img (FLUX.1-dev)</td>
+<td>global renoise-to-caption</td>
+</tr>
+<tr>
+<td>weak sanity / reference</td>
+<td>FLUX Redux (SigLIP prior + FLUX.1-dev)</td>
+<td>reference remix</td>
+</tr>
+<tr>
+<td>FLUX style</td>
+<td>FLUX IP-Adapter (XLabs)</td>
+<td>InstantStyle-on-FLUX analog</td>
+</tr>
+<tr>
+<td>competent editor</td>
+<td><strong>FLUX.1-Kontext-dev</strong> (native 1024px)</td>
+<td>in-context instruction editor</td>
+</tr>
+<tr>
+<td>classical control</td>
+<td><strong>VGG-19 Gram (Gatys 2016)</strong> — <em>not</em> StyleID-attention</td>
+<td>content-anchored texture transfer</td>
+</tr>
+<tr>
+<td>strong external</td>
+<td>Qwen-Image-Edit</td>
+<td><strong>NOT RUN</strong> — 20B &gt; 25 GB VRAM / disk budget</td>
+</tr>
+</tbody>
+</table>
+<p>The classical-style slot is implemented as <strong>per-image VGG-19 Gram-matrix optimization (Gatys et al.
+2016)</strong>: frozen ImageNet VGG-19, Adam over pixels, content+style losses. It is a <em>low-leakage
+stylisation control</em>, <strong>not</strong> the diffusion-attention StyleID method (Chung et al. 2024). The
+registry key <code>styleid</code> is legacy naming; treat every "StyleID" mention here as "VGG-Gram control".</p>
+<p><strong>Data (real-world):</strong> MagicBrush dev (18), PIE-Bench++ (24 across 8 task types: object
+replace/add/remove, attribute, colour, material, background, style), WikiArt style bank (12), and a
+custom <strong>20-pair content×style leakage set</strong> (aligned + adversarial). <strong>164 generations total.</strong></p>
+<p><strong>Metrics:</strong> content preservation (CLIP-I, DINOv2, SigLIP, LPIPS, colour-hist); edit correctness
+(CLIP-T to target, <strong>CLIP-T gain = target − source</strong>); style (CLIP-I/DINO to style ref, colour-hist,
+Fourier-amplitude); <strong>reference leakage</strong> (DINO/CLIP-I to the style <em>image</em> — high ⇒ output copied the
+reference's semantics). Two-env split forced by hardware: uv (diffusers 0.38) for FLUX, anaconda
+(torch 2.7) for StyleID + metrics + visuals.</p>
+<h2>Headline numbers</h2>
+<h3>Editing (MagicBrush + PIE-Bench)</h3>
+<table>
+<thead>
+<tr>
+<th>model</th>
+<th>CLIP-I content</th>
+<th>DINO content</th>
+<th>CLIP-T target</th>
+<th><strong>CLIP-T gain</strong></th>
+<th>LPIPS↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FLUX img2img</td>
+<td>0.892</td>
+<td>0.757</td>
+<td>0.282</td>
+<td><strong>−0.019</strong></td>
+<td>0.253</td>
+</tr>
+<tr>
+<td><strong>FLUX Kontext</strong></td>
+<td>0.890</td>
+<td><strong>0.813</strong></td>
+<td>0.274</td>
+<td><strong>+0.017</strong></td>
+<td>0.301</td>
+</tr>
+</tbody>
+</table>
+<p>img2img preserves pixels but its edit gain is <strong>negative</strong> — it renoises without following the
+instruction. <strong>Kontext is the only baseline that both preserves content and moves toward the target.</strong></p>
+<h3>Style transfer + reference leakage (20 pairs each)</h3>
+<table>
+<thead>
+<tr>
+<th>model</th>
+<th>CLIP-I style</th>
+<th>DINO <strong>style (leak)</strong> ↓</th>
+<th>DINO content</th>
+<th><strong>leak-resistance</strong> (content − style)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FLUX Redux</td>
+<td><strong>0.800</strong></td>
+<td>0.695</td>
+<td>0.013</td>
+<td><strong>−0.68</strong></td>
+</tr>
+<tr>
+<td>FLUX IP-Adapter</td>
+<td>0.786</td>
+<td>0.518</td>
+<td>0.028</td>
+<td>−0.49</td>
+</tr>
+<tr>
+<td>StyleID / Gram</td>
+<td>0.524</td>
+<td>0.196</td>
+<td>0.643</td>
+<td>+0.45</td>
+</tr>
+<tr>
+<td><strong>FLUX Kontext</strong></td>
+<td>0.502</td>
+<td><strong>0.097</strong></td>
+<td><strong>0.813</strong></td>
+<td><strong>+0.72</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Redux has the highest raw style adherence but <strong>the worst leakage</strong> — it remixes the reference's
+objects and destroys the content. StyleID and Kontext are the content-preserving, low-leakage options.</p>
+<h2>Verdict</h2>
+<p><strong>PROCEED_WITH_FLUX_KONTEXT</strong> — i.e. <strong>FLUX.1-Kontext-dev is the strongest accessible no-training
+substrate under current compute constraints.</strong> Among the baselines we could actually run, Kontext is
+simultaneously the best instruction editor (positive CLIP-T gain, top content preservation) and the
+most leakage-resistant reference styliser — exactly the worthy substrate the Phase-1 weak baselines
+were not. Redux/IP-Adapter reproduce the Phase-1 weakness (high reference-content leakage). The
+<strong>VGG-Gram (Gatys) control</strong> is the clean low-leakage classical reference point for style work.
+This is a within-budget statement: the stronger open editor (Qwen-Image-Edit, 20B) was not run, so
+Kontext is "strongest accessible", not "globally best".</p>
+<p><strong>Most informative subsets for the spectral phase:</strong> PIE-Bench <strong>colour / material / object-replace</strong>
+(clean source→target prompts give a real CLIP-T-gain signal) and the <strong>adversarial leakage pairs</strong>
+(the cleanest probe of content-vs-style movement under an intervention).</p>
+<h2>Next</h2>
+<ul>
+<li><strong>P1:</strong> run the next spectral/frequency-domain intervention <strong>on FLUX.1-Kontext-dev</strong>, evaluated on
+  PIE-Bench colour/material/object-replace + the adversarial leakage pairs, with <strong>StyleID as the
+  low-leakage control</strong>.</li>
+<li><strong>P2:</strong> scale the pilot subset (50+/benchmark) on Kontext once the spectral op is wired.</li>
+</ul>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>baseline_establishment/reports/baseline_establishment_report.html</code> (16-section, self-contained)</li>
+<li>Metrics: <code>baseline_establishment/metrics/baseline_establishment_metrics.csv</code> (164 rows) + <code>…_summary.json</code></li>
+<li>Figures: <code>baseline_establishment/figures/</code> — grids (<code>edit_comparison</code>, <code>style_comparison</code>),
+  <code>best_cases/</code>, <code>worst_cases/</code>, <code>leakage_cases/</code>, <code>representation_visuals/</code> (heatmaps, scatters,
+  Pareto, similarity matrix, runtime)</li>
+<li>Video: <code>baseline_establishment/videos/baseline_walkthrough.mp4</code></li>
+<li>Manifest: <code>experiments/manifests/E49.json</code> · Code: <code>baseline_establishment/lib/</code></li>
+</ul></article><p class=rnav><a href='thread-style.html'>← Spectral style transfer &amp; editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_49.md'>source .md</a> · <a href='../../baseline_establishment/lib/runner.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

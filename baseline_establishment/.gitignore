@@ -1,0 +1,7 @@
+# Heavy run artifacts: raw generated PNGs are reproducible from the manifests + lib/.
+# Keep the manifests (the mechanical record) tracked; drop the pixels.
+outputs/**/*.png
+# Duplicate/intermediate report copy (the tracked report is reports/baseline_establishment_report.html)
+reports/html/
+reports/assets/
+logs/*.log

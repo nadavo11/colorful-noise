@@ -1,0 +1,57 @@
+{
+  "eid": "E49",
+  "logged": "2026-06-25",
+  "git_commit": "c0af1f9",
+  "source": "run",
+  "script": "baseline_establishment/lib/runner.py",
+  "results_dir": "baseline_establishment/",
+  "config": {
+    "phase": "baseline-establishment-v1",
+    "gen_size": 512,
+    "kontext_size": 1024,
+    "steps": 28,
+    "kontext_steps": 20,
+    "guidance": 2.5,
+    "models": [
+      "flux_img2img",
+      "flux_redux",
+      "flux_ipadapter",
+      "flux_kontext",
+      "styleid"
+    ],
+    "qwen_image_edit": "NOT RUN (20B > 25GB VRAM/disk)",
+    "benchmarks": {
+      "magicbrush": 18,
+      "piebench": 24,
+      "style_refs": 12,
+      "leakage_pairs": 20
+    },
+    "env": {
+      "flux": "uv diffusers-0.38 torch-2.5.1+cu124",
+      "style_metrics": "anaconda torch-2.7+cu126"
+    }
+  },
+  "metrics": {
+    "kontext_clipT_gain": 0.0173,
+    "kontext_dino_content": 0.8129,
+    "img2img_clipT_gain": -0.0191,
+    "img2img_dino_content": 0.7567,
+    "redux_clipI_style": 0.8002,
+    "redux_dino_style_leak": 0.6947,
+    "ipadapter_clipI_style": 0.786,
+    "styleid_dino_content": 0.6429,
+    "styleid_dino_style_leak": 0.1962,
+    "kontext_leak_resistance": 0.7157,
+    "styleid_leak_resistance": 0.4467,
+    "redux_leak_resistance": -0.6818,
+    "n_outputs": 164
+  },
+  "artifacts": [
+    "baseline_establishment/reports/baseline_establishment_report.html",
+    "baseline_establishment/metrics/baseline_establishment_metrics.csv",
+    "baseline_establishment/metrics/baseline_establishment_summary.json",
+    "baseline_establishment/figures/grids/style_comparison.png",
+    "baseline_establishment/figures/representation_visuals/pareto_leakage_resistance.png",
+    "baseline_establishment/videos/baseline_walkthrough.mp4"
+  ]
+}
