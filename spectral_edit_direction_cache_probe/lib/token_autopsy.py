@@ -133,7 +133,15 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="limit #autopsy examples (smoke)")
     ap.add_argument("--steps", type=int, default=C.STEPS)
     ap.add_argument("--no-intervene", action="store_true", help="observational pass only")
+    ap.add_argument("--smoke", action="store_true",
+                    help="cheap pipeline check: 1 intervention example, 2 mechanisms, 3 weights")
     args = ap.parse_args()
+    if args.smoke:                       # shrink the expensive intervention grid for smoke tests
+        C.TOK_WEIGHTS = [0.5, 1.0, 2.0]
+        C.TOK_MECHANISMS = ["embed_scale", "attn_prob_reweight"]
+        C.TOK_INTERVENTION_EXAMPLES = 1
+        C.TOK_ABLATION_STEPS = 3
+        C.TOK_SPATIAL_STEPS = 3
 
     C.ensure_dirs()
     man = D.build()
