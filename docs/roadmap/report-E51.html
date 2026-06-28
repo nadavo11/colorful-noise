@@ -1,0 +1,166 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E51 — Spectral Edit-Direction Cache Probe -- is Delta_edit more cacheable than the full edited prediction?</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_51.md'>source .md</a> · <a href='../../spectral_edit_direction_cache_probe/lib/run.py'>driver</a></p><article class=report><h1>EXPERIMENT 51 — Spectral Edit-Direction Cache Probe</h1>
+<p><strong>Thread:</strong> <code>fast-edit</code> (Fast structure-preserving editing) · <strong>Status:</strong> done ·
+<strong>Verdict:</strong> <strong>STRONG GO</strong></p>
+<blockquote>
+<p>A SeaCache-style idea adapted to editing. Instead of caching the full denoising prediction, cache
+the <strong>edit direction</strong> <code>Δ_edit(t) = v_edit(t) − v_src(t)</code>. On 24 PIE-Bench edits with an instrumented
+FLUX.1-dev img2img denoiser, <strong>Δ_edit is 2.4× smoother than v_edit (smoother on 96% of steps)</strong> and
+caching it preserves quality <strong>~13× better than full-prediction caching at equal step-skip</strong>. Delta
+caching dominates the entire speed–quality frontier. <strong>GO for a video follow-up.</strong></p>
+</blockquote>
+<h2>Why</h2>
+<p>Diffusion editing cost scales with transformer evaluations. SeaCache-style caches skip recomputation
+when a low-pass-filtered state is temporally stable. We push this to editing: the part of the
+prediction that encodes <em>what the edit does</em> is the difference between the target- and source-prompt
+predictions. If that difference is smoother/lower-frequency than the full prediction, the <strong>edit
+direction</strong> is the right object to cache — freeze the edit, let the cheap base trajectory carry the rest.</p>
+<h2>Setup</h2>
+<p>FLUX.1-dev <strong>img2img</strong> (SDEdit), 4-bit NF4, 512px, 24 steps (→~17 after strength 0.7), g=2.5, seed 0,
+RTX A5000. PIE-Bench is the substrate — the only repo subset with an explicit <code>source_prompt</code> <strong>and</strong>
+<code>target_prompt</code> per example, exactly what Δ_edit needs. All 24 examples (8 task types × 3). A custom
+denoising loop evaluates the transformer <strong>twice per step</strong> at the same <code>x_t</code> (source / target
+conditioning) to read <code>v_src</code>, <code>v_edit</code>, <code>Δ_edit</code>.</p>
+<table>
+<thead>
+<tr>
+<th>variant</th>
+<th>cached signal</th>
+<th>cache decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>full_compute_reference</code></td>
+<td>— (recompute every step)</td>
+<td>gold reference</td>
+</tr>
+<tr>
+<td><code>raw_full_prediction_cache</code></td>
+<td><code>v_edit</code></td>
+<td>raw absolute adjacent L2 stability</td>
+</tr>
+<tr>
+<td><code>spectral_full_prediction_cache</code></td>
+<td><code>v_edit</code></td>
+<td>low-pass (SEA-style) stability</td>
+</tr>
+<tr>
+<td><code>raw_edit_delta_cache</code></td>
+<td><code>Δ_edit</code> (base <code>v_src</code> live)</td>
+<td>raw absolute adjacent L2 stability</td>
+</tr>
+<tr>
+<td><code>spectral_edit_delta_cache</code></td>
+<td><code>Δ_edit</code> (base <code>v_src</code> live)</td>
+<td>low-pass (SEA-style) stability</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Diagnostic framing.</strong> Skip schedules are <em>oracle</em>-derived from the reference trajectory's own signal
+stability: for a target skip ratio ρ, reuse the ρ-fraction of interior steps where <em>that variant's</em>
+change signal is smallest (endpoints never skipped). Every variant skips at the <strong>same ρ</strong>, isolating
+"is this signal a better guide to where reuse is safe?" The cacheability metric is <strong>absolute</strong> adjacent
+L2 — the velocity error a stale reuse injects into the stepping update (<code>v_src</code> is recomputed exactly
+for delta caching, so both signals are in the same units).</p>
+<h2>Headline numbers</h2>
+<h3>Internal cacheability (the hypothesis)</h3>
+<table>
+<thead>
+<tr>
+<th>signal</th>
+<th>mean abs. adjacent change ↓</th>
+<th>smoother on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v_edit</code> (full prediction)</td>
+<td>31.5</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Δ_edit</code> (edit direction)</td>
+<td><strong>13.7</strong></td>
+<td><strong>96% of steps</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Δ_edit is <strong>2.4× smoother</strong>, and crucially stays flat at late denoising steps where v_edit's change
+blows up to ~2.5× its own mean — the steps full-prediction caching cannot safely skip.</p>
+<h3>Downstream quality at ~53% step-skip (vs full-compute reference)</h3>
+<table>
+<thead>
+<tr>
+<th>variant</th>
+<th>DINOv2 ↑</th>
+<th>LPIPS ↓</th>
+<th>PSNR ↑</th>
+<th>speedup× (CFG)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>spectral edit-delta</strong></td>
+<td><strong>0.998</strong></td>
+<td><strong>0.0043</strong></td>
+<td><strong>36.1</strong></td>
+<td>1.31</td>
+</tr>
+<tr>
+<td>raw edit-delta</td>
+<td>0.996</td>
+<td>0.0074</td>
+<td>33.8</td>
+<td>1.31</td>
+</tr>
+<tr>
+<td>spectral full-prediction</td>
+<td>0.963</td>
+<td>0.0586</td>
+<td>26.1</td>
+<td>1.89</td>
+</tr>
+<tr>
+<td>raw full-prediction</td>
+<td>0.951</td>
+<td>0.0760</td>
+<td>24.9</td>
+<td>1.89</td>
+</tr>
+</tbody>
+</table>
+<p>Delta caching cuts reconstruction error <strong>~13×</strong> at equal skip. On the Pareto subset (8 examples × 5
+operating points) delta caches hold DINO ≈0.985 / LPIPS ≤0.02 out to <strong>80% skip</strong> while full caches
+collapse to DINO ≈0.83 / LPIPS ≈0.18 — delta dominates the whole frontier; spectral helps within each
+family.</p>
+<h2>Verdict</h2>
+<p><strong>STRONG GO.</strong> Caching the edit direction is both measurably smoother (2.4×, 96% of steps) and yields a
+strictly better speed–quality frontier than the SeaCache-style full-prediction baseline, across all
+operating points and categories. Honest accounting: at equal <em>skip ratio</em> delta caching does more
+forwards (it keeps the base <code>v_src</code> live), so its win is realised under true-CFG editing where both
+branches run anyway; we report quality-vs-skip as the primary axis and speedups under both naive and
+true-CFG models.</p>
+<h2>Limitations</h2>
+<ul>
+<li><strong>24 examples</strong> (PIE-Bench is the only paired-prompt subset); Pareto sweep on an 8-example balanced subset.</li>
+<li><strong>Oracle skip schedules</strong> isolate the signal question; a deployed cache needs an <em>online</em> rule
+  (extrapolated low-pass change) — future work.</li>
+<li><strong>SDEdit edits are weak per CLIP-T</strong> (gain ≈0 incl. the reference); the cache <em>comparison</em> is clean
+  regardless, since every variant is scored against the same reference edit.</li>
+<li><strong>img2img, not Kontext</strong> — chosen because it exposes a clean source/target prompt pair at 512px.</li>
+</ul>
+<h2>Next (video follow-up)</h2>
+<p>Port the Δ_edit low-pass cache to a video-editing diffusion path (per-frame source/target or shared
+instruction), add an <strong>online</strong> skip rule and verify it recovers most of the oracle frontier, and
+measure temporal-consistency-vs-speedup against per-frame SeaCache. Target ≥1.7× true-CFG speedup at
+≤0.02 LPIPS regression on 30–50 clips.</p>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>outputs/spectral_edit_direction_cache_probe/report.html</code> (self-contained, 14 figures embedded)</li>
+<li>Metrics: <code>outputs/spectral_edit_direction_cache_probe/{summary.json, metrics.csv, per_example_metrics.csv}</code></li>
+<li>Figures: <code>outputs/spectral_edit_direction_cache_probe/figures/</code> — exec summary, qualitative grids,
+  Pareto (quality-vs-skip + vs-speedup), smoothness (aggregate + per-example), frequency bands,
+  cacheability heatmaps, category breakdown, failure gallery, FFT representation</li>
+<li>Per-step trajectories + generation manifest: <code>outputs/spectral_edit_direction_cache_probe/diagnostics/</code></li>
+<li>Manifest: <code>experiments/manifests/E51.json</code> · Code: <code>spectral_edit_direction_cache_probe/lib/</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_51.md'>source .md</a> · <a href='../../spectral_edit_direction_cache_probe/lib/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

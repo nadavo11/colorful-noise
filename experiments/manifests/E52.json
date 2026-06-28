@@ -1,0 +1,51 @@
+{
+  "eid": "E52",
+  "logged": "2026-06-28",
+  "git_commit": "986c6c6",
+  "source": "code",
+  "config": {
+    "phase": "e52-text-token-modulation-autopsy-v1",
+    "model": "FLUX.1-dev img2img (4-bit NF4), MMDiT joint attention",
+    "substrate": "E51 spectral edit-direction cache probe / PIE-Bench",
+    "seed": 0,
+    "steps": 24,
+    "size": 512,
+    "guidance": 2.5,
+    "strength": 0.7,
+    "tap_blocks": [
+      0,
+      4,
+      9,
+      14,
+      18
+    ],
+    "intervention_mechanisms": [
+      "embed_scale",
+      "attn_logit_bias",
+      "attn_prob_reweight",
+      "value_scale"
+    ],
+    "token_weights": [
+      0.5,
+      0.75,
+      1.0,
+      1.25,
+      1.5,
+      2.0
+    ],
+    "token_roles": [
+      "edited_noun",
+      "attribute",
+      "style",
+      "background",
+      "control"
+    ],
+    "status": "code-complete; awaiting GPU run"
+  },
+  "artifacts": [
+    "outputs/spectral_edit_direction_cache_probe/report.html",
+    "outputs/spectral_edit_direction_cache_probe/token_autopsy/",
+    "docs/experiment-reports/EXPERIMENT_52.md"
+  ],
+  "metrics": {}
+}

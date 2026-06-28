@@ -1369,3 +1369,62 @@ leakage pairs.
 self-contained), `metrics/e50_metrics.csv` (66 rows) + `e50_summary.json`, `figures/` (grids,
 fourier, representation visuals, best/worst/leakage), `videos/e50_kontext_spectral_walkthrough.mp4`,
 manifest `experiments/manifests/E50.json`. See `docs/experiment-reports/EXPERIMENT_50.md`.
+
+## E52 — Text-Token Modulation Autopsy: which text tokens drive FLUX edits, and can we weight them?
+**Status:** code-complete, awaiting GPU run (added module to E51).
+
+**Method.** Runs alongside the E51 spectral edit-direction cache probe on FLUX.1-dev img2img /
+PIE-Bench. FLUX is an MMDiT: text enters as a T5 token sequence that attends *jointly* with the
+image tokens (text tokens are the leading key/value columns in every block — no U-Net
+cross-attention), plus a pooled-CLIP AdaLN global path. A `RecordingFluxAttnProcessor` taps a
+depth-spanning set of double-stream blocks to record per step/block image→text attention
+(mass/max/value-norm/contribution) and per-token spatial maps; prompts are tokenized and
+difflib-aligned (changed/inserted tokens) with five roles assigned (edited-noun / attribute /
+style / background / control). Four *internal* interventions — embedding scale, attention-logit
+bias, post-softmax reweight, value scaling — are swept over {0.5…2}× per role and scored for edit
+strength, preservation, and Δ_edit / spectral change. Token-attention stability is correlated with
+the E51 spectral-delta-cache quality.
+
+**Key result.** _Pending GPU run_ — `token_analyze.py` fills `token_autopsy/token_summary.json`
+with the edit/non-edit attention ratio, the best intervention mechanism, attention- vs
+embedding-space controllable range, and the cache-correlation coefficients.
+
+**Verdict.** PENDING_GPU_RUN → STRONG GO / GO / MIXED / NO-GO (decides: edit-direction caching,
+token-attention modulation, or a combined method).
+
+**Artifacts.** Integrated report §14 "Text-Token Modulation Autopsy"
+(`outputs/spectral_edit_direction_cache_probe/report.html`); heavy artifacts under
+`outputs/spectral_edit_direction_cache_probe/token_autopsy/`; code in
+`spectral_edit_direction_cache_probe/lib/token_*.py`; doc `docs/experiment-reports/EXPERIMENT_52.md`.
+
+## E51 — Spectral Edit-Direction Cache Probe: is Δ_edit more cacheable than the full edited prediction?
+**Status:** done · **Verdict: STRONG GO**
+
+**Method.** A SeaCache-style idea adapted to editing: cache the *edit direction*
+`Δ_edit(t) = v_edit(t) − v_src(t)` instead of the full prediction `v_edit(t)`. An instrumented
+FLUX.1-dev img2img denoiser (custom loop) evaluates the transformer **twice per step** at the same
+`x_t` (source vs target prompt) on all 24 PIE-Bench examples (8 task types × 3; the only repo subset
+with paired source/target prompts), 512px, 24 steps (→~17 after strength 0.7), g=2.5, seed 0. Five
+variants scored against the full-compute reference: `full_compute_reference`, and {raw, spectral} ×
+{full-prediction, edit-delta} caching. Skip schedules are *oracle*-derived from each variant's own
+signal stability at a matched skip ratio (raw = absolute adjacent L2; spectral = low-pass
+0.25·Nyquist); cacheability = the absolute velocity error a stale reuse injects (`v_src` exact for
+delta caching). Two-env split (uv: generation; anaconda: metrics/figures/report + LPIPS).
+
+**Key result.** Hypothesis confirmed on both axes. *Internal:* Δ_edit is **2.4× smoother** than v_edit
+(mean abs. adjacent change 13.7 vs 31.5), smoother on **96% of steps**; v_edit's change blows up ~2.5×
+at late steps while Δ_edit stays flat — exactly where full-prediction caching can't skip. *Downstream*
+(~53% skip): spectral edit-delta DINOv2 **0.998** / LPIPS **0.0043** / PSNR 36.1 vs spectral
+full-prediction 0.963 / 0.059 / 26.1 — **~13× lower error at equal skip**. On the Pareto subset delta
+caches hold DINO ≈0.985 / LPIPS ≤0.02 to 80% skip while full caches collapse to ≈0.83 / ≈0.18; delta
+dominates the entire frontier, spectral helps within each family.
+
+**Verdict.** STRONG GO — caching the edit direction is more cacheable and gives a strictly better
+speed–quality frontier than the SeaCache-style full-prediction baseline. Worth escalating to video.
+Honest caveat: at equal skip ratio delta caching keeps the base `v_src` live (more forwards), so its
+win is realised under true-CFG editing where both branches run anyway; SDEdit edits are weak per
+CLIP-T but the cache comparison is clean.
+
+**Artifacts.** `outputs/spectral_edit_direction_cache_probe/report.html` (14 figures embedded),
+`summary.json` / `metrics.csv` / `per_example_metrics.csv`, `figures/`, per-step trajectories in
+`diagnostics/`; manifest `experiments/manifests/E51.json`; doc `docs/experiment-reports/EXPERIMENT_51.md`.

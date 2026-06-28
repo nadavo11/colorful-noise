@@ -891,4 +891,82 @@ EXPERIMENTS = [
             "once the internal op is wired.",
      "script": "e50_spectral_kontext_pilot/lib/run_kontext.py", "doc": "docs/experiment-reports/EXPERIMENT_50.md",
      "results": None, "image": None},
+
+    {"id": "E52", "title": "Text-Token Modulation Autopsy -- which text tokens drive FLUX edits, and can we weight them?",
+     "thread": "text-freq", "models": "FLUX.1-dev img2img (4-bit NF4), MMDiT joint attention",
+     "status": "pending",
+     "motivation": "Added module to the E51 spectral edit-direction cache probe. Before choosing a concrete edit "
+                   "direction (Shimon), understand what happens to the text/token embeddings w.r.t. the input image and "
+                   "edit prompt: which tokens are amplified, which actually control the edit, whether attention to "
+                   "individual tokens can be weighted, and whether token weighting changes the edit direction "
+                   "predictably. Core question: can we identify, visualize, and CAUSALLY manipulate the text-token "
+                   "components that drive image edits?",
+     "method": "Runs alongside E51 on the same FLUX.1-dev img2img / PIE-Bench substrate (two-env split). FLUX is an "
+               "MMDiT: text enters as a T5 token sequence concatenated with the image tokens that attend JOINTLY (text "
+               "tokens are the leading key/value columns in every block; no U-Net cross-attention), plus a pooled-CLIP "
+               "AdaLN global path. (A) A RecordingFluxAttnProcessor taps a depth-spanning set of double-stream blocks "
+               "and records per step/block image->text attention mass/max/value-norm/contribution + per-token spatial "
+               "maps; prompts are tokenized + difflib-aligned into changed/inserted tokens; five roles assigned "
+               "(edited-noun/attribute/style/background/control). (B) Observational: token dominance, peak step/block, "
+               "per-token Delta_edit ablation + its frequency band. (C) Four INTERNAL interventions -- embedding scale, "
+               "attention-logit bias, post-softmax reweight, value scaling -- over weights {0.5..2}x per role. (D) edit "
+               "strength / preservation / Delta_edit + spectral change per intervention. (E) token-attention stability "
+               "vs the E51 spectral-delta-cache quality. Code in spectral_edit_direction_cache_probe/lib/token_*.py.",
+     "result": "Code-complete; awaiting the GPU run that fills token_summary.json (verdict + decision table). The "
+               "integrated report's section 14 'Text-Token Modulation Autopsy' and outputs/.../token_autopsy/ hold the "
+               "tables, attention/contribution heatmaps, spatial maps, intervention grids, weight-vs-edit/preservation "
+               "curves, and cache-correlation plots.",
+     "verdict": "PENDING_GPU_RUN. token_analyze.py emits one of STRONG GO / GO / MIXED / NO-GO from (1) edit-token "
+                "identifiability, (2) causal controllability of internal interventions, (3) attention- vs "
+                "embedding-space weighting, (4) controllability, (5) effect on Delta_edit cacheability, (6) overall "
+                "promise -- to decide whether the next step is edit-direction caching, token-attention modulation, or a "
+                "combined method.",
+     "nxt": "Run on the A5000 (uv env: run.py + token_autopsy.py; anaconda: token_evaluate/analyze/visualize + report). "
+            "Then finalize this entry with the real verdict/metrics and a manifest, and -- if GO -- design the combined "
+            "token-modulation + edit-direction-cache method E51 points toward.",
+     "script": None, "doc": "docs/experiment-reports/EXPERIMENT_52.md",
+     "results": None, "image": None},
+    {"id": "E51", "title": "Spectral Edit-Direction Cache Probe -- is Delta_edit more cacheable than the full edited prediction?",
+     "thread": "fast-edit", "models": "FLUX.1-dev img2img (4-bit NF4); PIE-Bench source/target prompt pairs",
+     "status": "done",
+     "motivation": "A SeaCache-style idea adapted to image EDITING. SeaCache skips diffusion recomputation when a "
+                   "low-pass-filtered state is temporally stable. We ask whether the right object to cache for editing is "
+                   "not the full prediction but the EDIT DIRECTION Delta_edit(t) = v_edit(t) - v_src(t) (the difference "
+                   "between target- and source-prompt predictions). Hypothesis: Delta_edit is smoother / lower-frequency "
+                   "than v_edit, so a cache keyed on it reuses across more steps at equal quality -- you freeze the edit "
+                   "and let the cheap base trajectory carry the rest. Fail-fast diagnostic to decide GO/NO-GO for video.",
+     "method": "Instrumented the FLUX.1-dev img2img denoiser (custom loop) to evaluate the transformer TWICE per step at "
+               "the same x_t -- under source_prompt (v_src) and target_prompt (v_edit) -- on all 24 PIE-Bench examples "
+               "(8 task types x 3, the only repo subset with paired source/target prompts), 512px, 24 steps (->~17 after "
+               "strength 0.7), g=2.5, seed 0, A5000. Five variants scored against the full-compute reference: "
+               "full_compute_reference; {raw,spectral} x {full-prediction, edit-delta} caching. Skip schedules are "
+               "ORACLE-derived from the reference trajectory's own signal stability (skip the rho-fraction of interior "
+               "steps with smallest change for THAT variant's signal; raw=absolute adjacent L2, spectral=low-pass "
+               "0.25*Nyquist), so every variant skips at the SAME ratio -- isolating 'is this signal a better guide to "
+               "where reuse is safe?'. Cacheability metric = ABSOLUTE adjacent L2 (the velocity error a stale reuse "
+               "injects; v_src is recomputed exactly for delta caching, so units match). Quality = DINOv2/CLIP-I/LPIPS/"
+               "PSNR to reference, CLIP-T edit gain, DINO-to-source. Two-env split (uv: generation; anaconda: metrics/"
+               "figures/report+LPIPS). Code in spectral_edit_direction_cache_probe/lib/.",
+     "result": "Hypothesis confirmed on BOTH axes. INTERNAL: Delta_edit is 2.40x smoother than v_edit (mean absolute "
+               "adjacent change 13.7 vs 31.5) and is the smoother signal on 96% of steps; v_edit's change BLOWS UP at "
+               "late steps (~2.5x its own mean at steps 13-16) while Delta_edit stays flat -- exactly the steps "
+               "full-prediction caching cannot skip. DOWNSTREAM (closed-loop, ~53% step-skip): spectral edit-delta-cache "
+               "DINOv2 0.998 / LPIPS 0.0043 / PSNR 36.1 vs spectral full-prediction-cache 0.963 / 0.059 / 26.1 and raw "
+               "full-cache 0.951 / 0.076 / 24.9 -- delta caching cuts reconstruction error ~13x at equal skip. On the "
+               "Pareto subset (8 examples x 5 operating points) delta caches hold DINO ~0.985 / LPIPS <=0.02 out to 80% "
+               "skip while full caches collapse to DINO ~0.83 / LPIPS ~0.18; delta dominates the entire frontier and "
+               "spectral filtering helps within each family. Caveat: SDEdit edits are weak per CLIP-T (gain ~0 incl. the "
+               "reference); the cache COMPARISON is clean regardless, and oracle skip schedules isolate the signal "
+               "question (an online rule is future work).",
+     "verdict": "STRONG GO. Caching the edit direction Delta_edit, not the full prediction, is markedly more "
+                "cacheable (2.4x smoother, 96% of steps) and translates into a strictly better speed-quality frontier "
+                "than the SeaCache-style full-prediction baseline across all operating points and categories. Worth "
+                "escalating to video. Honest accounting: at equal skip ratio delta caching does more forwards (keeps the "
+                "base v_src live), so its advantage is realised under true-CFG editing where both branches run anyway.",
+     "nxt": "E5x video follow-up (H100): port the Delta_edit low-pass cache to a video-editing diffusion path "
+            "(per-frame source/target or shared instruction), add an ONLINE skip rule (extrapolated low-pass change) and "
+            "check it recovers most of the oracle frontier, and measure temporal-consistency-vs-speedup against per-frame "
+            "SeaCache. Target >=1.7x true-CFG speedup at <=0.02 LPIPS regression on 30-50 clips.",
+     "script": "spectral_edit_direction_cache_probe/lib/run.py", "doc": "docs/experiment-reports/EXPERIMENT_51.md",
+     "results": None, "image": None},
 ]
