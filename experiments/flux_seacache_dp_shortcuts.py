@@ -604,6 +604,18 @@ def pair_distance(a: torch.Tensor, b: torch.Tensor) -> float:
     return float(torch.linalg.vector_norm((a.flatten() - b.flatten()).float()) / math.sqrt(a.numel()))
 
 
+def tensor_summary_for_distance(t: torch.Tensor) -> torch.Tensor:
+    """Compact proxy for expensive pairwise distances over large FLUX tensors."""
+    x = t.float()
+    if x.ndim >= 3:
+        flat = x.reshape(-1, x.shape[-1])
+        return torch.cat([flat.mean(dim=0), flat.std(dim=0, unbiased=False)], dim=0).contiguous()
+    if x.numel() > 8192:
+        stride = max(1, x.numel() // 8192)
+        return torch.cat([x.flatten()[::stride], x.mean().view(1), x.std(unbiased=False).view(1)], dim=0).contiguous()
+    return x.flatten().contiguous()
+
+
 @dataclass
 class Edge:
     src: int
@@ -623,7 +635,10 @@ def build_edges(sample_dir: Path, cache_h_threshold: float) -> tuple[list[list[E
     h_dir = sample_dir / "h_values"
     latents = [load_step_tensor(lat_dir, i) for i in range(n + 1)]
     velocities = [load_step_tensor(vel_dir, i) for i in range(n)]
-    h_values = [load_step_tensor(h_dir, i) for i in range(n)]
+    # Exact h tensors are captured on disk. Edge-cost h distances use compact
+    # summaries so the offline proxy remains tractable for 100-step FLUX runs.
+    h_values = [tensor_summary_for_distance(load_step_tensor(h_dir, i)) for i in range(n)]
+    v_values = [tensor_summary_for_distance(v) for v in velocities]
     edges: list[list[Edge]] = [[] for _ in range(n + 1)]
     heat = np.full((n + 1, n + 1), np.nan, dtype=np.float32)
     for i in range(n):
@@ -633,10 +648,10 @@ def build_edges(sample_dir: Path, cache_h_threshold: float) -> tuple[list[list[E
             metrics = latent_metrics(pred, latents[j])
             if j < n:
                 h_dist = pair_distance(h_values[i], h_values[j])
-                v_dist = pair_distance(velocities[i], velocities[j])
+                v_dist = pair_distance(v_values[i], v_values[j])
             else:
                 h_dist = pair_distance(h_values[i], h_values[-1])
-                v_dist = pair_distance(velocities[i], velocities[-1])
+                v_dist = pair_distance(v_values[i], v_values[-1])
             metrics["h_rmse"] = h_dist
             metrics["velocity_rmse"] = v_dist
             cost_b = 0 if h_dist <= cache_h_threshold else 1
@@ -734,8 +749,8 @@ def make_plots(sample_dir: Path, out_dir: Path, heat: np.ndarray, dp: np.ndarray
 
     meta = read_json(sample_dir / "metadata.json")
     n = int(meta["num_inference_steps"])
-    hs = [load_step_tensor(sample_dir / "h_values", i) for i in range(n)]
-    vs = [load_step_tensor(sample_dir / "velocities", i) for i in range(n)]
+    hs = [tensor_summary_for_distance(load_step_tensor(sample_dir / "h_values", i)) for i in range(n)]
+    vs = [tensor_summary_for_distance(load_step_tensor(sample_dir / "velocities", i)) for i in range(n)]
     h_dist = [pair_distance(hs[i], hs[i + 1]) for i in range(n - 1)]
     v_dist = [pair_distance(vs[i], vs[i + 1]) for i in range(n - 1)]
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -787,7 +802,7 @@ def run_dp(args: argparse.Namespace) -> None:
                     "cost": cost,
                     "metrics": m,
                     "runtime_estimate": {"relative_transformer_evals": cost, "baseline_evals": len(edges) - 1},
-                    "cost_model_note": "A uses one fresh eval per selected source node. B marks an edge free when SeaCache h RMSE is below --cache-h-threshold; this is an offline proxy, not a claim of exact online SeaCache scheduling.",
+                    "cost_model_note": "A uses one fresh eval per selected source node. B marks an edge free when compact SeaCache-h summary RMSE is below --cache-h-threshold; exact h tensors are saved, but this offline cost is a proxy, not a claim of exact online SeaCache scheduling.",
                 }
                 write_json(sample_out / f"path_{label}.json", payload)
                 path_payloads[label] = payload
@@ -844,7 +859,7 @@ def run_report(args: argparse.Namespace) -> None:
     ensure_dir(report_path.parent)
     traj_root = Path(args.trajectory_root)
     dp_root = Path(args.dp_root)
-    sea_root = Path(args.seacache_root)
+    sea_root = Path(getattr(args, "seacache_root", args.output_root))
     assets_dir = report_path.parent / "assets_flux_seacache_dp"
     ensure_dir(assets_dir)
 
@@ -924,16 +939,23 @@ ul {{ margin:0; padding-left:18px; font-size:13px; }}
 <div class="panel"><h2>10-Sample 100-Step Dataset</h2><img class="sample" src="{image_rel(assets_dir / 'sample_grid.jpg', report_path)}"><div class="diagram"><div class="box">x_i latent</div><div class="arrow">></div><div class="box">v_i frozen-flow edge</div><div class="arrow">></div><div class="box">compare x_j, h_j, v_j</div></div></div>
 <div class="panel"><h2>DP Shortcut Summary</h2><div class="stats">{budget_html}</div><div class="plots"><img src="{image_rel(first_plot, report_path) if first_plot else ''}"><img src="{image_rel(first_curve, report_path) if first_curve else ''}"><img src="{image_rel(first_path, report_path) if first_path else ''}"></div></div>
 </section>
-<footer class="footer"><div class="verdict">{verdict}</div><div class="note">Cost model A counts selected monotone eval nodes. Cost model B treats low h-distance edges as cache-reusable; this is intentionally labeled ambiguous because the official SeaCache online residual reuse state is not fully determined by a static edge alone.</div><div><ul><li>Validate top DP paths online with real transformer calls.</li><li>Sweep h threshold against image-space metrics.</li><li>Replace frozen velocity with two-point or residual-aware edge updates.</li></ul></div></footer>
+<footer class="footer"><div class="verdict">{verdict}</div><div class="note">Cost model A counts selected monotone eval nodes. Cost model B treats low compact-h-summary distance edges as cache-reusable; this is intentionally labeled ambiguous because exact online SeaCache residual reuse state is not fully determined by a static edge alone.</div><div><ul><li>Validate top DP paths online with real transformer calls.</li><li>Sweep h threshold against image-space metrics.</li><li>Replace frozen velocity with two-point or residual-aware edge updates.</li></ul></div></footer>
 </main></body></html>"""
     report_path.write_text(html, encoding="utf-8")
-    summary = {"verdict": verdict, "replication_rows": rep_rows, "dp_budget_mean_rel_l2": {k: float(np.mean(v)) for k, v in by_budget.items()}, "h_capture_ambiguity": "Official first/final steps store unfiltered norm1 modulated input; middle steps compare SEA-filtered tensors."}
+    summary = {
+        "verdict": verdict,
+        "replication_rows": rep_rows,
+        "dp_budget_mean_rel_l2": {k: float(np.mean(v)) for k, v in by_budget.items()},
+        "h_capture_ambiguity": "Official first/final steps store unfiltered norm1 modulated input; middle steps compare SEA-filtered tensors.",
+        "dp_cost_model_note": "Exact h tensors are saved. Cache-aware DP uses compact h summary RMSE as a tractable offline proxy, not exact online SeaCache scheduling.",
+    }
     write_json(Path(args.summary_json), summary)
     Path(args.summary_md).write_text(
         "# FLUX SeaCache DP Shortcuts\n\n"
         f"Verdict: **{verdict}**\n\n"
         "The run captures SeaCache replication metadata, 100-step FLUX trajectories, and offline DP shortcut paths. "
-        "The h tensor is the first-block norm1 modulated image-token input used by SeaCache; middle steps are SEA-filtered as in the official decision path.\n",
+        "The h tensor is the first-block norm1 modulated image-token input used by SeaCache; middle steps are SEA-filtered as in the official decision path. "
+        "The cache-aware DP cost uses compact h-summary RMSE for tractability and should be treated as a proxy until validated online.\n",
         encoding="utf-8",
     )
 
