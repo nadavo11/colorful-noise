@@ -60,6 +60,7 @@ echo "== run =="
 python experiments/flux_seacache_dp_shortcuts.py run-all \
   --device cuda \
   --dtype bf16 \
+  --bnb4 \
   --steps 100 \
   --seacache-steps 50 \
   --height 1024 \

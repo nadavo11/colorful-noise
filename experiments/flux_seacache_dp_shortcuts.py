@@ -361,7 +361,7 @@ def run_official_seacache(args: argparse.Namespace) -> None:
         },
     )
     if code != 0:
-        raise RuntimeError(out)
+        print(f"[official-seacache] unmodified script failed; continuing with instrumented runs. See {marker}", flush=True)
 
 
 @torch.no_grad()
