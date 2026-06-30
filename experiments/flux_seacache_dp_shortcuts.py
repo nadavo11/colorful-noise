@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import math
 import os
@@ -410,6 +411,7 @@ def run_replication(args: argparse.Namespace) -> None:
                 return orig(*a, **kw)
 
             pipe.transformer.forward = counted
+            calls["restore"] = lambda: setattr(pipe.transformer, "forward", orig)
             counter = calls
         generator = torch.Generator(device=args.device).manual_seed(args.seed)
         command = f"{Path(__file__).name} replicate --variant {name} --prompt {args.prompt!r} --seed {args.seed} --steps {args.seacache_steps} --load-mode {load_mode(args)}"
@@ -428,6 +430,7 @@ def run_replication(args: argparse.Namespace) -> None:
         out.images[0].save(out_dir / "image.png")
         if "restore" in counter:
             counter["restore"]()
+            counter.pop("restore", None)
         write_json(
             meta_path,
             {
@@ -448,7 +451,8 @@ def run_replication(args: argparse.Namespace) -> None:
                 "cache_decisions": counter.get("cache_decisions", []),
             },
         )
-        del pipe
+        del out, generator, counter, pipe
+        gc.collect()
         torch.cuda.empty_cache()
 
 
