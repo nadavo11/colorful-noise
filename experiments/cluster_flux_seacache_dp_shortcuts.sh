@@ -12,6 +12,7 @@ cat >"$RUN_DIR/resolved_command.sh" <<'SCRIPT'
 set -euo pipefail
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export PIP_ROOT_USER_ACTION=ignore
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HOME=/storage/nada/hf_cache
 export HF_HUB_ENABLE_HF_TRANSFER=1
 mkdir -p "$HF_HOME/hub"
@@ -81,7 +82,7 @@ chmod +x "$RUN_DIR/resolved_command.sh"
 ENC=$(base64 -w0 "$RUN_DIR/resolved_command.sh")
 cat >"$RUN_DIR/submit_command.sh" <<SCRIPT
 JOB=$JOB IMG=$IMG SHA=$SHA
-runai submit "$JOB" -p "$PROJECT" --gpu-memory 45G --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc 'echo $ENC | base64 -d | bash'
+runai submit "$JOB" -p "$PROJECT" --gpu-memory 48G --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc 'echo $ENC | base64 -d | bash'
 SCRIPT
 cat >"$RUN_DIR/run_manifest.yaml" <<YAML
 job: "$JOB"
@@ -100,5 +101,5 @@ outputs:
 YAML
 
 echo "Submitting $JOB using $RUN_DIR"
-runai submit "$JOB" -p "$PROJECT" --gpu-memory 45G --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc "echo $ENC | base64 -d | bash"
+runai submit "$JOB" -p "$PROJECT" --gpu-memory 48G --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc "echo $ENC | base64 -d | bash"
 echo "Logs: runai logs $JOB"
