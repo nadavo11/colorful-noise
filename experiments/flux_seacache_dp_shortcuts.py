@@ -191,6 +191,16 @@ def load_flux_pipeline(model_id: str, dtype: str, device: str, offload: bool = F
     return pipe
 
 
+def load_mode(args: argparse.Namespace) -> str:
+    if args.bnb4 and args.offload:
+        return f"{args.dtype}_bnb4_offload"
+    if args.bnb4:
+        return f"{args.dtype}_bnb4"
+    if args.offload:
+        return f"{args.dtype}_offload"
+    return f"{args.dtype}_full"
+
+
 @torch.no_grad()
 def flux_h_decision_tensor(
     transformer: Any,
@@ -379,7 +389,11 @@ def run_replication(args: argparse.Namespace) -> None:
         out_dir = root / name
         meta_path = out_dir / "replication.json"
         if meta_path.exists() and (out_dir / "image.png").exists() and not args.force:
-            continue
+            try:
+                if read_json(meta_path).get("load_mode") == load_mode(args):
+                    continue
+            except Exception:
+                pass
         ensure_dir(out_dir)
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -398,7 +412,7 @@ def run_replication(args: argparse.Namespace) -> None:
             pipe.transformer.forward = counted
             counter = calls
         generator = torch.Generator(device=args.device).manual_seed(args.seed)
-        command = f"{Path(__file__).name} replicate --variant {name} --prompt {args.prompt!r} --seed {args.seed} --steps {args.seacache_steps}"
+        command = f"{Path(__file__).name} replicate --variant {name} --prompt {args.prompt!r} --seed {args.seed} --steps {args.seacache_steps} --load-mode {load_mode(args)}"
         start = time.perf_counter()
         out = pipe(
             prompt=args.prompt,
@@ -426,6 +440,7 @@ def run_replication(args: argparse.Namespace) -> None:
                 "seed": args.seed,
                 "prompt": args.prompt,
                 "model_id": args.model_id,
+                "load_mode": load_mode(args),
                 "seacache_commit": git_hash(Path(args.seacache_dir)) if Path(args.seacache_dir).exists() else SEACACHE_COMMIT,
                 "repo_commit": git_hash(REPO_ROOT),
                 "exact_command": command,
