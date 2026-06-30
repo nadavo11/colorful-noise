@@ -26,6 +26,7 @@ print("torch", torch.__version__, "cuda", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("gpu", torch.cuda.get_device_name(0))
 PY
+command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null)
 
 echo "== repo =="
 cd /storage/nada
