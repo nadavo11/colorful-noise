@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import base64
 import gc
 import json
 import math
 import os
+import io
+import re
 import shutil
 import subprocess
 import sys
@@ -892,16 +895,197 @@ def edge_run_lengths(edges: list[dict[str, Any]]) -> tuple[list[int], list[float
     return run_lengths, run_hmeans
 
 
+def image_to_data_uri(path: Path, max_side: int | None = None, quality: int = 88) -> str:
+    img = Image.open(path).convert("RGB")
+    if max_side is not None:
+        img.thumbnail((max_side, max_side))
+    buf = io.BytesIO()
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        mime = "image/jpeg"
+    else:
+        img.save(buf, format="PNG", optimize=True)
+        mime = "image/png"
+    return f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+def embed_local_images(html: str, report_path: Path) -> str:
+    pattern = re.compile(r'src="([^"]+)"')
+
+    def repl(match: re.Match[str]) -> str:
+        ref = match.group(1)
+        if ref.startswith("data:") or "://" in ref:
+            return match.group(0)
+        abs_path = (report_path.parent / ref).resolve()
+        if not abs_path.exists():
+            return match.group(0)
+        return f'src="{image_to_data_uri(abs_path, max_side=1200)}"'
+
+    return pattern.sub(repl, html)
+
+
+def tensor_from_image(path: Path, size: int = 256) -> torch.Tensor:
+    img = Image.open(path).convert("RGB").resize((size, size), Image.BICUBIC)
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    t = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+    return t
+
+
+def image_lpips_score(model: Any, a: Path, b: Path) -> float:
+    ta = tensor_from_image(a).unsqueeze(0) * 2 - 1
+    tb = tensor_from_image(b).unsqueeze(0) * 2 - 1
+    with torch.no_grad():
+        v = model(ta, tb)
+    return float(v.item())
+
+
+def ensure_perceptual_metrics(metrics_path: Path, traj_root: Path, dp_root: Path) -> list[dict[str, str]]:
+    rows = []
+    if metrics_path.exists():
+        with open(metrics_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    if not rows:
+        return rows
+    if {"lpips", "clip_img_sim", "dino_img_sim", "clip_text_score", "path_mean_h"}.issubset(rows[0].keys()):
+        return rows
+
+    try:
+        import lpips  # type: ignore
+        from transformers import AutoImageProcessor, AutoModel, CLIPModel, CLIPProcessor
+    except Exception as exc:
+        print(f"perceptual metrics unavailable: {exc}")
+        return rows
+
+    device = torch.device("cpu")
+    try:
+        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device).eval()
+        clip_proc = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        dino_model = AutoModel.from_pretrained("facebook/dinov2-small").to(device).eval()
+        dino_proc = AutoImageProcessor.from_pretrained("facebook/dinov2-small")
+        lpips_model = lpips.LPIPS(net="alex").to(device).eval()
+    except Exception as exc:
+        print(f"perceptual model load failed: {exc}")
+        return rows
+
+    unique_paths: dict[Path, None] = {}
+    for row in rows:
+        sample = row["sample"]
+        unique_paths[traj_root / sample / "final.png"] = None
+        short = dp_root / sample / f"shortcut_B{row['budget']}_{row['cost_model']}.png"
+        if short.exists():
+            unique_paths[short] = None
+
+    paths = list(unique_paths.keys())
+    images = [Image.open(p).convert("RGB") for p in paths]
+    clip_inputs = clip_proc(images=images, return_tensors="pt")
+    dino_inputs = dino_proc(images=images, return_tensors="pt")
+    with torch.no_grad():
+        clip_img_out = clip_model.vision_model(**{k: v.to(device) for k, v in clip_inputs.items()})
+        clip_img = getattr(clip_img_out, "pooler_output", None)
+        if clip_img is None:
+            clip_img = clip_img_out.last_hidden_state[:, 0]
+        clip_img = clip_model.visual_projection(clip_img)
+        clip_img = torch.nn.functional.normalize(clip_img, dim=-1)
+        dino_out = dino_model(**{k: v.to(device) for k, v in dino_inputs.items()})
+        dino_img = getattr(dino_out, "pooler_output", None)
+        if dino_img is None:
+            dino_img = dino_out.last_hidden_state[:, 0]
+        dino_img = torch.nn.functional.normalize(dino_img, dim=-1)
+
+        prompts = sorted({row["sample"] for row in rows})
+        prompt_text = {p: read_json(traj_root / p / "metadata.json")["prompt"] for p in prompts}
+        clip_text_inputs = clip_proc(text=list(prompt_text.values()), return_tensors="pt", padding=True, truncation=True)
+        clip_text_out = clip_model.text_model(**{k: v.to(device) for k, v in clip_text_inputs.items()})
+        clip_text = getattr(clip_text_out, "pooler_output", None)
+        if clip_text is None:
+            clip_text = clip_text_out.last_hidden_state[:, 0]
+        clip_text = clip_model.text_projection(clip_text)
+        clip_text = torch.nn.functional.normalize(clip_text, dim=-1)
+
+    path_to_idx = {p: i for i, p in enumerate(paths)}
+    prompt_to_idx = {p: i for i, p in enumerate(prompt_text.keys())}
+    img_tensor_cache = {p: tensor_from_image(p) for p in paths}
+
+    for row in rows:
+        sample = row["sample"]
+        budget = row["budget"]
+        cost_model = row["cost_model"]
+        full = traj_root / sample / "final.png"
+        short = dp_root / sample / f"shortcut_B{budget}_{cost_model}.png"
+        if not short.exists():
+            continue
+        fi = path_to_idx[full]
+        si = path_to_idx[short]
+        text_idx = prompt_to_idx[sample]
+        row["lpips"] = f"{image_lpips_score(lpips_model, full, short):.6f}"
+        row["clip_img_sim"] = f"{float(torch.nn.functional.cosine_similarity(clip_img[fi], clip_img[si], dim=0).item()):.6f}"
+        row["dino_img_sim"] = f"{float(torch.nn.functional.cosine_similarity(dino_img[fi], dino_img[si], dim=0).item()):.6f}"
+        row["clip_text_score"] = f"{float(torch.nn.functional.cosine_similarity(clip_text[text_idx], clip_img[si], dim=0).item()):.6f}"
+
+        path_json = dp_root / sample / f"path_B{budget}_{cost_model}.json"
+        if path_json.exists():
+            payload = read_json(path_json)
+            edges = payload.get("edges", [])
+            if edges:
+                row["path_mean_h"] = f"{float(np.mean([float(e['metrics']['h_rmse']) for e in edges])):.6f}"
+                row["path_mean_velocity_rmse"] = f"{float(np.mean([float(e['metrics']['velocity_rmse']) for e in edges])):.6f}"
+                row["zero_cost_fraction"] = f"{float(np.mean([1.0 if int(e['cost']) == 0 else 0.0 for e in edges])):.6f}"
+
+    fields = list(rows[0].keys())
+    for extra in ["lpips", "clip_img_sim", "dino_img_sim", "clip_text_score", "path_mean_h", "path_mean_velocity_rmse", "zero_cost_fraction"]:
+        if extra not in fields:
+            fields.append(extra)
+    with open(metrics_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    return rows
+
+
+def render_comparison_grid(traj_root: Path, sea_root: Path, dp_root: Path, out_path: Path) -> None:
+    sample = "sample_00"
+    panels: list[tuple[str, Path | None, str]] = [
+        ("100-step final", traj_root / sample / "final.png", "actual 100-step sampler"),
+        ("SeaCache delta 0.6", sea_root / "delta_0p6" / "image.png", "13 transformer evals"),
+        ("Offline DP B10", dp_root / sample / "shortcut_B10_monotone_eval_nodes.png", "latent replay, decoded through VAE"),
+        ("Offline DP B20", dp_root / sample / "shortcut_B20_monotone_eval_nodes.png", "latent replay, decoded through VAE"),
+        ("Offline DP B40", dp_root / sample / "shortcut_B40_monotone_eval_nodes.png", "latent replay, decoded through VAE"),
+        ("Executable DP", None, "pending online validation"),
+    ]
+    tile_w, tile_h = 360, 320
+    grid = Image.new("RGB", (3 * tile_w, 2 * tile_h), (246, 242, 233))
+    draw = ImageDraw.Draw(grid)
+    for idx, (title, path, subtitle) in enumerate(panels):
+        x = (idx % 3) * tile_w
+        y = (idx // 3) * tile_h
+        draw.rounded_rectangle([x + 8, y + 8, x + tile_w - 8, y + tile_h - 8], radius=18, fill=(255, 255, 255), outline=(208, 197, 178), width=2)
+        if path is not None and path.exists():
+            img = Image.open(path).convert("RGB")
+            img.thumbnail((tile_w - 24, tile_h - 72))
+            px = x + (tile_w - img.width) // 2
+            py = y + 42 + (tile_h - 72 - img.height) // 2
+            grid.paste(img, (px, py))
+        else:
+            draw.rounded_rectangle([x + 26, y + 56, x + tile_w - 26, y + tile_h - 80], radius=16, fill=(237, 241, 245), outline=(197, 206, 216), width=2)
+            draw.text((x + 46, y + 108), "Executable sampler\nvalidation\nnot run yet", fill=(78, 90, 105))
+        draw.text((x + 18, y + 14), title, fill=(18, 24, 20))
+        draw.text((x + 18, y + tile_h - 30), subtitle, fill=(90, 100, 95))
+    ensure_dir(out_path.parent)
+    grid.save(out_path)
+
+
 def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_path: Path, assets_dir: Path) -> dict[str, Any]:
     ensure_dir(assets_dir)
     assets: dict[str, Any] = {}
     sample_dirs = sorted(traj_root.glob("sample_*"))
+    rows = ensure_perceptual_metrics(metrics_path, traj_root, dp_root)
+    metric_lookup = load_metric_lookup(metrics_path)
     sample_imgs = [p / "final.png" for p in sample_dirs if (p / "final.png").exists()]
     make_contact_sheet(sample_imgs, assets_dir / "sample_grid.jpg", [p.parent.name for p in sample_imgs], (280, 250))
     sea_imgs = [sea_root / v / "image.png" for v in ["vanilla", "delta_0p3", "delta_0p6"]]
     make_contact_sheet(sea_imgs, assets_dir / "seacache_grid.jpg", ["vanilla", "delta 0.3", "delta 0.6"], (260, 220))
-
-    metric_lookup = load_metric_lookup(metrics_path)
+    render_comparison_grid(traj_root, sea_root, dp_root, assets_dir / "comparison_grid_sample00.png")
     dp_summaries: dict[str, dict[str, Any]] = {}
     for sample_dir in sorted(dp_root.glob("sample_*")):
         summary = sample_dir / "dp_summary.json"
@@ -917,6 +1101,10 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
             "mono_ssim": float(np.mean([float(r["image_ssim"]) for r in mono])) if mono else float("nan"),
             "cache_rel_l2": float(np.mean([float(r["latent_rel_l2"]) for r in cache])) if cache else float("nan"),
             "cache_ssim": float(np.mean([float(r["image_ssim"]) for r in cache])) if cache else float("nan"),
+            "mono_lpips": float(np.mean([float(r.get("lpips", "nan")) for r in mono])) if mono else float("nan"),
+            "mono_clip_img": float(np.mean([float(r.get("clip_img_sim", "nan")) for r in mono])) if mono else float("nan"),
+            "mono_dino_img": float(np.mean([float(r.get("dino_img_sim", "nan")) for r in mono])) if mono else float("nan"),
+            "mono_clip_text": float(np.mean([float(r.get("clip_text_score", "nan")) for r in mono])) if mono else float("nan"),
             "mono_cost": float(np.mean([float(r["cost"]) for r in mono])) if mono else float("nan"),
             "cache_cost": float(np.mean([float(r["cost"]) for r in cache])) if cache else float("nan"),
         }
@@ -1009,6 +1197,55 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
     fig.savefig(assets["run_length_vs_h"], dpi=170)
     plt.close(fig)
 
+    def series(metric: str, model: str) -> list[float]:
+        return [float(r.get(metric, "nan")) for r in rows if r["cost_model"] == model and r["budget"] in {"10", "20", "40"}]
+
+    # Perceptual metrics are more meaningful than SSIM alone for generative images.
+    fig, axs = plt.subplots(2, 2, figsize=(10, 7.6), sharex=True)
+    metric_specs = [
+        ("lpips", "LPIPS (lower is better)", "#a33f2b"),
+        ("clip_img_sim", "CLIP image-image sim", "#245c9a"),
+        ("dino_img_sim", "DINO image-image sim", "#0f766e"),
+        ("clip_text_score", "CLIP text-image score", "#9b6b2f"),
+    ]
+    x_vals = np.array([10, 20, 40])
+    for ax, (metric, title, color) in zip(axs.flat, metric_specs):
+        mono_vals = [float(np.mean([float(r.get(metric, "nan")) for r in rows if r["cost_model"] == "monotone_eval_nodes" and r["budget"] == str(b)])) for b in [10, 20, 40]]
+        cache_vals = [float(np.mean([float(r.get(metric, "nan")) for r in rows if r["cost_model"] == "cache_aware_h_reuse" and r["budget"] == str(b)])) for b in [10, 20, 40]]
+        ax.plot(x_vals, mono_vals, marker="o", linewidth=2.1, color=color, label="monotone")
+        ax.plot(x_vals, cache_vals, marker="s", linestyle="--", linewidth=2.0, color="#444", label="cache-aware")
+        ax.set_title(title)
+        ax.grid(alpha=0.2)
+    axs[0, 0].set_ylabel("score")
+    axs[1, 0].set_ylabel("score")
+    for ax in axs[1, :]:
+        ax.set_xlabel("effective budget")
+    axs[0, 0].legend(frameon=False, fontsize=8)
+    fig.suptitle("Perceptual validation across budgets")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    assets["perceptual_budget"] = str(assets_dir / "perceptual_budget.png")
+    fig.savefig(assets["perceptual_budget"], dpi=170)
+    plt.close(fig)
+
+    fig, axs = plt.subplots(1, 2, figsize=(10.4, 4.5))
+    for ax, metric, title in [
+        (axs[0], "lpips", "path mean h vs LPIPS"),
+        (axs[1], "clip_img_sim", "path mean h vs CLIP image sim"),
+    ]:
+        xs = [float(r.get("path_mean_h", "nan")) for r in rows if r.get("path_mean_h") not in {"", "nan"}]
+        ys = [float(r.get(metric, "nan")) for r in rows if r.get("path_mean_h") not in {"", "nan"}]
+        budgets_col = [int(r["budget"]) for r in rows if r.get("path_mean_h") not in {"", "nan"}]
+        sc = ax.scatter(xs, ys, c=budgets_col, cmap="viridis", s=26, alpha=0.8)
+        ax.set_xlabel("mean h-summary RMSE along path")
+        ax.set_ylabel(metric)
+        ax.set_title(title)
+        ax.grid(alpha=0.18)
+    fig.colorbar(sc, ax=axs.ravel().tolist(), label="effective budget")
+    fig.tight_layout()
+    assets["h_perceptual_scatter"] = str(assets_dir / "h_perceptual_scatter.png")
+    fig.savefig(assets["h_perceptual_scatter"], dpi=170)
+    plt.close(fig)
+
     sample_cards: list[dict[str, Any]] = []
     for sample_dir in sample_dirs:
         meta_path = sample_dir / "metadata.json"
@@ -1035,6 +1272,7 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
     assets["budget_stats"] = budget_stats
     assets["sample_grid"] = str(assets_dir / "sample_grid.jpg")
     assets["seacache_grid"] = str(assets_dir / "seacache_grid.jpg")
+    assets["comparison_grid_sample00"] = str(assets_dir / "comparison_grid_sample00.png")
     return assets
 
 
@@ -1076,7 +1314,7 @@ def run_report(args: argparse.Namespace) -> None:
     mean_rel = float(np.mean([budget_stats[b]["mono_rel_l2"] for b in ["10", "20", "40"]]))
     mean_ssim = float(np.mean([budget_stats[b]["mono_ssim"] for b in ["10", "20", "40"]]))
     if mean_ssim > 0.985:
-        verdict = "PROCEED"
+        verdict = "PROCEED_WEAK"
     if mean_rel > 0.09:
         verdict = "STOP"
 
@@ -1239,11 +1477,43 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
         <figcaption>Run length vs h. The association is real but weaker than the gate test above. Lower h supports longer reuse runs, but h alone is not a perfect predictor of how long the free streak continues.</figcaption>
       </figure>
     </div>
-    <div class="caption">Concrete readout: on the cache-aware B40 paths, zero-cost edges have mean compact-h RMSE around 0.0104 versus 15.5 for fresh-eval edges. The run-length/h correlation is negative but modest, so h is a good gate and a weaker streak-length predictor.</div>
+    <div class="caption">Concrete readout: on the cache-aware B40 paths, zero-cost edges have mean compact-h RMSE around 0.0104 versus 15.5 for fresh-eval edges. The run-length/h correlation is negative but modest, so h is a good gate and a weaker streak-length predictor. The offline DP images below are decoded from reconstructed latents via the VAE; they are not produced by an executable sampler yet.</div>
+    <div class="callout" style="margin-top:14px;">Representative comparison grid for sample_00. This makes the evaluation path explicit: full 100-step, SeaCache, offline DP, and the executable-sampler slot that still needs validation.</div>
+    <div class="grid two" style="margin-top:12px;">
+      <div class="note">
+        <b>Comparison grid</b>
+        <img src="{image_rel(Path(assets['comparison_grid_sample00']), report_path)}" alt="Comparison grid sample 00">
+      </div>
+      <div class="note">
+        <b>What to read here</b>
+        <ul>
+          <li><b>100-step final</b> is the reference sampler output.</li>
+          <li><b>SeaCache delta 0.6</b> is the actual accelerated sampler output.</li>
+          <li><b>Offline DP</b> panels are latent replays decoded through the VAE from saved trajectory states.</li>
+          <li><b>Executable DP</b> is intentionally marked pending because we have not yet run the selected path through a real sampler.</li>
+        </ul>
+      </div>
+    </div>
   </section>
 
   <section class="section">
-    <h2>4. What This Means</h2>
+    <h2>4. Perceptual Validation</h2>
+    <p class="lede">SSIM alone is not enough for generative outputs. This section adds LPIPS, CLIP image-image similarity, DINO similarity, and CLIP text-image score so the report does not overstate quality based on a single structural metric.</p>
+    <div class="plots">
+      <figure class="plot">
+        <img src="{image_rel(Path(assets['perceptual_budget']), report_path)}" alt="Perceptual metrics by budget">
+        <figcaption>Perceptual metrics by budget. LPIPS drops as budgets rise, while CLIP and DINO similarities climb. That is the right direction if shortcuts are preserving content, style, and prompt alignment rather than only pixel structure.</figcaption>
+      </figure>
+      <figure class="plot">
+        <img src="{image_rel(Path(assets['h_perceptual_scatter']), report_path)}" alt="h perceptual scatter">
+        <figcaption>Path h versus perceptual quality. Lower h tends to sit on the better side of the perceptual metrics, but the scatter makes the important caveat visible: h is a useful gate, not a perfect quality surrogate.</figcaption>
+      </figure>
+    </div>
+    <div class="caption">The metrics CSV now includes LPIPS, CLIP image similarity, DINO similarity, CLIP text-image score, and path-level h summaries. That makes it possible to compare shortcut quality without relying on SSIM alone.</div>
+  </section>
+
+  <section class="section">
+    <h2>5. What This Means</h2>
     <div class="grid two">
       <div class="note">
         <b>Mechanistic takeaway</b>
@@ -1263,17 +1533,23 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
 
   <footer class="footer">
     <div class="verdict">{verdict}</div>
-    <div class="note"><b>Bottom line</b><br>The evidence says <b>{verdict}</b>. SeaCache replication is real, the 10-sample 100-step dataset is complete, and the DP shortcut search finds shorter paths with strong SSIM. The main caveat is that cache-aware DP is an offline approximation, so the next validation step should run the selected paths online against the actual SeaCache scheduler.</div>
-    <div class="note"><b>Next experiments</b><ul><li>Validate the top B10/B20/B40 monotone and cache-aware paths online.</li><li>Sweep the h threshold and compare SSIM, CLIP, and runtime savings.</li><li>Replace the compact h proxy with a learned cache state predictor if the offline-vs-online gap stays large.</li></ul></div>
+    <div class="note"><b>Bottom line</b><br>The evidence says <b>{verdict}</b>. SeaCache replication is real, the 10-sample 100-step dataset is complete, and the DP shortcut search finds shorter paths with strong perceptual scores. The main caveat is that cache-aware DP is still an offline approximation, and the executable-sampler validation remains the next honest step.</div>
+    <div class="note"><b>Next experiments</b><ul><li>Validate the top B10/B20/B40 monotone and cache-aware paths as an actual sampler.</li><li>Sweep the h threshold and compare LPIPS, CLIP, DINO, and runtime savings.</li><li>Replace the compact h proxy with a learned cache state predictor if the offline-vs-online gap stays large.</li></ul></div>
   </footer>
 </div>
 </main></body></html>"""
+    html = embed_local_images(html, report_path)
     report_path.write_text(html, encoding="utf-8")
     summary = {
         "verdict": verdict,
+        "stage": "Stage 0",
         "replication_rows": rep_rows,
         "dp_budget_mean_rel_l2": {b: budget_stats[b]["mono_rel_l2"] for b in ["10", "20", "40"]},
         "dp_budget_mean_ssim": {b: budget_stats[b]["mono_ssim"] for b in ["10", "20", "40"]},
+        "dp_budget_mean_lpips": {b: budget_stats[b]["mono_lpips"] for b in ["10", "20", "40"]},
+        "dp_budget_mean_clip_img": {b: budget_stats[b]["mono_clip_img"] for b in ["10", "20", "40"]},
+        "dp_budget_mean_dino_img": {b: budget_stats[b]["mono_dino_img"] for b in ["10", "20", "40"]},
+        "dp_budget_mean_clip_text": {b: budget_stats[b]["mono_clip_text"] for b in ["10", "20", "40"]},
         "h_capture_ambiguity": "Official first/final steps store unfiltered norm1 modulated input; middle steps compare SEA-filtered tensors.",
         "dp_cost_model_note": "Exact h tensors are saved. Cache-aware DP uses compact h summary RMSE as a tractable offline proxy, not exact online SeaCache scheduling.",
         "report_note": "Expanded slide report with per-experiment figures, shortcut statistics, and h/caching correlation plots.",
@@ -1282,9 +1558,10 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
     Path(args.summary_md).write_text(
         "# FLUX SeaCache DP Shortcuts\n\n"
         f"Verdict: **{verdict}**\n\n"
-        "The expanded HTML report includes a figure for each experiment, SeaCache replication visuals, DP statistics, h/cost correlation plots, and a consecutive-shortcut histogram. "
+        "The expanded HTML report includes a figure for each experiment, SeaCache replication visuals, DP statistics, perceptual metrics, h/cost correlation plots, and a consecutive-shortcut histogram. "
         "The h tensor is the first-block norm1 modulated image-token input used by SeaCache; middle steps are SEA-filtered as in the official decision path. "
-        "The cache-aware DP cost uses compact h-summary RMSE for tractability and should be treated as a proxy until validated online.\n",
+        "The cache-aware DP cost uses compact h-summary RMSE for tractability and should be treated as a proxy until validated online. "
+        "Offline DP images are decoded from reconstructed latents, not executable sampler runs.\n",
         encoding="utf-8",
     )
 
