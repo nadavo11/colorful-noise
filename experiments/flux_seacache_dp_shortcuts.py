@@ -324,7 +324,11 @@ def run_official_seacache(args: argparse.Namespace) -> None:
     out_dir = Path(args.output_root) / "delta_0p3"
     marker = out_dir / "official_unmodified.json"
     if marker.exists() and not args.force:
-        return
+        try:
+            if read_json(marker).get("status") == "succeeded":
+                return
+        except Exception:
+            pass
     ensure_dir(out_dir)
     cmd = [
         sys.executable,

@@ -60,8 +60,6 @@ echo "== run =="
 python experiments/flux_seacache_dp_shortcuts.py run-all \
   --device cuda \
   --dtype bf16 \
-  --bnb4 \
-  --offload \
   --steps 100 \
   --seacache-steps 50 \
   --height 1024 \
@@ -83,7 +81,7 @@ chmod +x "$RUN_DIR/resolved_command.sh"
 ENC=$(base64 -w0 "$RUN_DIR/resolved_command.sh")
 cat >"$RUN_DIR/submit_command.sh" <<SCRIPT
 JOB=$JOB IMG=$IMG SHA=$SHA
-runai submit "$JOB" -p "$PROJECT" -g 1 --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc 'echo $ENC | base64 -d | bash'
+runai submit "$JOB" -p "$PROJECT" -g 1 --gpu-memory 45G --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc 'echo $ENC | base64 -d | bash'
 SCRIPT
 cat >"$RUN_DIR/run_manifest.yaml" <<YAML
 job: "$JOB"
@@ -102,5 +100,5 @@ outputs:
 YAML
 
 echo "Submitting $JOB using $RUN_DIR"
-runai submit "$JOB" -p "$PROJECT" -g 1 --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc "echo $ENC | base64 -d | bash"
+runai submit "$JOB" -p "$PROJECT" -g 1 --gpu-memory 45G --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc "echo $ENC | base64 -d | bash"
 echo "Logs: runai logs $JOB"
