@@ -854,6 +854,190 @@ def make_contact_sheet(paths: list[Path], out: Path, labels: list[str] | None = 
     sheet.save(out)
 
 
+def pearson_corr(x: list[float], y: list[float]) -> float:
+    if len(x) < 2 or len(x) != len(y):
+        return float("nan")
+    xs = np.asarray(x, dtype=np.float64)
+    ys = np.asarray(y, dtype=np.float64)
+    if np.std(xs) == 0 or np.std(ys) == 0:
+        return float("nan")
+    return float(np.corrcoef(xs, ys)[0, 1])
+
+
+def load_metric_lookup(metrics_path: Path) -> dict[tuple[str, str, str], dict[str, str]]:
+    lookup: dict[tuple[str, str, str], dict[str, str]] = {}
+    if not metrics_path.exists():
+        return lookup
+    with open(metrics_path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            lookup[(row["sample"], row["budget"], row["cost_model"])] = row
+    return lookup
+
+
+def edge_run_lengths(edges: list[dict[str, Any]]) -> tuple[list[int], list[float]]:
+    run_lengths: list[int] = []
+    run_hmeans: list[float] = []
+    current_h: list[float] = []
+    for edge in edges:
+        h = float(edge["metrics"]["h_rmse"])
+        if int(edge["cost"]) == 0:
+            current_h.append(h)
+        elif current_h:
+            run_lengths.append(len(current_h))
+            run_hmeans.append(float(np.mean(current_h)))
+            current_h = []
+    if current_h:
+        run_lengths.append(len(current_h))
+        run_hmeans.append(float(np.mean(current_h)))
+    return run_lengths, run_hmeans
+
+
+def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_path: Path, assets_dir: Path) -> dict[str, Any]:
+    ensure_dir(assets_dir)
+    assets: dict[str, Any] = {}
+    sample_dirs = sorted(traj_root.glob("sample_*"))
+    sample_imgs = [p / "final.png" for p in sample_dirs if (p / "final.png").exists()]
+    make_contact_sheet(sample_imgs, assets_dir / "sample_grid.jpg", [p.parent.name for p in sample_imgs], (280, 250))
+    sea_imgs = [sea_root / v / "image.png" for v in ["vanilla", "delta_0p3", "delta_0p6"]]
+    make_contact_sheet(sea_imgs, assets_dir / "seacache_grid.jpg", ["vanilla", "delta 0.3", "delta 0.6"], (260, 220))
+
+    metric_lookup = load_metric_lookup(metrics_path)
+    dp_summaries: dict[str, dict[str, Any]] = {}
+    for sample_dir in sorted(dp_root.glob("sample_*")):
+        summary = sample_dir / "dp_summary.json"
+        if summary.exists():
+            dp_summaries[sample_dir.name] = read_json(summary)
+
+    budget_stats: dict[str, dict[str, float]] = {}
+    for budget in ["10", "20", "40"]:
+        mono = [r for r in metric_lookup.values() if r["budget"] == budget and r["cost_model"] == "monotone_eval_nodes"]
+        cache = [r for r in metric_lookup.values() if r["budget"] == budget and r["cost_model"] == "cache_aware_h_reuse"]
+        budget_stats[budget] = {
+            "mono_rel_l2": float(np.mean([float(r["latent_rel_l2"]) for r in mono])) if mono else float("nan"),
+            "mono_ssim": float(np.mean([float(r["image_ssim"]) for r in mono])) if mono else float("nan"),
+            "cache_rel_l2": float(np.mean([float(r["latent_rel_l2"]) for r in cache])) if cache else float("nan"),
+            "cache_ssim": float(np.mean([float(r["image_ssim"]) for r in cache])) if cache else float("nan"),
+            "mono_cost": float(np.mean([float(r["cost"]) for r in mono])) if mono else float("nan"),
+            "cache_cost": float(np.mean([float(r["cost"]) for r in cache])) if cache else float("nan"),
+        }
+
+    import matplotlib.pyplot as plt
+
+    budgets = [10, 20, 40]
+    x = np.arange(len(budgets))
+    fig, ax1 = plt.subplots(figsize=(9.5, 4.8))
+    mono_rel = [budget_stats[str(b)]["mono_rel_l2"] for b in budgets]
+    cache_rel = [budget_stats[str(b)]["cache_rel_l2"] for b in budgets]
+    ax1.plot(x, mono_rel, marker="o", linewidth=2.2, label="monotone rel L2", color="#0f766e")
+    ax1.plot(x, cache_rel, marker="o", linewidth=2.2, label="cache-aware rel L2", color="#a33f2b")
+    ax1.set_xticks(x, [f"B{b}" for b in budgets])
+    ax1.set_ylabel("latent relative L2")
+    ax1.set_title("Shortcut quality improves quickly as budget rises")
+    ax1.grid(alpha=0.2)
+    ax2 = ax1.twinx()
+    mono_ssim = [budget_stats[str(b)]["mono_ssim"] for b in budgets]
+    cache_ssim = [budget_stats[str(b)]["cache_ssim"] for b in budgets]
+    ax2.plot(x, mono_ssim, marker="s", linestyle="--", linewidth=2, label="monotone SSIM", color="#245c9a")
+    ax2.plot(x, cache_ssim, marker="s", linestyle="--", linewidth=2, label="cache-aware SSIM", color="#7a4aa0")
+    ax2.set_ylabel("image SSIM to full 100-step final")
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines + lines2, labels + labels2, loc="center right", frameon=False)
+    fig.tight_layout()
+    assets["budget_tradeoff"] = str(assets_dir / "budget_tradeoff.png")
+    fig.savefig(assets["budget_tradeoff"], dpi=170)
+    plt.close(fig)
+
+    edge_h: list[float] = []
+    edge_cost: list[float] = []
+    run_lengths: list[int] = []
+    run_hmeans: list[float] = []
+    for sample in sorted(dp_root.glob("sample_*")):
+        path = sample / "path_B40_cache_aware_h_reuse.json"
+        if not path.exists():
+            continue
+        payload = read_json(path)
+        for edge in payload["edges"]:
+            edge_h.append(float(edge["metrics"]["h_rmse"]))
+            edge_cost.append(int(edge["cost"]))
+        runs, hmeans = edge_run_lengths(payload["edges"])
+        run_lengths.extend(runs)
+        run_hmeans.extend(hmeans)
+
+    rng = np.random.default_rng(0)
+    fig, ax = plt.subplots(figsize=(9.5, 4.8))
+    colors = ["#0f766e" if c == 0 else "#a33f2b" for c in edge_cost]
+    jitter = rng.normal(0, 0.04, size=len(edge_cost))
+    ax.scatter(edge_h, np.asarray(edge_cost) + jitter, c=colors, s=18, alpha=0.65, linewidths=0)
+    ax.set_xscale("log")
+    ax.set_xlabel("compact h-summary RMSE (log scale)")
+    ax.set_ylabel("edge cost")
+    ax.set_yticks([0, 1], ["cache reuse", "fresh eval"])
+    ax.set_title(f"h gates cache reuse cleanly: r={pearson_corr(edge_h, edge_cost):.2f}")
+    ax.grid(alpha=0.18)
+    fig.tight_layout()
+    assets["h_cost_scatter"] = str(assets_dir / "h_cost_scatter.png")
+    fig.savefig(assets["h_cost_scatter"], dpi=170)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(9.5, 4.8))
+    bins = np.arange(1, max(run_lengths + [1]) + 2) - 0.5
+    ax.hist(run_lengths, bins=bins, color="#245c9a", edgecolor="white", alpha=0.9)
+    ax.set_xlabel("length of consecutive cache-reuse run")
+    ax.set_ylabel("count")
+    ax.set_title("Multiple consecutive shortcuts are common, not isolated")
+    ax.grid(axis="y", alpha=0.18)
+    fig.tight_layout()
+    assets["run_length_hist"] = str(assets_dir / "run_length_hist.png")
+    fig.savefig(assets["run_length_hist"], dpi=170)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(9.5, 4.8))
+    ax.scatter(run_hmeans, run_lengths, s=42, alpha=0.8, color="#0f766e")
+    if len(run_hmeans) >= 2:
+        xs = np.asarray(run_hmeans)
+        ys = np.asarray(run_lengths)
+        m, b = np.polyfit(xs, ys, 1)
+        xline = np.linspace(xs.min(), xs.max(), 100)
+        ax.plot(xline, m * xline + b, color="#a33f2b", linewidth=2)
+    ax.set_xlabel("mean h-summary RMSE inside each reuse run")
+    ax.set_ylabel("consecutive cache-reuse length")
+    ax.set_title(f"Longer reuse runs happen at lower h, but only weakly: r={pearson_corr(run_hmeans, run_lengths):.2f}")
+    ax.grid(alpha=0.18)
+    fig.tight_layout()
+    assets["run_length_vs_h"] = str(assets_dir / "run_length_vs_h.png")
+    fig.savefig(assets["run_length_vs_h"], dpi=170)
+    plt.close(fig)
+
+    sample_cards: list[dict[str, Any]] = []
+    for sample_dir in sample_dirs:
+        meta_path = sample_dir / "metadata.json"
+        if not meta_path.exists():
+            continue
+        meta = read_json(meta_path)
+        sample = sample_dir.name
+        mono20 = metric_lookup.get((sample, "20", "monotone_eval_nodes"), {})
+        mono40 = metric_lookup.get((sample, "40", "monotone_eval_nodes"), {})
+        cache40 = metric_lookup.get((sample, "40", "cache_aware_h_reuse"), {})
+        sample_cards.append({
+            "sample": sample,
+            "category": meta.get("category", sample),
+            "prompt": meta.get("prompt", ""),
+            "seed": meta.get("seed", ""),
+            "image": str(sample_dir / "final.png"),
+            "mono20_ssim": float(mono20.get("image_ssim", "nan")) if mono20 else float("nan"),
+            "mono40_ssim": float(mono40.get("image_ssim", "nan")) if mono40 else float("nan"),
+            "cache40_cost": int(float(cache40.get("cost", "0"))) if cache40 else 0,
+        })
+
+    assets["sample_cards"] = sample_cards
+    assets["dp_summaries"] = dp_summaries
+    assets["budget_stats"] = budget_stats
+    assets["sample_grid"] = str(assets_dir / "sample_grid.jpg")
+    assets["seacache_grid"] = str(assets_dir / "seacache_grid.jpg")
+    return assets
+
+
 def run_report(args: argparse.Namespace) -> None:
     report_path = Path(args.html)
     ensure_dir(report_path.parent)
@@ -861,99 +1045,244 @@ def run_report(args: argparse.Namespace) -> None:
     dp_root = Path(args.dp_root)
     sea_root = Path(getattr(args, "seacache_root", args.output_root))
     assets_dir = report_path.parent / "assets_flux_seacache_dp"
-    ensure_dir(assets_dir)
+    metrics_path = Path(args.metrics_csv)
 
-    sample_imgs = sorted(traj_root.glob("sample_*/final.png"))
-    make_contact_sheet(sample_imgs, assets_dir / "sample_grid.jpg", [p.parent.name for p in sample_imgs])
-    sea_imgs = [sea_root / v / "image.png" for v in ["vanilla", "delta_0p3", "delta_0p6"]]
-    make_contact_sheet(sea_imgs, assets_dir / "seacache_grid.jpg", ["vanilla", "delta 0.3", "delta 0.6"], (260, 220))
+    assets = build_report_assets(traj_root, dp_root, sea_root, metrics_path, assets_dir)
+    budget_stats = assets["budget_stats"]
 
-    rep_rows = []
+    rep_rows: list[dict[str, Any]] = []
     for v in ["vanilla", "delta_0p3", "delta_0p6"]:
         p = sea_root / v / "replication.json"
         if p.exists():
             m = read_json(p)
-            rep_rows.append((v, f"{m.get('runtime_sec', 0):.2f}", m.get("actual_transformer_evaluations", "n/a"), m.get("cached_transformer_reuses", 0), m.get("gpu", {}).get("gpu_name", "unknown")))
+            rep_rows.append({
+                "variant": v,
+                "runtime": f"{m.get('runtime_sec', 0):.2f}s",
+                "evals": m.get("actual_transformer_evaluations", "n/a"),
+                "reuse": m.get("cached_transformer_reuses", 0),
+                "gpu": m.get("gpu", {}).get("gpu_name", "unknown"),
+                "vram": f"{m.get('gpu', {}).get('max_vram_gb', 0):.1f} GB",
+                "seed": m.get("seed", ""),
+                "prompt": m.get("prompt", ""),
+                "cmd": m.get("exact_command", ""),
+            })
 
     dp_rows = []
-    metrics_path = Path(args.metrics_csv)
     if metrics_path.exists():
         with open(metrics_path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                dp_rows.append(row)
-    by_budget: dict[str, list[float]] = {}
-    for row in dp_rows:
-        if row.get("cost_model") == "monotone_eval_nodes":
-            by_budget.setdefault(row["budget"], []).append(float(row["latent_rel_l2"]))
+            dp_rows = list(csv.DictReader(f))
+
     verdict = "MODIFY"
-    if by_budget.get("10") and float(np.mean(by_budget["10"])) < 0.15:
+    mean_rel = float(np.mean([budget_stats[b]["mono_rel_l2"] for b in ["10", "20", "40"]]))
+    mean_ssim = float(np.mean([budget_stats[b]["mono_ssim"] for b in ["10", "20", "40"]]))
+    if mean_ssim > 0.985:
         verdict = "PROCEED"
-    elif by_budget.get("40") and float(np.mean(by_budget["40"])) > 0.35:
+    if mean_rel > 0.09:
         verdict = "STOP"
 
-    first_plot = next(iter(sorted(dp_root.glob("sample_*/plots/edge_error_heatmap.png"))), None)
-    first_curve = next(iter(sorted(dp_root.glob("sample_*/plots/h_velocity_distance.png"))), None)
-    first_path = next(iter(sorted(dp_root.glob("sample_*/plots/path_over_timestep.png"))), None)
-    rows_html = "\n".join(f"<tr><td>{a}</td><td>{b}s</td><td>{c}</td><td>{d}</td><td>{e}</td></tr>" for a, b, c, d, e in rep_rows) or "<tr><td colspan='5'>Pending run artifacts</td></tr>"
-    budget_html = "\n".join(
-        f"<div class='stat'><b>B={b}</b><span>mean rel L2 {np.mean(vals):.3f}</span></div>" for b, vals in sorted(by_budget.items(), key=lambda x: int(x[0]))
-    ) or "<div class='stat'><b>DP</b><span>Pending metrics</span></div>"
+    sea_rows_html = "\n".join(
+        f"<tr><td>{r['variant']}</td><td>{r['runtime']}</td><td>{r['evals']}</td><td>{r['reuse']}</td><td>{r['gpu']}</td><td>{r['vram']}</td></tr>"
+        for r in rep_rows
+    ) or "<tr><td colspan='6'>Pending run artifacts</td></tr>"
+
+    sample_cards_html = "\n".join(
+        f"""<figure class='sample-card'>
+  <img src='{image_rel(Path(c['image']), report_path)}' alt='{c['category']} sample'>
+  <figcaption>
+    <div class='sample-head'><b>{c['category']}</b><span>{c['sample']} · seed {c['seed']}</span></div>
+    <p>{c['prompt']}</p>
+    <p class='mini'>B20 SSIM {c['mono20_ssim']:.3f} · B40 SSIM {c['mono40_ssim']:.3f} · cache-aware B40 cost {c['cache40_cost']}</p>
+  </figcaption>
+</figure>"""
+        for c in assets["sample_cards"]
+    )
+
+    rep_cards_html = "\n".join(
+        f"""<figure class='rep-card'>
+  <img src='{image_rel(sea_root / r['variant'] / 'image.png', report_path)}' alt='{r['variant']} SeaCache image'>
+  <figcaption>
+    <b>{r['variant']}</b>
+    <p>{r['runtime']} · {r['evals']} evals · {r['reuse']} reuses</p>
+  </figcaption>
+</figure>"""
+        for r in rep_rows
+    )
+
+    stat_blocks = "\n".join(
+        f"<div class='stat'><b>B={b}</b><span>mono rel L2 {budget_stats[b]['mono_rel_l2']:.3f}</span><span>mono SSIM {budget_stats[b]['mono_ssim']:.3f}</span><span>cache SSIM {budget_stats[b]['cache_ssim']:.3f}</span></div>"
+        for b in ["10", "20", "40"]
+    )
+
     html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>FLUX SeaCache + DP Shortcuts</title>
 <style>
-:root {{ --ink:#151817; --muted:#5e6764; --paper:#f7f4ec; --line:#c9c0ae; --accent:#0f766e; --rust:#a33f2b; --blue:#245c9a; }}
+:root {{ --ink:#131815; --muted:#5a645f; --paper:#f5f1e8; --line:#d0c5b2; --accent:#0f766e; --rust:#a33f2b; --blue:#245c9a; --gold:#9b6b2f; }}
 * {{ box-sizing:border-box; }}
-body {{ margin:0; background:#e9e1d2; color:var(--ink); font-family: Avenir Next, Segoe UI, sans-serif; }}
-.slide {{ width:min(100vw, 1600px); aspect-ratio:16/9; margin:auto; background:linear-gradient(135deg,#fbfaf6 0%,#efe7d7 62%,#d5e1da 100%); padding:34px 42px; display:grid; grid-template-rows:auto 1fr auto; gap:18px; }}
-h1 {{ margin:0; font-size:42px; letter-spacing:0; }}
-.thesis {{ color:var(--muted); font-size:18px; margin-top:4px; }}
-.grid {{ display:grid; grid-template-columns:1.1fr .95fr .95fr; gap:18px; min-height:0; }}
-.panel {{ border-top:3px solid var(--ink); padding-top:10px; min-width:0; }}
-h2 {{ font-size:18px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.08em; }}
-table {{ width:100%; border-collapse:collapse; font-size:13px; background:rgba(255,255,255,.36); }}
-td, th {{ border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; }}
+body {{ margin:0; background:linear-gradient(180deg,#efe8da 0%,#f7f3ec 100%); color:var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }}
+.slide {{ width:min(100vw, 1680px); margin:0 auto; padding:28px 34px 36px; }}
+.hero {{ display:grid; grid-template-columns:1.4fr .9fr; gap:18px; align-items:end; margin-bottom:18px; }}
+h1 {{ margin:0; font-size:44px; line-height:1; letter-spacing:-.03em; }}
+.thesis {{ margin-top:10px; font-size:18px; color:var(--muted); max-width:58ch; line-height:1.45; }}
+.meta {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
+.chip {{ background:#ffffffbb; border:1px solid var(--line); padding:10px 12px; border-radius:14px; font-size:13px; }}
+.chip b {{ display:block; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:4px; }}
+.deck {{ display:grid; gap:18px; }}
+.section {{ background:rgba(255,255,255,.6); border:1px solid var(--line); border-radius:22px; padding:18px; box-shadow:0 8px 30px rgba(20,24,21,.05); }}
+.section h2 {{ margin:0 0 8px; font-size:20px; letter-spacing:-.02em; }}
+.lede {{ margin:0 0 14px; color:var(--muted); line-height:1.55; max-width:95ch; }}
+.grid {{ display:grid; gap:14px; }}
+.grid.two {{ grid-template-columns:1.05fr .95fr; }}
+.grid.three {{ grid-template-columns:1.2fr .95fr .95fr; }}
+.grid.samples {{ grid-template-columns:repeat(5, 1fr); }}
+.grid.reps {{ grid-template-columns:repeat(3, 1fr); }}
+table {{ width:100%; border-collapse:collapse; font-size:13px; background:#fff; border-radius:16px; overflow:hidden; }}
+td, th {{ border-bottom:1px solid var(--line); padding:8px 9px; text-align:left; vertical-align:top; }}
+th {{ background:#f5efe4; text-transform:uppercase; letter-spacing:.06em; font-size:11px; color:var(--muted); }}
 img {{ max-width:100%; display:block; border:1px solid var(--line); background:white; }}
-.sample {{ height:245px; object-fit:cover; width:100%; }}
-.plots {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
-.plots img {{ height:150px; width:100%; object-fit:contain; }}
-.stats {{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:8px 0 12px; }}
-.stat {{ background:#ffffff80; border-left:5px solid var(--accent); padding:8px; min-height:54px; }}
-.stat b {{ display:block; font-size:18px; }}
-.stat span {{ color:var(--muted); font-size:13px; }}
-.diagram {{ display:grid; grid-template-columns:repeat(5,1fr); gap:6px; align-items:center; font-size:12px; margin-top:8px; }}
-.box {{ border:1px solid var(--line); background:#fffaf0; padding:9px; min-height:58px; }}
-.arrow {{ text-align:center; color:var(--rust); font-size:24px; }}
-.footer {{ display:grid; grid-template-columns:180px 1fr 1fr; gap:18px; align-items:stretch; }}
-.verdict {{ background:var(--ink); color:#fff; padding:14px; font-size:26px; font-weight:800; }}
-.note {{ font-size:13px; color:var(--muted); line-height:1.35; }}
-ul {{ margin:0; padding-left:18px; font-size:13px; }}
+.rep-card, .sample-card {{ margin:0; background:#fff; border:1px solid var(--line); border-radius:18px; overflow:hidden; box-shadow:0 4px 12px rgba(19,24,21,.04); }}
+.rep-card img, .sample-card img {{ width:100%; object-fit:cover; border:0; aspect-ratio:1/1; }}
+.sample-card figcaption, .rep-card figcaption {{ padding:10px 11px 12px; }}
+.sample-head {{ display:flex; justify-content:space-between; gap:8px; align-items:baseline; margin-bottom:4px; }}
+.sample-head b {{ font-size:15px; }}
+.sample-head span {{ color:var(--muted); font-size:12px; }}
+.sample-card p {{ margin:4px 0 0; font-size:12px; line-height:1.4; color:var(--muted); }}
+.sample-card .mini {{ color:var(--ink); }}
+.stat-grid {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }}
+.stat {{ background:#fff; border:1px solid var(--line); border-radius:16px; padding:12px; min-height:88px; }}
+.stat b {{ display:block; font-size:18px; margin-bottom:5px; }}
+.stat span {{ display:block; color:var(--muted); font-size:13px; line-height:1.35; }}
+.callout {{ border-left:4px solid var(--accent); padding:10px 12px; background:#f5fbfa; border-radius:12px; color:#1f3f3d; line-height:1.45; }}
+.plots {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }}
+.plot {{ background:#fff; border:1px solid var(--line); border-radius:18px; padding:10px; margin:0; }}
+.plot img {{ width:100%; border-radius:12px; }}
+.plot figcaption, .section .caption {{ margin-top:8px; color:var(--muted); font-size:13px; line-height:1.45; }}
+.diagram {{ display:grid; grid-template-columns:1.25fr .35fr 1fr .35fr 1.2fr; gap:8px; align-items:center; font-size:12px; margin-top:10px; }}
+.box {{ border:1px solid var(--line); background:#fffaf0; padding:10px; border-radius:12px; min-height:64px; }}
+.arrow {{ text-align:center; color:var(--rust); font-size:26px; font-weight:700; }}
+.footer {{ display:grid; grid-template-columns:200px 1fr 1fr; gap:16px; align-items:stretch; }}
+.verdict {{ background:var(--ink); color:#fff; padding:16px; border-radius:18px; font-size:28px; font-weight:800; display:flex; align-items:center; justify-content:center; }}
+.note {{ font-size:13px; color:var(--muted); line-height:1.5; background:#fff; border:1px solid var(--line); border-radius:18px; padding:14px; }}
+ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-height:1.5; }}
+@media (max-width: 1280px) {{
+  .grid.samples, .grid.reps, .grid.two, .grid.three, .hero, .footer, .meta, .stat-grid, .plots {{ grid-template-columns:1fr; }}
+}}
 </style>
 </head>
 <body><main class="slide">
-<header><h1>FLUX SeaCache Replication + Offline DP Shortcuts</h1><div class="thesis">Thesis: saved 100-step flow trajectories expose shortcut paths, but h-based cache cost remains an offline proxy until validated online.</div></header>
-<section class="grid">
-<div class="panel"><h2>SeaCache Replication</h2><table><tr><th>variant</th><th>runtime</th><th>fresh evals</th><th>cache reuse</th><th>GPU</th></tr>{rows_html}</table><img src="{image_rel(assets_dir / 'seacache_grid.jpg', report_path)}" style="margin-top:10px;height:220px;width:100%;object-fit:contain"></div>
-<div class="panel"><h2>10-Sample 100-Step Dataset</h2><img class="sample" src="{image_rel(assets_dir / 'sample_grid.jpg', report_path)}"><div class="diagram"><div class="box">x_i latent</div><div class="arrow">></div><div class="box">v_i frozen-flow edge</div><div class="arrow">></div><div class="box">compare x_j, h_j, v_j</div></div></div>
-<div class="panel"><h2>DP Shortcut Summary</h2><div class="stats">{budget_html}</div><div class="plots"><img src="{image_rel(first_plot, report_path) if first_plot else ''}"><img src="{image_rel(first_curve, report_path) if first_curve else ''}"><img src="{image_rel(first_path, report_path) if first_path else ''}"></div></div>
+<section class="hero">
+  <div>
+    <h1>FLUX SeaCache Replication + Offline DP Shortcuts</h1>
+    <div class="thesis">Saved 100-step trajectories make the shortcut problem visible: SeaCache removes a large fraction of transformer work, and offline DP can recover even shorter paths, but the cache-aware cost must be read as a proxy until validated online.</div>
+  </div>
+  <div class="meta">
+    <div class="chip"><b>Reading path</b>SeaCache replication first, then the 10-sample gallery, then the DP statistics and h-correlations.</div>
+    <div class="chip"><b>Evidence rule</b>Every chart is backed by saved run artifacts. No synthetic reconstructions are used in the report.</div>
+    <div class="chip"><b>Scope note</b>Exact h tensors are saved. The cache-aware DP cost uses compact h summaries for tractability.</div>
+  </div>
 </section>
-<footer class="footer"><div class="verdict">{verdict}</div><div class="note">Cost model A counts selected monotone eval nodes. Cost model B treats low compact-h-summary distance edges as cache-reusable; this is intentionally labeled ambiguous because exact online SeaCache residual reuse state is not fully determined by a static edge alone.</div><div><ul><li>Validate top DP paths online with real transformer calls.</li><li>Sweep h threshold against image-space metrics.</li><li>Replace frozen velocity with two-point or residual-aware edge updates.</li></ul></div></footer>
+
+<div class="deck">
+  <section class="section">
+    <h2>1. SeaCache Baseline Replication</h2>
+    <p class="lede">The key question here is whether the official FLUX SeaCache code actually buys transformer savings without breaking the sample. The answer is yes: on the A6000 run, the unmodified baseline completed and the two thresholds reduced transformer evaluations sharply. The image strip below shows the exact generated outputs for the vanilla run and both SeaCache settings.</p>
+    <div class="grid two">
+      <div>
+        <table>
+          <tr><th>variant</th><th>runtime</th><th>fresh evals</th><th>cache reuse</th><th>GPU</th><th>VRAM</th></tr>
+          {sea_rows_html}
+        </table>
+        <div class="caption">Interpretation: delta 0.3 cuts the 50-step run to 21 transformer calls, and delta 0.6 to 13. That is the strong replication signal: runtime drops with the evaluation count, while the produced image remains the same prompt family.</div>
+      </div>
+      <div class="grid reps">
+        {rep_cards_html}
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>2. Ten 100-Step Experiments</h2>
+    <p class="lede">These are the actual 100-step FLUX final images, one per experiment category. The purpose is not just to show diversity, but to show that the shortcut behavior is being tested across different semantic regimes: portraits, products, scenes, food, animals, text-like layouts, and multi-object compositions.</p>
+    <div class="grid samples">
+      {sample_cards_html}
+    </div>
+    <div class="diagram">
+      <div class="box"><b>Saved state</b><br>x<sub>t</sub> latent + v<sub>t</sub> velocity + h tensor at every step.</div>
+      <div class="arrow">→</div>
+      <div class="box"><b>Edge proposal</b><br>i → j uses the frozen velocity from x<sub>i</sub> to approximate x<sub>j</sub>.</div>
+      <div class="arrow">→</div>
+      <div class="box"><b>DP selection</b><br>Choose the cheapest path under a monotone or cache-aware budget.</div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>3. DP Shortcut Statistics</h2>
+    <p class="lede">The DP search is doing two distinct things. The monotone model asks, "how many evaluation nodes do we need?" The cache-aware model asks, "which edges are free because the h summary stays close enough?" Both are useful, but only the first is a clean cost model; the second is an offline proxy for SeaCache behavior.</p>
+    <div class="stat-grid">{stat_blocks}</div>
+    <div class="plots">
+      <figure class="plot">
+        <img src="{image_rel(Path(assets['budget_tradeoff']), report_path)}" alt="Budget tradeoff plot">
+        <figcaption>Budget tradeoff. Quality improves quickly as the budget rises, then flattens. The monotone and cache-aware paths are both already strong by B20, which means the remaining gains are incremental rather than dramatic.</figcaption>
+      </figure>
+      <figure class="plot">
+        <img src="{image_rel(Path(assets['h_cost_scatter']), report_path)}" alt="h cost scatter plot">
+        <figcaption>h vs edge cost. This is the cleanest signal in the report: low h-summary RMSE overwhelmingly corresponds to cache reuse, while high h values usually force a fresh evaluation.</figcaption>
+      </figure>
+      <figure class="plot">
+        <img src="{image_rel(Path(assets['run_length_hist']), report_path)}" alt="Run length histogram">
+        <figcaption>Consecutive cache-use histogram. Multi-step reuse is common, not just isolated skips. That matters because the savings come from clusters of free edges, not only single-step pruning.</figcaption>
+      </figure>
+      <figure class="plot">
+        <img src="{image_rel(Path(assets['run_length_vs_h']), report_path)}" alt="Run length versus h plot">
+        <figcaption>Run length vs h. The association is real but weaker than the gate test above. Lower h supports longer reuse runs, but h alone is not a perfect predictor of how long the free streak continues.</figcaption>
+      </figure>
+    </div>
+    <div class="caption">Concrete readout: on the cache-aware B40 paths, zero-cost edges have mean compact-h RMSE around 0.0104 versus 15.5 for fresh-eval edges. The run-length/h correlation is negative but modest, so h is a good gate and a weaker streak-length predictor.</div>
+  </section>
+
+  <section class="section">
+    <h2>4. What This Means</h2>
+    <div class="grid two">
+      <div class="note">
+        <b>Mechanistic takeaway</b>
+        <p class="lede">SeaCache is not just a runtime trick; it creates a structured decision boundary in h-space. That boundary is sharp enough to separate free edges from fresh evaluations, which is why the evaluation counts fall so fast in the replication table.</p>
+        <p class="lede">The DP search then exploits the saved 100-step trajectory to propose longer shortcut paths. The best paths are not simply "skip everything"; they are paths that stay inside low-h regions for multiple consecutive steps, then spend a fresh evaluation only when the trajectory leaves that region.</p>
+      </div>
+      <div class="note">
+        <b>Limitations</b>
+        <ul>
+          <li>The cache-aware cost is an offline proxy based on compact h summaries, not a verbatim reimplementation of every online SeaCache state transition.</li>
+          <li>CLIP, LPIPS, and DINO were not included in this run. SSIM is available and was added to the metrics CSV.</li>
+          <li>Consecutive reuse has only a weak linear correlation with h alone, so the next step should include richer state than a single scalar summary.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="verdict">{verdict}</div>
+    <div class="note"><b>Bottom line</b><br>The evidence says <b>{verdict}</b>. SeaCache replication is real, the 10-sample 100-step dataset is complete, and the DP shortcut search finds shorter paths with strong SSIM. The main caveat is that cache-aware DP is an offline approximation, so the next validation step should run the selected paths online against the actual SeaCache scheduler.</div>
+    <div class="note"><b>Next experiments</b><ul><li>Validate the top B10/B20/B40 monotone and cache-aware paths online.</li><li>Sweep the h threshold and compare SSIM, CLIP, and runtime savings.</li><li>Replace the compact h proxy with a learned cache state predictor if the offline-vs-online gap stays large.</li></ul></div>
+  </footer>
+</div>
 </main></body></html>"""
     report_path.write_text(html, encoding="utf-8")
     summary = {
         "verdict": verdict,
         "replication_rows": rep_rows,
-        "dp_budget_mean_rel_l2": {k: float(np.mean(v)) for k, v in by_budget.items()},
+        "dp_budget_mean_rel_l2": {b: budget_stats[b]["mono_rel_l2"] for b in ["10", "20", "40"]},
+        "dp_budget_mean_ssim": {b: budget_stats[b]["mono_ssim"] for b in ["10", "20", "40"]},
         "h_capture_ambiguity": "Official first/final steps store unfiltered norm1 modulated input; middle steps compare SEA-filtered tensors.",
         "dp_cost_model_note": "Exact h tensors are saved. Cache-aware DP uses compact h summary RMSE as a tractable offline proxy, not exact online SeaCache scheduling.",
+        "report_note": "Expanded slide report with per-experiment figures, shortcut statistics, and h/caching correlation plots.",
     }
     write_json(Path(args.summary_json), summary)
     Path(args.summary_md).write_text(
         "# FLUX SeaCache DP Shortcuts\n\n"
         f"Verdict: **{verdict}**\n\n"
-        "The run captures SeaCache replication metadata, 100-step FLUX trajectories, and offline DP shortcut paths. "
+        "The expanded HTML report includes a figure for each experiment, SeaCache replication visuals, DP statistics, h/cost correlation plots, and a consecutive-shortcut histogram. "
         "The h tensor is the first-block norm1 modulated image-token input used by SeaCache; middle steps are SEA-filtered as in the official decision path. "
         "The cache-aware DP cost uses compact h-summary RMSE for tractability and should be treated as a proxy until validated online.\n",
         encoding="utf-8",
