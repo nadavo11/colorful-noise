@@ -90,6 +90,41 @@ captured at the true `z_k`. Under teacher forcing it is near-lossless *and barel
 The moment you must reuse computation causally (cached-residual), the same schedule collapses and is
 beaten by SeaCache. Reported as a finding, not a failure.
 
+## Causal replay (post-hoc): recomputing velocities on the approximate path
+The original "DP/uniform jump live replay" makes **0 transformer calls** — it integrates the *saved
+vanilla* velocity field. It is renamed **offline saved-velocity replay** (a non-causal
+trajectory-compression oracle). The true **causal** replay (`experiments/flux_dp_jump_causal_replay.py`)
+starts from `z_0` and, at each selected anchor `k→i`, recomputes the velocity net on the *current
+approximate latent* `ẑ` and jumps `ẑ_i = ẑ_k + (σ_i−σ_k)·v_net(ẑ_k)`. No saved `v_k` and no vanilla
+`z_k` (beyond `z_0`; verified `z_0` rel-L2 ≈ 0) enter the update. A `CallCounter` asserts
+`actual transformer calls == retained steps` for every run (default FLUX = 28 calls, causal at retained
+20 = 20 calls, offline = 0 calls).
+
+**PSNR to 100-step vanilla (mean over 4 samples):**
+
+| retained (calls) | 90 | 75 | 50 | 25 | 10 |
+|---|---|---|---|---|---|
+| offline DP (saved-velocity, 0 calls) | 40.4 | 40.4 | 40.3 | 39.3 | 35.3 |
+| **causal DP-schedule** | **35.6** | **29.3** | **18.8** | **16.2** | **12.6** |
+| causal uniform | 27.1 | 22.9 | 18.8 | 14.8 | 12.1 |
+| SeaCache @ matched calls | ~40.1 | ~34.6 | ~26.0 | ~18.9 | ~14.2 |
+
+- **Causal DP beats causal uniform** by **+2.8 dB mean** (up to +8.5 dB at retained 90, +6.4 dB at
+  retained 75) — DP's front-loaded anchors do carry a real, deployable-schedule signal over uniform.
+- **But SeaCache still wins** among deployable methods by **−6.5 dB mean** vs causal DP: the online
+  rel-L1 gate places refreshes better than DP anchors, which were optimised for *exact-velocity*
+  extrapolation, not for re-estimating velocity from an already-drifted latent.
+- **Offline → causal drop is 17.9 dB mean** (e.g. retained 50: 40.3 → 18.8 dB). The ~40 dB headline is
+  now unambiguously labelled offline saved-velocity reconstruction, not a deployable result.
+- **Takeaway:** the useful insight is that the 100-step *vanilla velocity field is compressible offline*
+  (integrable on a sparse grid with little loss); DP anchor placement is better than uniform but does
+  not transfer into a state-of-the-art *causal* sampler.
+
+Artifacts: `metrics/causal_replay_metrics.csv`, `metrics/causal_replay_trace_{dp,uniform}.csv`,
+figures `causal_vs_offline_frontier.png`, `causal_vs_offline_frontier_lpips.png`,
+`causal_call_count_audit.png`, `causal_replay_sample_grid.png`; `reports/causal_replay.json`;
+code `experiments/flux_dp_jump_causal_replay.py`; report section `#causal-replay`.
+
 ## Sanity audit (post-hoc, in `report.html` → "Sanity audit" section)
 A dedicated audit re-checked the two suspicious results and the SeaCache implementation:
 

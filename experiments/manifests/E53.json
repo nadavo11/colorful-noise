@@ -44,13 +44,23 @@
     "audit_images_unique": "30/30",
     "audit_seacache_official_gate": true,
     "audit_seacache_matched_saved_range": "3-86",
-    "audit_seacache_identical_rows": "reporting_artifact_fixed"
+    "audit_seacache_identical_rows": "reporting_artifact_fixed",
+    "causal_z0_rel_l2": "~0 (0.0-9.2e-11, no vanilla-latent leakage)",
+    "causal_call_assert": "actual transformer calls == retained steps (default=28)",
+    "causal_dp_minus_uniform_psnr_mean": 2.81,
+    "causal_dp_minus_seacache_psnr_mean": -6.54,
+    "offline_minus_causal_dp_psnr_drop_mean": 17.87,
+    "causal_dp_beats_uniform": true,
+    "causal_dp_beats_seacache": false,
+    "any_deployable_dp_advantage": false
   },
   "artifacts": [
     "runs/h100/20260701_160515__flux_dp_jump_oracle/report.html",
     "runs/h100/20260701_160515__flux_dp_jump_oracle/reports/audit.json",
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/reports/causal_replay.json",
     "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/seacache_threshold_budget.csv",
-    "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/live_replay_trace_dp.csv",
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/causal_replay_metrics.csv",
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/causal_replay_trace_dp.csv",
     "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/image_hash_audit.csv"
   ]
 }

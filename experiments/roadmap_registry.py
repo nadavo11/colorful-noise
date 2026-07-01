@@ -1002,11 +1002,20 @@ EXPERIMENTS = [
                "anchors -- optimised for velocity extrapolation, not residual reuse -- and uniform both mis-place them and "
                "collapse. (4) Predictor diagnostic: SeaCache instantaneous rel-L1 ranks oracle-safe jump length only weakly-"
                "to-moderately (Spearman -0.50, Pearson -0.19; accumulated rel-L1 Spearman -0.14; inst vs S_jump[k,k+1] Pearson "
-               "+0.25) -- consistent with the signal being tuned for refresh/no-refresh, not for how far to jump.",
-     "verdict": "ORACLE-ONLY / NO-GO as a schedule source. The jump-DP oracle does not survive causal replay and, once causal, "
-                "is beaten by SeaCache; its teacher-forced strength is an artifact of reusing exact vanilla velocities, where "
-                "it barely beats uniform. Useful as a diagnostic upper bound and as evidence that (i) anchor PLACEMENT matters "
-                "only under causal reuse, and (ii) SeaCache's predictor is a weak guide to jump distance. Not deployable.",
+               "+0.25) -- consistent with the signal being tuned for refresh/no-refresh, not for how far to jump. "
+               "(5) POST-HOC CAUSAL REPLAY (experiments/flux_dp_jump_causal_replay.py): the old 'jump live replay' is renamed "
+               "OFFLINE saved-velocity replay (0 transformer calls; integrates the saved vanilla velocity field). A true CAUSAL "
+               "jump replay recomputes the velocity net on the approximate path at each anchor (z0 rel-L2~0, calls==retained "
+               "steps asserted). Causal DP BEATS causal uniform by +2.8 dB mean (up to +8.5 dB at retained 90) -- so DP anchor "
+               "placement carries a real deployable signal -- but SeaCache still wins by -6.5 dB mean vs causal DP, and the "
+               "offline->causal PSNR drop is 17.9 dB mean (retained 50: 40.3->18.8 dB). The ~40 dB headline is thus offline "
+               "trajectory compression, not a deployable schedule.",
+     "verdict": "ORACLE-ONLY / NO-GO as a schedule source. Under true causal replay (velocity re-estimated on the drifted path) "
+                "DP does beat uniform (+2.8 dB mean) but is still beaten by SeaCache (-6.5 dB); its ~40 dB strength is OFFLINE "
+                "saved-velocity reconstruction (0 model calls), i.e. evidence the vanilla velocity field is compressible, not "
+                "that a sparse causal schedule is competitive. Useful as a diagnostic upper bound and as evidence that (i) anchor "
+                "PLACEMENT matters more under causal reuse, (ii) SeaCache's online gate out-places DP anchors, and (iii) its "
+                "predictor is a weak guide to jump distance. Not deployable.",
      "nxt": "If a deployable oracle is wanted, replace the teacher-forced jump cost with a PATH-DEPENDENT cached-residual DP "
             "restricted to short spans (<=12-16) plus SeaCache/jump-selected spans -- i.e. score each edge from the actually "
             "reached state under residual reuse, not from vanilla z_k -- and compare that oracle's frontier against SeaCache. "
