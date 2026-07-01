@@ -43,12 +43,12 @@ command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git c
 
 echo "== repo =="
 cd /storage/nada
-if [ -d colorful-noise/.git ]; then
-  git -C colorful-noise fetch -q origin || true
+if [ -d colorful-noise-e54/.git ]; then
+  git -C colorful-noise-e54 fetch -q origin || true
 else
-  git clone -q https://github.com/nadavo11/colorful-noise.git
+  git clone -q https://github.com/nadavo11/colorful-noise.git colorful-noise-e54
 fi
-cd colorful-noise
+cd colorful-noise-e54
 git checkout -q -B e54-runtime-jump-hints "${GIT_REF}" || git checkout -q "${SHA}" || git checkout -q -B flux-seacache-dp-shortcuts origin/flux-seacache-dp-shortcuts || true
 git rev-parse --short HEAD || true
 python -m py_compile experiments/flux_runtime_jump_hints.py
