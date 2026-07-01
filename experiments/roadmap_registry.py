@@ -969,4 +969,49 @@ EXPERIMENTS = [
             "SeaCache. Target >=1.7x true-CFG speedup at <=0.02 LPIPS regression on 30-50 clips.",
      "script": "spectral_edit_direction_cache_probe/lib/run.py", "doc": "docs/experiment-reports/EXPERIMENT_51.md",
      "results": None, "image": None},
+    {"id": "E53", "title": "FLUX jump-DP skip-schedule oracle -- does the offline-optimal jump schedule survive live replay?",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 1024px, bf16, 100 steps; 4 canonical-fixture prompts (v1); H100 NVL",
+     "status": "done",
+     "motivation": "SeaCache/TeaCache decide refresh-vs-reuse ONLINE from a relative-L1 signal. We ask a harder, offline "
+                   "question: given a full vanilla 100-step no-skip FLUX trajectory, what is the BEST possible schedule of "
+                   "fresh evaluations, and how far can you jump between them? We build a teacher-forced oracle via dynamic "
+                   "programming over the saved trajectory and test (a) whether that oracle beats naive uniform/random and "
+                   "SeaCache, (b) whether it survives when you can no longer peek at vanilla velocities (causal cached-residual "
+                   "replay), and (c) whether the SeaCache predictor also tells you how far you can safely jump, not just "
+                   "whether to refresh. Explicitly an oracle/diagnostic, not a deployable method.",
+     "method": "Thin orchestrator experiments/flux_dp_jump_oracle.py reusing the E-series caching harness "
+               "(experiments/flux_seacache_dp_shortcuts.py) for capture / edge table / DP / replay / SeaCache forward / "
+               "decode. Per trajectory: (1) all-pairs jump edge cost S_jump[k,i]=||z_k+(sigma_i-sigma_k)v_k - z_i||^2/"
+               "(||z_i||^2+eps) (4950 edges), sign-convention verified against the sampler (i=k+1 worst rel err 2.0e-3). "
+               "(2) budgeted shortest-path DP dp[b,i]=min_{k<i} dp[b-1,k]+S_jump[k,i], backtracked to anchors, swept over all "
+               "budgets and capped at max_span in {4,8,12,16}. (3) THREE separated families: offline surrogate (sum of "
+               "per-edge costs); teacher-forced jump live replay (compounded from z_0 with vanilla velocities); causal "
+               "baselines -- SeaCache (live, thresholds 0.2-0.6, matched by ACHIEVED fresh-eval budget), uniform, random. "
+               "(4) capped cached-residual stage-2: a genuine causal replay that refreshes the block stack at DP/uniform "
+               "anchors and reuses the residual between them. Metrics vs vanilla final: latent relL2, PSNR, SSIM, LPIPS, "
+               "CLIP-img/text. Predictor diagnostic: SeaCache raw/accumulated rel-L1 vs oracle next-anchor span and vs "
+               "S_jump[k,k+1] (Pearson/Spearman). Run on a remote H100 NVL via SSH (uv env, torch 2.6.0+cu124, cuDNN "
+               "disabled to dodge a driver-535 conv init bug).",
+     "result": "The oracle is a TEACHER-FORCED upper bound that does NOT transfer to a deployable schedule. (1) With vanilla "
+               "velocities, jump replay is near-lossless and DP barely beats uniform: DP jump replay PSNR ~40 dB to saved 75 "
+               "(35 dB at saved 90); uniform jump replay is within ~0.1-1 dB everywhere -- when velocities are exact, WHERE "
+               "you place anchors hardly matters. (2) The causal cached-residual replay of the SAME schedules collapses as "
+               "saving rises: dp_cached PSNR 40->27->19->16.5->12.5 dB at saved 10/25/50/67/89 (23 dB below the teacher-forced "
+               "curve at saved 67). (3) Among CAUSAL methods SeaCache WINS: at saved ~76 SeaCache 23.6 dB vs dp_cached 15.4 dB "
+               "(saved 75); SeaCache's adaptive online gate keeps fresh evals in the volatile early steps, whereas DP-jump "
+               "anchors -- optimised for velocity extrapolation, not residual reuse -- and uniform both mis-place them and "
+               "collapse. (4) Predictor diagnostic: SeaCache instantaneous rel-L1 ranks oracle-safe jump length only weakly-"
+               "to-moderately (Spearman -0.50, Pearson -0.19; accumulated rel-L1 Spearman -0.14; inst vs S_jump[k,k+1] Pearson "
+               "+0.25) -- consistent with the signal being tuned for refresh/no-refresh, not for how far to jump.",
+     "verdict": "ORACLE-ONLY / NO-GO as a schedule source. The jump-DP oracle does not survive causal replay and, once causal, "
+                "is beaten by SeaCache; its teacher-forced strength is an artifact of reusing exact vanilla velocities, where "
+                "it barely beats uniform. Useful as a diagnostic upper bound and as evidence that (i) anchor PLACEMENT matters "
+                "only under causal reuse, and (ii) SeaCache's predictor is a weak guide to jump distance. Not deployable.",
+     "nxt": "If a deployable oracle is wanted, replace the teacher-forced jump cost with a PATH-DEPENDENT cached-residual DP "
+            "restricted to short spans (<=12-16) plus SeaCache/jump-selected spans -- i.e. score each edge from the actually "
+            "reached state under residual reuse, not from vanilla z_k -- and compare that oracle's frontier against SeaCache. "
+            "Also test whether an early-steps-fresh prior (matching SeaCache's behaviour) recovers most of SeaCache's causal "
+            "frontier.",
+     "script": "experiments/flux_dp_jump_oracle.py", "doc": "docs/experiment-reports/EXPERIMENT_53.md",
+     "results": None, "image": None},
 ]

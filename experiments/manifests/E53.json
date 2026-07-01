@@ -1,0 +1,60 @@
+{
+  "eid": "E53",
+  "logged": "2026-07-01",
+  "git_commit": "4370f02",
+  "source": "run",
+  "script": "experiments/flux_dp_jump_oracle.py",
+  "config": {
+    "model_id": "black-forest-labs/FLUX.1-dev",
+    "resolution": "1024x1024",
+    "dtype": "bf16",
+    "steps": 100,
+    "num_samples": 4,
+    "fixture_version": "v1",
+    "hardware": "NVIDIA H100 NVL (remote SSH 132.66.150.69)",
+    "torch": "2.6.0+cu124",
+    "replay_saved": [
+      10,
+      25,
+      50,
+      67,
+      75,
+      90
+    ],
+    "max_spans": [
+      4,
+      8,
+      12,
+      16
+    ],
+    "seacache_thresholds": [
+      0.2,
+      0.3,
+      0.4,
+      0.6
+    ],
+    "stage2_cached_residual": true,
+    "teacache": "unavailable"
+  },
+  "metrics": {
+    "one_step_sign_check_passed": true,
+    "one_step_worst_rel": 0.00204,
+    "dp_replay_psnr_saved75": 39.33,
+    "dp_replay_psnr_saved90": 35.35,
+    "dp_cached_psnr_saved67": 16.53,
+    "dp_cached_psnr_saved89": 12.53,
+    "seacache_psnr_saved76": 23.57,
+    "dp_cached_psnr_saved75": 15.35,
+    "teacher_forced_vs_causal_gap_db_saved67": 23.4,
+    "predictor_inst_vs_span_spearman": -0.496,
+    "predictor_acc_vs_span_spearman": -0.137,
+    "predictor_inst_vs_sjump_pearson": 0.252,
+    "survives_live_replay": false
+  },
+  "artifacts": [
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/report.html",
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/reports/summary.json",
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/frontier.csv",
+    "runs/h100/20260701_160515__flux_dp_jump_oracle/metrics/predictor_correlations.csv"
+  ]
+}
