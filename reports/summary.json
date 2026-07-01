@@ -1,0 +1,72 @@
+{
+  "dp_budget_mean_clip_img": {
+    "10": 0.9969675,
+    "20": 0.9979982,
+    "40": 0.9976910999999999
+  },
+  "dp_budget_mean_clip_text": {
+    "10": 0.33423970000000003,
+    "20": 0.33404549999999994,
+    "40": 0.3337705
+  },
+  "dp_budget_mean_dino_img": {
+    "10": 0.9963542000000001,
+    "20": 0.9969732,
+    "40": 0.9970068999999999
+  },
+  "dp_budget_mean_lpips": {
+    "10": 0.0043471000000000004,
+    "20": 0.0015653,
+    "40": 0.0014154999999999999
+  },
+  "dp_budget_mean_rel_l2": {
+    "10": 0.06308552771806716,
+    "20": 0.041081341542303564,
+    "40": 0.03779028281569481
+  },
+  "dp_budget_mean_ssim": {
+    "10": 0.9807216000000001,
+    "20": 0.9891216999999999,
+    "40": 0.9899011
+  },
+  "dp_cost_model_note": "Exact h tensors are saved. Cache-aware DP uses compact h summary RMSE as a tractable offline proxy, not exact online SeaCache scheduling.",
+  "h_capture_ambiguity": "Official first/final steps store unfiltered norm1 modulated input; middle steps compare SEA-filtered tensors.",
+  "replication_rows": [
+    {
+      "cmd": "flux_seacache_dp_shortcuts.py replicate --variant vanilla --prompt 'a high-resolution photo of a panda drinking coffee in a cozy cafe' --seed 1234 --steps 50 --load-mode bf16_full",
+      "evals": 50,
+      "gpu": "NVIDIA RTX A6000",
+      "prompt": "a high-resolution photo of a panda drinking coffee in a cozy cafe",
+      "reuse": 0,
+      "runtime": "44.89s",
+      "seed": 1234,
+      "variant": "vanilla",
+      "vram": "41.9 GB"
+    },
+    {
+      "cmd": "flux_seacache_dp_shortcuts.py replicate --variant delta_0p3 --prompt 'a high-resolution photo of a panda drinking coffee in a cozy cafe' --seed 1234 --steps 50 --load-mode bf16_full",
+      "evals": 21,
+      "gpu": "NVIDIA RTX A6000",
+      "prompt": "a high-resolution photo of a panda drinking coffee in a cozy cafe",
+      "reuse": 29,
+      "runtime": "19.78s",
+      "seed": 1234,
+      "variant": "delta_0p3",
+      "vram": "44.7 GB"
+    },
+    {
+      "cmd": "flux_seacache_dp_shortcuts.py replicate --variant delta_0p6 --prompt 'a high-resolution photo of a panda drinking coffee in a cozy cafe' --seed 1234 --steps 50 --load-mode bf16_full",
+      "evals": 13,
+      "gpu": "NVIDIA RTX A6000",
+      "prompt": "a high-resolution photo of a panda drinking coffee in a cozy cafe",
+      "reuse": 37,
+      "runtime": "12.78s",
+      "seed": 1234,
+      "variant": "delta_0p6",
+      "vram": "44.7 GB"
+    }
+  ],
+  "report_note": "Expanded slide report with per-experiment figures, shortcut statistics, and h/caching correlation plots.",
+  "stage": "Stage 0",
+  "verdict": "PROCEED_WEAK"
+}

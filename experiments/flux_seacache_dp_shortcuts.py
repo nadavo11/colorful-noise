@@ -256,6 +256,18 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
     tr.reuse_run_len = 0
     tr.reuse_run_start = None
 
+    def close_reuse_run(end_step: int) -> None:
+        if tr.reuse_run_len <= 0 or tr.reuse_run_start is None:
+            return
+        state["reuse_runs"].append({
+            "reuse_run_id": int(tr.reuse_run_id),
+            "start_step": int(tr.reuse_run_start),
+            "end_step": int(end_step),
+            "reuse_run_length": int(tr.reuse_run_len),
+        })
+        tr.reuse_run_len = 0
+        tr.reuse_run_start = None
+
     def wrapped_forward(
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor = None,
@@ -287,14 +299,19 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
         img = img_ids[0] if img_ids is not None and img_ids.ndim == 3 else img_ids
         image_rotary_emb = tr.pos_embed(torch.cat((txt, img), dim=0)) if txt is not None and img is not None else None
 
+        step_index = int(tr.cnt)
         should_calc = True
         decision = "fresh_eval"
         raw_rel_l1 = 0.0
         acc_before = float(tr.accumulated_rel_l1_distance)
         acc_after = acc_before
+        sigma_value = float(tr.scheduler.sigmas[step_index]) if hasattr(tr.scheduler, "sigmas") else None
+        timestep_value = float(timestep.flatten()[0].detach().cpu()) if timestep is not None else None
         modulated, *_ = tr.transformer_blocks[0].norm1(hs, emb=temb)
-        if tr.cnt == 0 or tr.cnt == tr.num_steps - 1 or tr.previous_modulated_input is None:
+        if step_index == 0 or step_index == tr.num_steps - 1 or tr.previous_modulated_input is None:
+            close_reuse_run(step_index - 1)
             tr.accumulated_rel_l1_distance = 0.0
+            acc_after = 0.0
         else:
             grid = modulated.reshape(modulated.shape[0], int(img[:, 1].max().item() + 1), int(img[:, 2].max().item() + 1), modulated.shape[-1])
             a, b = ab_from_scheduler(tr.scheduler, tr.cnt)
@@ -302,39 +319,37 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
             raw_rel_l1 = rel_l1(modulated, tr.previous_modulated_input)
             tr.accumulated_rel_l1_distance += raw_rel_l1
             acc_after = float(tr.accumulated_rel_l1_distance)
-            state["h_distance"].append({"step": int(tr.cnt), "raw_rel_l1": float(raw_rel_l1), "accumulated_before": acc_before, "accumulated_after": acc_after})
+            state["h_distance"].append({"step": step_index, "raw_rel_l1": float(raw_rel_l1), "accumulated_before": acc_before, "accumulated_after": acc_after})
             if tr.accumulated_rel_l1_distance < tr.seacache_thresh:
                 should_calc = False
                 decision = "cache_reuse"
                 if tr.reuse_run_len == 0:
                     tr.reuse_run_id += 1
-                    tr.reuse_run_start = int(tr.cnt)
+                    tr.reuse_run_start = step_index
                 tr.reuse_run_len += 1
             else:
                 tr.accumulated_rel_l1_distance = 0.0
+                acc_after = 0.0
                 decision = "fresh_eval"
-                if tr.reuse_run_len > 0:
-                    state["reuse_runs"].append({"reuse_run_id": int(tr.reuse_run_id), "start_step": int(tr.reuse_run_start), "end_step": int(tr.cnt - 1), "reuse_run_length": int(tr.reuse_run_len)})
-                    tr.reuse_run_len = 0
-                    tr.reuse_run_start = None
+                close_reuse_run(step_index - 1)
         tr.previous_modulated_input = modulated.detach()
         tr.cnt += 1
         if tr.cnt == tr.num_steps:
             tr.cnt = 0
 
         state["cache_decisions"].append(bool(should_calc))
-        state["step_traces"].append({
-            "step": int(tr.cnt - 1 if tr.cnt > 0 else tr.num_steps - 1),
+        trace_row = {
+            "step": step_index,
+            "scheduler_timestep": timestep_value,
+            "sigma": sigma_value,
             "raw_rel_l1": float(raw_rel_l1),
             "accumulated_before": float(acc_before),
             "accumulated_after": float(acc_after),
             "threshold": float(tr.seacache_thresh),
             "decision": decision,
-            "fresh_eval_count_so_far": int(state["fresh_evals"] + (1 if decision == "fresh_eval" else 0)),
-            "cache_reuse_count_so_far": int(state["cached_evals"] + (1 if decision == "cache_reuse" else 0)),
-            "reuse_run_id": int(tr.reuse_run_id),
+            "reuse_run_id": int(tr.reuse_run_id if decision == "cache_reuse" else -1),
             "position_inside_reuse_run": int(tr.reuse_run_len if decision == "cache_reuse" else 0),
-        })
+        }
         if not should_calc and tr.previous_residual is not None:
             state["cached_evals"] += 1
             hs = hs + tr.previous_residual
@@ -352,14 +367,13 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
                     interval_control = int(np.ceil(len(tr.single_transformer_blocks) / len(controlnet_single_block_samples)))
                     hs = hs + controlnet_single_block_samples[index_block // interval_control]
             tr.previous_residual = (hs - ori_hs).detach()
-            if tr.reuse_run_len > 0:
-                state["reuse_runs"].append({"reuse_run_id": int(tr.reuse_run_id), "start_step": int(tr.reuse_run_start), "end_step": int(tr.cnt - 1), "reuse_run_length": int(tr.reuse_run_len)})
-                tr.reuse_run_len = 0
-                tr.reuse_run_start = None
         hs = tr.norm_out(hs, temb)
         output = tr.proj_out(hs)
         if USE_PEFT_BACKEND:
             unscale_lora_layers(tr, lora_scale)
+        trace_row["fresh_eval_count_so_far"] = int(state["fresh_evals"])
+        trace_row["cache_reuse_count_so_far"] = int(state["cached_evals"])
+        state["step_traces"].append(trace_row)
         return (output,) if not return_dict else Transformer2DModelOutput(sample=output)
 
     tr.forward = wrapped_forward
@@ -1600,6 +1614,20 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
     )
 
 
+def finalize_reuse_trace_rows(step_traces: list[dict[str, Any]], reuse_runs: list[dict[str, Any]]) -> None:
+    run_lengths = {int(row["reuse_run_id"]): int(row["reuse_run_length"]) for row in reuse_runs}
+    for row in step_traces:
+        run_id = int(row.get("reuse_run_id", -1))
+        if run_id < 0 or row.get("decision") != "cache_reuse":
+            row["final_total_reuse_run_length"] = 0
+            row["remaining_reuse_run_length"] = 0
+            continue
+        total = run_lengths.get(run_id, 0)
+        pos = int(row.get("position_inside_reuse_run", 0))
+        row["final_total_reuse_run_length"] = total
+        row["remaining_reuse_run_length"] = max(total - pos, 0)
+
+
 def audit_seacache_predictor(args: argparse.Namespace) -> None:
     seacache_file = Path(args.seacache_dir) / "FLUX" / "seacache_generate.py"
     util_file = Path(args.seacache_dir) / "FLUX" / "util_seacache.py"
@@ -1632,13 +1660,16 @@ def audit_seacache_predictor(args: argparse.Namespace) -> None:
 
 
 def run_stage1_matched(args: argparse.Namespace) -> None:
-    from PIL import Image
-
     sample_meta = sorted(Path(args.trajectory_root).glob("sample_*/metadata.json"))
     if not sample_meta:
         raise RuntimeError(f"No sample metadata found in {args.trajectory_root}")
     samples = [read_json(p) for p in sample_meta]
-    thresholds = [None, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+    if args.sample_indices:
+        wanted = {int(x.strip()) for x in args.sample_indices.split(",") if x.strip()}
+        samples = [s for s in samples if int(s["sample_index"]) in wanted]
+    if args.max_samples is not None:
+        samples = samples[: args.max_samples]
+    thresholds = [None] + [float(x.strip()) for x in args.thresholds.split(",") if x.strip()]
     out_root = Path(args.output_root)
     ensure_dir(out_root)
     all_step_rows: list[dict[str, Any]] = []
@@ -1691,6 +1722,7 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
                 counter.pop("restore", None)
             step_traces = counter.get("step_traces", [])
             reuse_runs = counter.get("reuse_runs", [])
+            finalize_reuse_trace_rows(step_traces, reuse_runs)
             trace_csv = run_dir / "step_traces.csv"
             if step_traces:
                 fields = sorted({k for row in step_traces for k in row.keys()})
@@ -1707,12 +1739,14 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
                 meta_path,
                 {
                     "sample_id": sid,
+                    "category": sample.get("category", ""),
                     "prompt": prompt,
                     "seed": seed,
                     "threshold": threshold,
                     "runtime_sec": runtime,
                     "fresh_eval_count": int(counter.get("fresh_evals", 0)),
                     "cache_reuse_count": int(counter.get("cached_evals", 0)),
+                    "num_inference_steps": args.seacache_steps,
                     "exact_command": f"stage1 --sample {sid} --threshold {threshold}",
                     "raw_predictor": "SeaCache raw relative-L1 after SEA filtering, before accumulation",
                 },
@@ -1724,10 +1758,10 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
             if threshold is None:
                 continue
             for row in step_traces:
-                row.update({"sample_id": sid, "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
+                row.update({"sample_id": sid, "category": sample.get("category", ""), "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
             all_step_rows.extend(step_traces)
             for row in reuse_runs:
-                row.update({"sample_id": sid, "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
+                row.update({"sample_id": sid, "category": sample.get("category", ""), "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
             all_run_rows.extend(reuse_runs)
 
     step_csv = Path(args.step_traces_csv)
@@ -1789,6 +1823,9 @@ def add_common(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--audit-json", default=str(REPO_ROOT / "reports" / "seacache_predictor_audit.json"))
     ap.add_argument("--step-traces-csv", default=str(REPO_ROOT / "metrics" / "seacache_step_traces.csv"))
     ap.add_argument("--reuse-runs-csv", default=str(REPO_ROOT / "metrics" / "seacache_reuse_runs.csv"))
+    ap.add_argument("--sample-indices", default="", help="Comma-separated sample indices for a partial stage1 run.")
+    ap.add_argument("--max-samples", type=int, default=None)
+    ap.add_argument("--thresholds", default="0.1,0.2,0.3,0.4,0.5,0.6,0.8")
 
 
 def parse_args() -> argparse.Namespace:
