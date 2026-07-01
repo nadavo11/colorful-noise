@@ -244,7 +244,7 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
 
     tr = pipe.transformer
     orig_forward = tr.forward
-    state = {"fresh_evals": 0, "cached_evals": 0, "h_distance": [], "cache_decisions": []}
+    state = {"fresh_evals": 0, "cached_evals": 0, "h_distance": [], "cache_decisions": [], "step_traces": [], "reuse_runs": []}
     tr.scheduler = pipe.scheduler
     tr.seacache_thresh = float(threshold)
     tr.cnt = 0
@@ -252,6 +252,9 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
     tr.accumulated_rel_l1_distance = 0.0
     tr.previous_modulated_input = None
     tr.previous_residual = None
+    tr.reuse_run_id = -1
+    tr.reuse_run_len = 0
+    tr.reuse_run_start = None
 
     def wrapped_forward(
         hidden_states: torch.Tensor,
@@ -285,6 +288,10 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
         image_rotary_emb = tr.pos_embed(torch.cat((txt, img), dim=0)) if txt is not None and img is not None else None
 
         should_calc = True
+        decision = "fresh_eval"
+        raw_rel_l1 = 0.0
+        acc_before = float(tr.accumulated_rel_l1_distance)
+        acc_after = acc_before
         modulated, *_ = tr.transformer_blocks[0].norm1(hs, emb=temb)
         if tr.cnt == 0 or tr.cnt == tr.num_steps - 1 or tr.previous_modulated_input is None:
             tr.accumulated_rel_l1_distance = 0.0
@@ -292,19 +299,42 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
             grid = modulated.reshape(modulated.shape[0], int(img[:, 1].max().item() + 1), int(img[:, 2].max().item() + 1), modulated.shape[-1])
             a, b = ab_from_scheduler(tr.scheduler, tr.cnt)
             modulated = apply_sea_from_ab(grid, a, b, dims=(-2, -3), norm_mode="mean").reshape(modulated.shape[0], -1, modulated.shape[-1])
-            dist = rel_l1(modulated, tr.previous_modulated_input)
-            tr.accumulated_rel_l1_distance += dist
-            state["h_distance"].append({"step": int(tr.cnt), "rel_l1": dist, "accumulated": float(tr.accumulated_rel_l1_distance)})
+            raw_rel_l1 = rel_l1(modulated, tr.previous_modulated_input)
+            tr.accumulated_rel_l1_distance += raw_rel_l1
+            acc_after = float(tr.accumulated_rel_l1_distance)
+            state["h_distance"].append({"step": int(tr.cnt), "raw_rel_l1": float(raw_rel_l1), "accumulated_before": acc_before, "accumulated_after": acc_after})
             if tr.accumulated_rel_l1_distance < tr.seacache_thresh:
                 should_calc = False
+                decision = "cache_reuse"
+                if tr.reuse_run_len == 0:
+                    tr.reuse_run_id += 1
+                    tr.reuse_run_start = int(tr.cnt)
+                tr.reuse_run_len += 1
             else:
                 tr.accumulated_rel_l1_distance = 0.0
+                decision = "fresh_eval"
+                if tr.reuse_run_len > 0:
+                    state["reuse_runs"].append({"reuse_run_id": int(tr.reuse_run_id), "start_step": int(tr.reuse_run_start), "end_step": int(tr.cnt - 1), "reuse_run_length": int(tr.reuse_run_len)})
+                    tr.reuse_run_len = 0
+                    tr.reuse_run_start = None
         tr.previous_modulated_input = modulated.detach()
         tr.cnt += 1
         if tr.cnt == tr.num_steps:
             tr.cnt = 0
 
         state["cache_decisions"].append(bool(should_calc))
+        state["step_traces"].append({
+            "step": int(tr.cnt - 1 if tr.cnt > 0 else tr.num_steps - 1),
+            "raw_rel_l1": float(raw_rel_l1),
+            "accumulated_before": float(acc_before),
+            "accumulated_after": float(acc_after),
+            "threshold": float(tr.seacache_thresh),
+            "decision": decision,
+            "fresh_eval_count_so_far": int(state["fresh_evals"] + (1 if decision == "fresh_eval" else 0)),
+            "cache_reuse_count_so_far": int(state["cached_evals"] + (1 if decision == "cache_reuse" else 0)),
+            "reuse_run_id": int(tr.reuse_run_id),
+            "position_inside_reuse_run": int(tr.reuse_run_len if decision == "cache_reuse" else 0),
+        })
         if not should_calc and tr.previous_residual is not None:
             state["cached_evals"] += 1
             hs = hs + tr.previous_residual
@@ -322,6 +352,10 @@ def install_seacache_forward(pipe: Any, threshold: float, num_steps: int) -> dic
                     interval_control = int(np.ceil(len(tr.single_transformer_blocks) / len(controlnet_single_block_samples)))
                     hs = hs + controlnet_single_block_samples[index_block // interval_control]
             tr.previous_residual = (hs - ori_hs).detach()
+            if tr.reuse_run_len > 0:
+                state["reuse_runs"].append({"reuse_run_id": int(tr.reuse_run_id), "start_step": int(tr.reuse_run_start), "end_step": int(tr.cnt - 1), "reuse_run_length": int(tr.reuse_run_len)})
+                tr.reuse_run_len = 0
+                tr.reuse_run_start = None
         hs = tr.norm_out(hs, temb)
         output = tr.proj_out(hs)
         if USE_PEFT_BACKEND:
@@ -1566,6 +1600,154 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
     )
 
 
+def audit_seacache_predictor(args: argparse.Namespace) -> None:
+    seacache_file = Path(args.seacache_dir) / "FLUX" / "seacache_generate.py"
+    util_file = Path(args.seacache_dir) / "FLUX" / "util_seacache.py"
+    text = seacache_file.read_text(encoding="utf-8")
+    util = util_file.read_text(encoding="utf-8")
+    audit = {
+        "source_files": [str(seacache_file), str(util_file)],
+        "predictor_tensor_source": "transformer.transformer_blocks[0].norm1(x_embedder(hidden_states), emb=temb)",
+        "sea_filter": "apply_sea_from_ab(grid, a, b, dims=(-2, -3), norm_mode='mean') after reshaping the first-block modulated input into the image grid",
+        "raw_relative_l1_formula": "rel_l1(a, b) = mean(abs(a-b)) / (mean(abs(b)) + eps)",
+        "accumulated_variable": "tr.accumulated_rel_l1_distance",
+        "threshold_reset_logic": "If accumulated_rel_l1_distance < seacache_thresh => reuse and keep accumulator; else fresh_eval and reset accumulator to 0.0",
+        "decision_rule": "cache_reuse when accumulated < threshold and previous_residual exists; fresh_eval otherwise, with first step, last step, or missing previous_modulated_input forced fresh",
+        "raw_vs_proxy": "Current report h-summary RMSE proxy is not the online predictor. The true online predictor is raw relative-L1 on SEA-filtered first-block modulated inputs.",
+        "evidence_snippet": {
+            "rel_l1_def": "def rel_l1(a, b, eps=1e-16): num = (a - b).abs().mean(); den = b.abs().mean() + eps; return float((num / den).detach().cpu())",
+            "gate_snippet": "tr.accumulated_rel_l1_distance += rel_l1(...); if tr.accumulated_rel_l1_distance < tr.seacache_thresh: should_calc = False else: tr.accumulated_rel_l1_distance = 0.0",
+        },
+        "audit_note": "The FLUX SeaCache implementation gates on accumulated, rescaled relative L1. The raw per-step predictor is the non-accumulated rel_l1 value before it is added into the accumulator.",
+    }
+    write_json(Path(args.audit_json), audit)
+    Path(args.audit_md).write_text(
+        "# SeaCache Predictor Audit\n\n"
+        "The exact online SeaCache predictor in the pinned FLUX code is the **raw relative-L1 distance** between the current step's SEA-filtered first-block modulation and the previous step's SEA-filtered first-block modulation. "
+        "That raw value is accumulated across steps in `tr.accumulated_rel_l1_distance`, and the cache decision is based on whether the accumulator stays below `tr.seacache_thresh`.\n\n"
+        "This is different from the current report proxy, which used compact h-summary RMSE for tractability. "
+        "The proxy is useful for offline ranking, but it is not the online gate itself.\n",
+        encoding="utf-8",
+    )
+
+
+def run_stage1_matched(args: argparse.Namespace) -> None:
+    from PIL import Image
+
+    sample_meta = sorted(Path(args.trajectory_root).glob("sample_*/metadata.json"))
+    if not sample_meta:
+        raise RuntimeError(f"No sample metadata found in {args.trajectory_root}")
+    samples = [read_json(p) for p in sample_meta]
+    thresholds = [None, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+    out_root = Path(args.output_root)
+    ensure_dir(out_root)
+    all_step_rows: list[dict[str, Any]] = []
+    all_run_rows: list[dict[str, Any]] = []
+
+    for sample in samples:
+        sid = f"sample_{int(sample['sample_index']):02d}"
+        sample_dir = out_root / sid
+        ensure_dir(sample_dir)
+        prompt = sample["prompt"]
+        seed = int(sample["seed"])
+        for threshold in thresholds:
+            label = "vanilla" if threshold is None else f"delta_{str(threshold).replace('.', 'p')}"
+            run_dir = sample_dir / label
+            meta_path = run_dir / "metadata.json"
+            if meta_path.exists() and (run_dir / "final.png").exists() and not args.force:
+                continue
+            ensure_dir(run_dir)
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+            pipe = load_flux_pipeline(args.model_id, args.dtype, args.device, args.offload, args.bnb4)
+            counter = {"fresh_evals": 0, "cached_evals": 0}
+            if threshold is not None:
+                counter = install_seacache_forward(pipe, threshold, 50)
+            else:
+                orig = pipe.transformer.forward
+
+                def counted(*a, **kw):
+                    counter["fresh_evals"] += 1
+                    return orig(*a, **kw)
+
+                pipe.transformer.forward = counted
+                counter["restore"] = lambda: setattr(pipe.transformer, "forward", orig)
+            generator = torch.Generator(device=args.device).manual_seed(seed)
+            start = time.perf_counter()
+            out = pipe(
+                prompt=prompt,
+                num_inference_steps=50,
+                height=args.height,
+                width=args.width,
+                guidance_scale=args.guidance,
+                max_sequence_length=args.max_sequence_length,
+                num_images_per_prompt=1,
+                generator=generator,
+            )
+            runtime = time.perf_counter() - start
+            out.images[0].save(run_dir / "final.png")
+            if "restore" in counter:
+                counter["restore"]()
+                counter.pop("restore", None)
+            step_traces = counter.get("step_traces", [])
+            reuse_runs = counter.get("reuse_runs", [])
+            trace_csv = run_dir / "step_traces.csv"
+            if step_traces:
+                fields = sorted({k for row in step_traces for k in row.keys()})
+                with open(trace_csv, "w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=fields)
+                    w.writeheader()
+                    w.writerows(step_traces)
+            if reuse_runs:
+                with open(run_dir / "reuse_runs.csv", "w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=sorted({k for row in reuse_runs for k in row.keys()}))
+                    w.writeheader()
+                    w.writerows(reuse_runs)
+            write_json(
+                meta_path,
+                {
+                    "sample_id": sid,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "threshold": threshold,
+                    "runtime_sec": runtime,
+                    "fresh_eval_count": int(counter.get("fresh_evals", 0)),
+                    "cache_reuse_count": int(counter.get("cached_evals", 0)),
+                    "exact_command": f"stage1 --sample {sid} --threshold {threshold}",
+                    "raw_predictor": "SeaCache raw relative-L1 after SEA filtering, before accumulation",
+                },
+            )
+            if hasattr(pipe, "to"):
+                del out, generator, counter, pipe
+                gc.collect()
+                torch.cuda.empty_cache()
+            if threshold is None:
+                continue
+            for row in step_traces:
+                row.update({"sample_id": sid, "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
+            all_step_rows.extend(step_traces)
+            for row in reuse_runs:
+                row.update({"sample_id": sid, "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
+            all_run_rows.extend(reuse_runs)
+
+    step_csv = Path(args.step_traces_csv)
+    ensure_dir(step_csv.parent)
+    if all_step_rows:
+        fields = sorted({k for row in all_step_rows for k in row.keys()})
+        with open(step_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(all_step_rows)
+    run_csv = Path(args.reuse_runs_csv)
+    ensure_dir(run_csv.parent)
+    if all_run_rows:
+        fields = sorted({k for row in all_run_rows for k in row.keys()})
+        with open(run_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(all_run_rows)
+
+
 def run_all(args: argparse.Namespace) -> None:
     run_replication(args)
     cap = argparse.Namespace(**vars(args))
@@ -1603,6 +1785,10 @@ def add_common(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--html", default=str(REPO_ROOT / "reports" / "flux_seacache_dp_shortcuts.html"))
     ap.add_argument("--summary-md", default=str(REPO_ROOT / "reports" / "summary.md"))
     ap.add_argument("--summary-json", default=str(REPO_ROOT / "reports" / "summary.json"))
+    ap.add_argument("--audit-md", default=str(REPO_ROOT / "reports" / "seacache_predictor_audit.md"))
+    ap.add_argument("--audit-json", default=str(REPO_ROOT / "reports" / "seacache_predictor_audit.json"))
+    ap.add_argument("--step-traces-csv", default=str(REPO_ROOT / "metrics" / "seacache_step_traces.csv"))
+    ap.add_argument("--reuse-runs-csv", default=str(REPO_ROOT / "metrics" / "seacache_reuse_runs.csv"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -1613,6 +1799,8 @@ def parse_args() -> argparse.Namespace:
         ("capture", run_capture),
         ("dp", run_dp),
         ("report", run_report),
+        ("audit", audit_seacache_predictor),
+        ("stage1", run_stage1_matched),
         ("run-all", run_all),
     ]:
         p = sub.add_parser(name)
