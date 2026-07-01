@@ -8,6 +8,7 @@ SHA=${SHA:-$(git rev-parse --short HEAD)}
 JOB=${JOB:-flux-runtime-hints-${MODE}-${SHA}}
 GPU_MEMORY=${GPU_MEMORY:-48G}
 NODE_TYPE=${NODE_TYPE:-}
+NODE_POOLS=${NODE_POOLS:-}
 RUNAI_DIR=${RUNAI_DIR:-runs/runai/$(date +%Y%m%d_%H%M%S)__flux_runtime_jump_hints_${MODE}__${SHA}}
 mkdir -p "$RUNAI_DIR"
 
@@ -82,7 +83,7 @@ chmod +x "$RUNAI_DIR/resolved_command.sh"
 ENC=$(base64 -w0 "$RUNAI_DIR/resolved_command.sh")
 
 cat >"$RUNAI_DIR/submit_command.sh" <<SCRIPT
-runai submit "$JOB" -p "$PROJECT" --gpu-memory "$GPU_MEMORY" ${NODE_TYPE:+--node-type "$NODE_TYPE"} --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc 'echo $ENC | base64 -d | bash'
+runai submit "$JOB" -p "$PROJECT" --gpu-memory "$GPU_MEMORY" ${NODE_TYPE:+--node-type "$NODE_TYPE"} ${NODE_POOLS:+--node-pools "$NODE_POOLS"} --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc 'echo $ENC | base64 -d | bash'
 SCRIPT
 
 cat >"$RUNAI_DIR/run_manifest.yaml" <<YAML
@@ -92,6 +93,7 @@ image: "$IMG"
 project: "$PROJECT"
 gpu_memory: "$GPU_MEMORY"
 node_type: "$NODE_TYPE"
+node_pools: "$NODE_POOLS"
 git_sha: "$SHA"
 git_ref: "$GIT_REF"
 runai_dir: "$RUNAI_DIR"
@@ -109,5 +111,5 @@ expected_outputs:
 YAML
 
 echo "Submitting $JOB using $RUNAI_DIR"
-runai submit "$JOB" -p "$PROJECT" --gpu-memory "$GPU_MEMORY" ${NODE_TYPE:+--node-type "$NODE_TYPE"} --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc "echo $ENC | base64 -d | bash"
+runai submit "$JOB" -p "$PROJECT" --gpu-memory "$GPU_MEMORY" ${NODE_TYPE:+--node-type "$NODE_TYPE"} ${NODE_POOLS:+--node-pools "$NODE_POOLS"} --large-shm -i "$IMG" --existing-pvc claimname=storage,path=/storage --command -- bash -lc "echo $ENC | base64 -d | bash"
 echo "Logs: runai logs $JOB"
