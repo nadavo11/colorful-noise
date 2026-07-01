@@ -10,12 +10,12 @@ GPU_MEMORY=${GPU_MEMORY:-80G}
 RUNAI_DIR=${RUNAI_DIR:-runs/runai/$(date +%Y%m%d_%H%M%S)__flux_runtime_jump_hints_${MODE}__${SHA}}
 mkdir -p "$RUNAI_DIR"
 
-SCRIPT_B64=$(base64 -w0 experiments/flux_runtime_jump_hints.py)
 if [[ "$MODE" == "smoke" ]]; then
   E54_ARGS="--smoke --num-samples 2"
 else
   E54_ARGS="--num-samples ${NUM_SAMPLES:-4}"
 fi
+GIT_REF=${GIT_REF:-origin/e54-runtime-jump-hints}
 
 cat >"$RUNAI_DIR/resolved_command.sh" <<SCRIPT
 set -euo pipefail
@@ -48,17 +48,8 @@ else
   git clone -q https://github.com/nadavo11/colorful-noise.git
 fi
 cd colorful-noise
-git checkout -q "${SHA}" || git checkout -q -B flux-seacache-dp-shortcuts origin/flux-seacache-dp-shortcuts || true
+git checkout -q -B e54-runtime-jump-hints "${GIT_REF}" || git checkout -q "${SHA}" || git checkout -q -B flux-seacache-dp-shortcuts origin/flux-seacache-dp-shortcuts || true
 git rev-parse --short HEAD || true
-
-echo "== inject local E54 script from submit host =="
-mkdir -p experiments
-python - <<'PY'
-import base64
-from pathlib import Path
-payload = "${SCRIPT_B64}"
-Path("experiments/flux_runtime_jump_hints.py").write_bytes(base64.b64decode(payload))
-PY
 python -m py_compile experiments/flux_runtime_jump_hints.py
 
 echo "== install =="
@@ -100,6 +91,7 @@ image: "$IMG"
 project: "$PROJECT"
 gpu_memory: "$GPU_MEMORY"
 git_sha: "$SHA"
+git_ref: "$GIT_REF"
 runai_dir: "$RUNAI_DIR"
 script: experiments/flux_runtime_jump_hints.py
 e54_args: "$E54_ARGS"
