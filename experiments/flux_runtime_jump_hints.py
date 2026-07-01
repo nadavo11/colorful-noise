@@ -471,6 +471,7 @@ def run(args: argparse.Namespace) -> None:
             height = int(meta["height"])
             width = int(meta["width"])
             sigmas = [float(x) for x in meta["sigmas"]]
+            reference_wall_sec = float(meta.get("runtime_sec", 0.0) or 0.0)
             vanilla_img = Image.open(sd / "final.png").convert("RGB")
             vanilla_lat = fsd.load_step_tensor(sd / "latents", N)
             prep = prep_inputs(pipe, prompt, seed, N, height, width, args.guidance, args.max_sequence_length, args.device)
@@ -498,7 +499,7 @@ def run(args: argparse.Namespace) -> None:
             d_img.save(d_png)
             dm = bank.image_metrics(d_img, vanilla_img, prompt)
             dll = fsd.latent_metrics(d_lat, vanilla_lat)["latent_rel_l2"]
-            row = metric_row(sd.name, prompt, "default_flux", "default_flux", "", True, default_steps, d_calls, 0, d_wall, dll, dm, d_png)
+            row = metric_row(sd.name, prompt, "default_flux", "default_flux", "", True, default_steps, d_calls, 0, d_wall, dll, dm, d_png, reference_wall_sec=reference_wall_sec)
             per_sample_rows.append(row)
             call_rows.append(call_audit(sd.name, "default_flux", default_steps, d_calls, 0, True, "pipeline default num_inference_steps"))
             leakage_rows.append(leakage("default_flux", False, False, "standard pipeline"))
@@ -520,7 +521,7 @@ def run(args: argparse.Namespace) -> None:
                 img.save(png)
                 metrics = bank.image_metrics(img, vanilla_img, prompt)
                 ll = fsd.latent_metrics(lat, vanilla_lat)["latent_rel_l2"]
-                per_sample_rows.append(metric_row(sd.name, prompt, "seacache", "seacache", th, True, N, fresh, 0, wall, ll, metrics, png, cached_calls=cached, counted_transformer_calls=counted))
+                per_sample_rows.append(metric_row(sd.name, prompt, "seacache", "seacache", th, True, N, fresh, 0, wall, ll, metrics, png, reference_wall_sec=reference_wall_sec, cached_calls=cached, counted_transformer_calls=counted))
                 call_rows.append(call_audit(sd.name, f"seacache_th{th:g}", N, fresh, 0, counted == N, f"fresh={fresh}; cached={cached}; wrapper calls include cache reuses"))
                 leakage_rows.append(leakage("seacache", False, False, "official accumulated SEA rel-L1 gate"))
                 if si == 0 and (not sea_trace_for_plot or abs(th - args.seacache_thresholds[len(args.seacache_thresholds) // 2]) < 1e-12):
@@ -552,6 +553,7 @@ def run(args: argparse.Namespace) -> None:
                     ll,
                     metrics,
                     png,
+                    reference_wall_sec=reference_wall_sec,
                     update=spec.update,
                     nodes=json.dumps(audit["nodes"]),
                 )
@@ -572,7 +574,7 @@ def run(args: argparse.Namespace) -> None:
                 img.save(png)
                 metrics = bank.image_metrics(img, vanilla_img, prompt)
                 ll = fsd.latent_metrics(lat, vanilla_lat)["latent_rel_l2"]
-                per_sample_rows.append(metric_row(sd.name, prompt, f"offline_saved_velocity_ret{retained}", "offline_saved_velocity_oracle", retained, False, retained, 0, 0, 0.0, ll, metrics, png))
+                per_sample_rows.append(metric_row(sd.name, prompt, f"offline_saved_velocity_ret{retained}", "offline_saved_velocity_oracle", retained, False, retained, 0, 0, 0.0, ll, metrics, png, reference_wall_sec=reference_wall_sec))
                 call_rows.append(call_audit(sd.name, f"offline_saved_velocity_ret{retained}", 0, 0, 0, True, "non-causal oracle; saved vanilla velocity replay"))
                 leakage_rows.append(leakage("offline_saved_velocity_oracle", True, True, "diagnostic only; invalid as deployable sampler"))
 
@@ -591,6 +593,11 @@ def run(args: argparse.Namespace) -> None:
 
 
 def metric_row(sample: str, prompt: str, method: str, base_method: str, threshold: Any, causal: bool, intended_calls: int, actual_calls: int, prefix_calls: int, wall_sec: float, latent_rel_l2: float, metrics: dict[str, float], png: Path, **extra: Any) -> dict[str, Any]:
+    reference_wall_sec = extra.pop("reference_wall_sec", "")
+    try:
+        wall_speedup = float(reference_wall_sec) / float(wall_sec) if float(reference_wall_sec) > 0 and float(wall_sec) > 0 else ""
+    except Exception:
+        wall_speedup = ""
     out = {
         "sample": sample,
         "prompt": prompt,
@@ -605,6 +612,8 @@ def metric_row(sample: str, prompt: str, method: str, base_method: str, threshol
         "counted_transformer_calls": extra.pop("counted_transformer_calls", actual_calls),
         "wall_sec": wall_sec,
         "speedup_vs_100": N / max(1, actual_calls) if actual_calls > 0 else "",
+        "reference_wall_sec": reference_wall_sec,
+        "wall_speedup_vs_100": wall_speedup,
         "latent_rel_l2": latent_rel_l2,
         "psnr": metrics["psnr"],
         "ssim": metrics["ssim"],
@@ -660,6 +669,8 @@ def aggregate_budget_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "cheap_prefix_calls_mean": mean("cheap_prefix_calls"),
             "wall_sec_mean": mean("wall_sec"),
             "speedup_vs_100": N / max(1, calls),
+            "reference_wall_sec_mean": mean("reference_wall_sec"),
+            "wall_speedup_vs_100_mean": mean("wall_speedup_vs_100"),
             "latent_rel_l2_mean": mean("latent_rel_l2"),
             "psnr_mean": mean("psnr"),
             "ssim_mean": mean("ssim"),
@@ -706,6 +717,8 @@ def write_outputs(run_dir: Path, per_sample: list[dict[str, Any]], per_budget: l
         "counted_transformer_calls",
         "wall_sec",
         "speedup_vs_100",
+        "reference_wall_sec",
+        "wall_speedup_vs_100",
         "latent_rel_l2",
         "psnr",
         "ssim",
@@ -727,6 +740,8 @@ def write_outputs(run_dir: Path, per_sample: list[dict[str, Any]], per_budget: l
         "cheap_prefix_calls_mean",
         "wall_sec_mean",
         "speedup_vs_100",
+        "reference_wall_sec_mean",
+        "wall_speedup_vs_100_mean",
         "latent_rel_l2_mean",
         "psnr_mean",
         "ssim_mean",
@@ -797,8 +812,8 @@ def make_figures(run_dir: Path, budget_rows: list[dict[str, Any]], sample_rows: 
 
     fig_dir = run_dir / "figures"
 
-    # Quality frontier.
-    fig, ax = plt.subplots(figsize=(9, 5.6))
+    # Quality frontier: the required figure includes both PSNR and LPIPS.
+    fig, (ax_psnr, ax_lpips) = plt.subplots(1, 2, figsize=(13.5, 5.4), sharex=True)
     style = {
         "uniform": ("#d98b2b", "o"),
         "seacache": ("#111111", "D"),
@@ -815,17 +830,23 @@ def make_figures(run_dir: Path, budget_rows: list[dict[str, Any]], sample_rows: 
             continue
         rs = sorted(rs, key=lambda r: float(r["actual_full_calls"]))
         c, m = style.get(base, ("#555", "o"))
-        ax.plot([r["actual_full_calls"] for r in rs], [r["psnr_mean"] for r in rs], marker=m, color=c, lw=1.8, label=base)
-    ax.set_xlabel("actual full transformer / velocity calls")
-    ax.set_ylabel("PSNR to 100-step vanilla (dB)")
-    ax.set_title("E54 frontier: causal runtime hints vs actual calls")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=8)
+        xs = [r["actual_full_calls"] for r in rs]
+        ax_psnr.plot(xs, [r["psnr_mean"] for r in rs], marker=m, color=c, lw=1.8, label=base)
+        ax_lpips.plot(xs, [r["lpips_mean"] for r in rs], marker=m, color=c, lw=1.8, label=base)
+    ax_psnr.set_xlabel("actual full transformer / velocity calls")
+    ax_psnr.set_ylabel("PSNR to 100-step vanilla (dB)")
+    ax_psnr.set_title("PSNR frontier")
+    ax_psnr.grid(alpha=0.25)
+    ax_lpips.set_xlabel("actual full transformer / velocity calls")
+    ax_lpips.set_ylabel("LPIPS to 100-step vanilla (lower better)")
+    ax_lpips.set_title("LPIPS frontier")
+    ax_lpips.grid(alpha=0.25)
+    ax_lpips.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(fig_dir / "frontier_quality_vs_calls.png", dpi=160)
     plt.close(fig)
 
-    # LPIPS companion overlaid on same required figure name not possible; include in filename used by report.
+    # LPIPS companion retained as a direct single-metric view.
     fig, ax = plt.subplots(figsize=(9, 5.6))
     for base in sorted({r["base_method"] for r in budget_rows}):
         rs = sorted([r for r in budget_rows if r["base_method"] == base], key=lambda r: float(r["actual_full_calls"]))
@@ -847,10 +868,16 @@ def make_figures(run_dir: Path, budget_rows: list[dict[str, Any]], sample_rows: 
         if not rs:
             continue
         c, m = style.get(base, ("#555", "o"))
-        ax.scatter([r["speedup_vs_100"] for r in rs], [r["psnr_mean"] for r in rs], label=base, c=c, marker=m, s=48)
-    ax.set_xlabel("theoretical speedup vs 100 full calls")
+        points = [
+            (safe_float(r.get("wall_speedup_vs_100_mean", "")), r["psnr_mean"])
+            for r in rs
+            if safe_float(r.get("wall_speedup_vs_100_mean", "")) > 0
+        ]
+        if points:
+            ax.scatter([x for x, _ in points], [y for _, y in points], label=base, c=c, marker=m, s=48)
+    ax.set_xlabel("measured wall-clock speedup vs captured 100-step vanilla")
     ax.set_ylabel("PSNR to 100-step vanilla (dB)")
-    ax.set_title("Wall-clock proxy frontier: speedup vs quality")
+    ax.set_title("Measured wall-clock frontier: speedup vs quality")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -1020,7 +1047,7 @@ def write_report(run_dir: Path, args: argparse.Namespace, default_steps: int, sa
                 "no",
                 f"{float(r['cheap_prefix_calls_mean']):.1f}",
                 r["actual_full_calls"],
-                f"{float(r['speedup_vs_100']):.2f}x",
+                f"{float(r.get('wall_speedup_vs_100_mean', float('nan'))):.2f}x wall / {float(r['speedup_vs_100']):.2f}x calls",
                 f"{float(r['psnr_mean']):.2f}",
                 f"{float(r['lpips_mean']):.4f}",
             ]
@@ -1085,9 +1112,9 @@ code{{background:#efe2ce;padding:1px 4px;border-radius:4px}}
 <p>FLUX flow sampling is an ODE integration problem over sigma. A jump from anchor <code>k</code> to <code>i</code> uses an Euler-like update <code>z_i = z_k + (sigma_i - sigma_k) v_k</code>. Local truncation error scales like field curvature, approximately <code>0.5 h² ||dv/dsigma||</code>. The curvature controller estimates this from consecutive live velocities. The AB2-vs-Euler controller uses a zero-extra-full-call embedded disagreement. The SEA-defect controller uses prefix/modulation features only; prefix calls are counted separately and are not counted as full transformer calls.</p>
 
 <h2>Figures</h2>
-<figure><img src="figures/frontier_quality_vs_calls.png"><figcaption>Primary comparison: PSNR vs actual full transformer calls.</figcaption></figure>
+<figure><img src="figures/frontier_quality_vs_calls.png"><figcaption>Primary comparison: PSNR and LPIPS vs actual full transformer calls.</figcaption></figure>
 <figure><img src="figures/frontier_lpips_vs_calls.png"><figcaption>LPIPS vs actual full transformer calls.</figcaption></figure>
-<figure><img src="figures/wallclock_vs_quality.png"><figcaption>Speedup proxy vs quality.</figcaption></figure>
+<figure><img src="figures/wallclock_vs_quality.png"><figcaption>Measured wall-clock speedup vs quality; call-count speedup is reported separately in metrics tables.</figcaption></figure>
 <figure><img src="figures/runtime_jump_schedule_raster.png"><figcaption>Accepted runtime anchors by method and threshold.</figcaption></figure>
 <figure><img src="figures/jump_size_histograms.png"><figcaption>Accepted jump-size distributions.</figcaption></figure>
 <figure><img src="figures/local_error_correlation.png"><figcaption>Hint score vs post-hoc local jump error.</figcaption></figure>
