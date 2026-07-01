@@ -90,6 +90,32 @@ captured at the true `z_k`. Under teacher forcing it is near-lossless *and barel
 The moment you must reuse computation causally (cached-residual), the same schedule collapses and is
 beaten by SeaCache. Reported as a finding, not a failure.
 
+## Sanity audit (post-hoc, in `report.html` → "Sanity audit" section)
+A dedicated audit re-checked the two suspicious results and the SeaCache implementation:
+
+- **FLUX default steps read programmatically = 28** (`inspect.signature(pipe.__call__)`). Default-28 vs
+  the 100-step vanilla is only **PSNR 8.7–20.1 dB** across the 4 prompts — the 100-step reference is a
+  materially different (denser-solver) target, so the ~40 dB jump reconstruction is *not* an artifact of
+  the default already being near-100.
+- **DP vs uniform are genuinely different schedules** (mean Jaccard falls to **0.16** at saved 90: DP uses
+  long early jumps + short late spans; uniform is evenly spaced). They coincide only at low saving.
+- **The ~40 dB is real and non-causal.** Jump "replay" makes **0 transformer calls** (verified counter=0);
+  it integrates the *saved vanilla velocity field* along the anchor grid. Reusing exact tangents keeps the
+  compounded state near the true trajectory, so DP and uniform both land ~40 dB and are within ~0.1–1 dB —
+  the DP advantage is negligible precisely because velocities are exact. PSNR is on decoded RGB (uint8,
+  data_range=255) vs the 100-step vanilla image; **30/30 audited images are byte-unique** (no self-compare).
+- **SeaCache uses the official accumulated SEA rel-L1 gate** (`install_seacache_forward`), not a heuristic.
+  A dense threshold sweep (0.05–0.8) matched by *achieved* fresh-eval budget covers saved ~3–86 (it floors
+  ~fresh 14, so saved 90 has no equal-budget SeaCache point). SeaCache outputs are **distinct across
+  thresholds** (monotone PSNR 37.6→25.6 dB; distinct hashes). The earlier "identical SeaCache samples" was a
+  **reporting artifact** — the Results grids reused one mid-threshold file per row — now fixed with
+  budget-matched grids in the audit section.
+
+Audit artifacts: `metrics/{live_replay_trace_dp,live_replay_trace_uniform,seacache_threshold_budget,seacache_trace,image_hash_audit}.csv`,
+figures `default_flux_vs_100step_grid.png`, `dp_vs_uniform_schedule_raster.png`, `dp_vs_uniform_live_replay_trace.png`,
+`seacache_threshold_budget_curve.png`, `seacache_accumulated_score_trace.png`, `seacache_schedule_raster.png`;
+code `experiments/flux_dp_jump_oracle_audit.py`; `reports/audit.json`.
+
 ## Limitations
 - Non-causal / teacher-forced oracle; a diagnostic upper bound, not deployable.
 - Surrogate (sum of per-edge costs) ≠ compounded replay; where they diverge, believe the replay.
