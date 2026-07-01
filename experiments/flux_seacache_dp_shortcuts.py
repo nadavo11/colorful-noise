@@ -915,6 +915,104 @@ def pearson_corr(x: list[float], y: list[float]) -> float:
     return float(np.corrcoef(xs, ys)[0, 1])
 
 
+def spearman_corr(x: list[float], y: list[float]) -> float:
+    if len(x) < 2 or len(x) != len(y):
+        return float("nan")
+    try:
+        from scipy.stats import spearmanr  # type: ignore
+
+        return float(spearmanr(x, y).statistic)
+    except Exception:
+        xs = np.asarray(x, dtype=np.float64)
+        ys = np.asarray(y, dtype=np.float64)
+        rx = np.argsort(np.argsort(xs))
+        ry = np.argsort(np.argsort(ys))
+        return pearson_corr(rx.astype(float).tolist(), ry.astype(float).tolist())
+
+
+def safe_float(v: Any, default: float = float("nan")) -> float:
+    try:
+        if v in {"", None}:
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def auc_from_curve(xs: np.ndarray, ys: np.ndarray) -> float:
+    if xs.size < 2 or ys.size < 2:
+        return float("nan")
+    order = np.argsort(xs)
+    return float(np.trapz(ys[order], xs[order]))
+
+
+def binary_curve_metrics(scores: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
+    if scores.size == 0 or labels.size == 0 or labels.sum() == 0 or labels.sum() == labels.size:
+        return {
+            "roc_auc": float("nan"),
+            "pr_auc": float("nan"),
+            "best_threshold": float("nan"),
+            "best_f1": float("nan"),
+            "best_precision": float("nan"),
+            "best_recall": float("nan"),
+            "best_accuracy": float("nan"),
+            "fpr": np.array([], dtype=np.float64),
+            "tpr": np.array([], dtype=np.float64),
+            "precision_curve": np.array([], dtype=np.float64),
+            "recall_curve": np.array([], dtype=np.float64),
+            "threshold_rows": [],
+        }
+    thresholds = np.unique(scores)
+    thresholds = np.concatenate(([thresholds.min() - 1e-12], thresholds))
+    pos = labels == 1
+    neg = labels == 0
+    roc_points: list[tuple[float, float]] = []
+    pr_points: list[tuple[float, float]] = []
+    threshold_rows: list[dict[str, float]] = []
+    best: dict[str, float] = {"f1": -1.0, "threshold": float("nan"), "precision": float("nan"), "recall": float("nan"), "accuracy": float("nan")}
+    for thr in thresholds:
+        pred = scores >= thr
+        tp = float(np.sum(pred & pos))
+        fp = float(np.sum(pred & neg))
+        tn = float(np.sum((~pred) & neg))
+        fn = float(np.sum((~pred) & pos))
+        tpr = tp / max(tp + fn, 1.0)
+        fpr = fp / max(fp + tn, 1.0)
+        precision = tp / max(tp + fp, 1.0)
+        recall = tpr
+        accuracy = (tp + tn) / max(labels.size, 1)
+        f1 = 2 * precision * recall / max(precision + recall, 1e-12)
+        roc_points.append((fpr, tpr))
+        pr_points.append((recall, precision))
+        threshold_rows.append({
+            "threshold": float(thr),
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+            "accuracy": float(accuracy),
+            "tpr": float(tpr),
+            "fpr": float(fpr),
+        })
+        if f1 > best["f1"]:
+            best = {"f1": float(f1), "threshold": float(thr), "precision": float(precision), "recall": float(recall), "accuracy": float(accuracy)}
+    roc = np.asarray(sorted(roc_points), dtype=np.float64)
+    pr = np.asarray(sorted(pr_points), dtype=np.float64)
+    return {
+        "roc_auc": auc_from_curve(roc[:, 0], roc[:, 1]),
+        "pr_auc": auc_from_curve(pr[:, 0], pr[:, 1]),
+        "best_threshold": best["threshold"],
+        "best_f1": best["f1"],
+        "best_precision": best["precision"],
+        "best_recall": best["recall"],
+        "best_accuracy": best["accuracy"],
+        "fpr": roc[:, 0],
+        "tpr": roc[:, 1],
+        "precision_curve": pr[:, 1],
+        "recall_curve": pr[:, 0],
+        "threshold_rows": threshold_rows,
+    }
+
+
 def load_metric_lookup(metrics_path: Path) -> dict[tuple[str, str, str], dict[str, str]]:
     lookup: dict[tuple[str, str, str], dict[str, str]] = {}
     if not metrics_path.exists():
@@ -1628,6 +1726,426 @@ def finalize_reuse_trace_rows(step_traces: list[dict[str, Any]], reuse_runs: lis
         row["remaining_reuse_run_length"] = max(total - pos, 0)
 
 
+def linear_regression_metrics(features: np.ndarray, target: np.ndarray) -> dict[str, float]:
+    if features.ndim == 1:
+        features = features[:, None]
+    if features.shape[0] < 2 or target.shape[0] < 2:
+        return {"r2": float("nan"), "mae": float("nan")}
+    X = np.concatenate([features, np.ones((features.shape[0], 1), dtype=np.float64)], axis=1)
+    coef, *_ = np.linalg.lstsq(X, target.astype(np.float64), rcond=None)
+    pred = X @ coef
+    ss_res = float(np.sum((target - pred) ** 2))
+    ss_tot = float(np.sum((target - target.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    mae = float(np.mean(np.abs(target - pred)))
+    return {"r2": float(r2), "mae": mae}
+
+
+def plot_binary_predictor(step_rows: list[dict[str, Any]], out_dir: Path, prefix: str) -> dict[str, str]:
+    import matplotlib.pyplot as plt
+
+    ensure_dir(out_dir)
+    scores = np.asarray([safe_float(r["raw_rel_l1"]) for r in step_rows], dtype=np.float64)
+    labels = np.asarray([1 if r["decision"] == "fresh_eval" else 0 for r in step_rows], dtype=np.int64)
+    steps = np.asarray([int(r["step"]) for r in step_rows], dtype=np.int64)
+    curves = binary_curve_metrics(scores, labels)
+    assets: dict[str, str] = {}
+
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    colors = np.where(labels == 1, "#a33f2b", "#0f766e")
+    ax.scatter(steps, scores, c=colors, s=24, alpha=0.75, linewidths=0)
+    ax.set_xlabel("timestep index")
+    ax.set_ylabel("raw SeaCache relative-L1")
+    ax.set_title("Raw relative-L1 over time, colored by online SeaCache decision")
+    ax.grid(alpha=0.18)
+    p = out_dir / f"rel_l1_fresh_reuse_timeseries_{prefix}.png"
+    fig.tight_layout()
+    fig.savefig(p, dpi=170)
+    plt.close(fig)
+    assets["timeseries"] = str(p)
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.8))
+    fresh = scores[labels == 1]
+    reuse = scores[labels == 0]
+    bins = min(40, max(10, int(np.sqrt(scores.size))))
+    ax.hist(reuse, bins=bins, alpha=0.65, color="#0f766e", label="cache reuse", density=True)
+    ax.hist(fresh, bins=bins, alpha=0.65, color="#a33f2b", label="fresh eval", density=True)
+    ax.set_xlabel("raw SeaCache relative-L1")
+    ax.set_ylabel("density")
+    ax.set_title("Distribution split for raw relative-L1")
+    ax.legend(frameon=False)
+    ax.grid(alpha=0.18)
+    p = out_dir / f"rel_l1_fresh_reuse_hist_{prefix}.png"
+    fig.tight_layout()
+    fig.savefig(p, dpi=170)
+    plt.close(fig)
+    assets["hist"] = str(p)
+
+    fig, axs = plt.subplots(1, 2, figsize=(10.4, 4.4))
+    axs[0].plot(curves["fpr"], curves["tpr"], color="#245c9a", linewidth=2.2)
+    axs[0].plot([0, 1], [0, 1], linestyle="--", color="#888", linewidth=1)
+    axs[0].set_title(f"ROC curve (AUC={curves['roc_auc']:.3f})")
+    axs[0].set_xlabel("false positive rate")
+    axs[0].set_ylabel("true positive rate")
+    axs[0].grid(alpha=0.18)
+    axs[1].plot(curves["recall_curve"], curves["precision_curve"], color="#9b6b2f", linewidth=2.2)
+    axs[1].set_title(f"PR curve (AUC={curves['pr_auc']:.3f})")
+    axs[1].set_xlabel("recall")
+    axs[1].set_ylabel("precision")
+    axs[1].grid(alpha=0.18)
+    p = out_dir / f"rel_l1_fresh_reuse_curves_{prefix}.png"
+    fig.tight_layout()
+    fig.savefig(p, dpi=170)
+    plt.close(fig)
+    assets["curves"] = str(p)
+
+    threshold_rows = curves["threshold_rows"]
+    fig, ax = plt.subplots(figsize=(9.4, 4.8))
+    thr = np.asarray([r["threshold"] for r in threshold_rows], dtype=np.float64)
+    ax.plot(thr, [r["precision"] for r in threshold_rows], label="precision", color="#245c9a")
+    ax.plot(thr, [r["recall"] for r in threshold_rows], label="recall", color="#0f766e")
+    ax.plot(thr, [r["f1"] for r in threshold_rows], label="F1", color="#a33f2b")
+    ax.plot(thr, [r["accuracy"] for r in threshold_rows], label="accuracy", color="#9b6b2f")
+    ax.axvline(curves["best_threshold"], color="#444", linestyle="--", linewidth=1.5)
+    ax.set_xlabel("raw relative-L1 threshold")
+    ax.set_ylabel("score")
+    ax.set_title("Threshold sweep for fresh-eval prediction")
+    ax.legend(frameon=False, ncol=4, fontsize=8)
+    ax.grid(alpha=0.18)
+    p = out_dir / f"rel_l1_fresh_reuse_thresholds_{prefix}.png"
+    fig.tight_layout()
+    fig.savefig(p, dpi=170)
+    plt.close(fig)
+    assets["thresholds"] = str(p)
+
+    fig, ax = plt.subplots(figsize=(8.4, 4.6))
+    order = np.argsort(scores)
+    sorted_scores = scores[order]
+    sorted_labels = labels[order]
+    bin_edges = np.linspace(0, sorted_scores.size, 11, dtype=int)
+    centers: list[float] = []
+    probs: list[float] = []
+    for i in range(len(bin_edges) - 1):
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+        if hi <= lo:
+            continue
+        centers.append(float(sorted_scores[lo:hi].mean()))
+        probs.append(float(sorted_labels[lo:hi].mean()))
+    ax.plot(centers, probs, marker="o", color="#245c9a", linewidth=2)
+    ax.set_xlabel("binned raw relative-L1")
+    ax.set_ylabel("P(fresh eval)")
+    ax.set_title("Calibration of raw relative-L1 as a gate predictor")
+    ax.grid(alpha=0.18)
+    p = out_dir / f"rel_l1_fresh_reuse_calibration_{prefix}.png"
+    fig.tight_layout()
+    fig.savefig(p, dpi=170)
+    plt.close(fig)
+    assets["calibration"] = str(p)
+
+    return assets
+
+
+def analyze_stage1_predictor(args: argparse.Namespace) -> None:
+    import matplotlib.pyplot as plt
+
+    step_csv = Path(args.step_traces_csv)
+    run_csv = Path(args.reuse_runs_csv)
+    if not step_csv.exists() or not run_csv.exists():
+        raise RuntimeError(f"missing stage1 trace inputs: {step_csv} or {run_csv}")
+    with open(step_csv, newline="", encoding="utf-8") as f:
+        step_rows = list(csv.DictReader(f))
+    with open(run_csv, newline="", encoding="utf-8") as f:
+        run_rows = list(csv.DictReader(f))
+    if not step_rows:
+        raise RuntimeError(f"empty step trace csv: {step_csv}")
+
+    assets_dir = Path(args.predictor_assets_dir)
+    ensure_dir(assets_dir)
+    binary_assets = plot_binary_predictor(step_rows, assets_dir, "all")
+
+    scores = np.asarray([safe_float(r["raw_rel_l1"]) for r in step_rows], dtype=np.float64)
+    labels = np.asarray([1 if r["decision"] == "fresh_eval" else 0 for r in step_rows], dtype=np.int64)
+    curves = binary_curve_metrics(scores, labels)
+    binary_fields = ["scope", "roc_auc", "pr_auc", "best_threshold", "best_f1", "best_precision", "best_recall", "best_accuracy", "pearson_corr", "spearman_corr"]
+    binary_path = Path(args.predictor_binary_metrics_csv)
+    ensure_dir(binary_path.parent)
+    with open(binary_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=binary_fields + ["threshold", "precision", "recall", "f1", "accuracy", "tpr", "fpr"])
+        w.writeheader()
+        w.writerow({
+            "scope": "overall_summary",
+            "roc_auc": f"{curves['roc_auc']:.6f}",
+            "pr_auc": f"{curves['pr_auc']:.6f}",
+            "best_threshold": f"{curves['best_threshold']:.6f}",
+            "best_f1": f"{curves['best_f1']:.6f}",
+            "best_precision": f"{curves['best_precision']:.6f}",
+            "best_recall": f"{curves['best_recall']:.6f}",
+            "best_accuracy": f"{curves['best_accuracy']:.6f}",
+            "pearson_corr": f"{pearson_corr(scores.tolist(), labels.astype(float).tolist()):.6f}",
+            "spearman_corr": f"{spearman_corr(scores.tolist(), labels.astype(float).tolist()):.6f}",
+        })
+        for row in curves["threshold_rows"]:
+            w.writerow({"scope": "threshold_sweep", **{k: f"{float(v):.6f}" for k, v in row.items()}})
+
+    run_feature_rows: list[dict[str, Any]] = []
+    grouped_steps: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in step_rows:
+        if row["decision"] != "cache_reuse":
+            continue
+        key = (row["sample_id"], row["variant"], row["reuse_run_id"])
+        grouped_steps.setdefault(key, []).append(row)
+    run_lookup = {(r["sample_id"], r["variant"], r["reuse_run_id"]): r for r in run_rows}
+    for key, rows in grouped_steps.items():
+        rows = sorted(rows, key=lambda r: int(r["step"]))
+        raw_vals = [safe_float(r["raw_rel_l1"], 0.0) for r in rows]
+        sigmas = [safe_float(r.get("sigma"), float("nan")) for r in rows]
+        steps_idx = np.asarray([int(r["step"]) for r in rows], dtype=np.float64)
+        slope = float(np.polyfit(steps_idx, np.asarray(raw_vals, dtype=np.float64), 1)[0]) if len(raw_vals) >= 2 else 0.0
+        lookup = run_lookup.get(key, {})
+        run_feature_rows.append({
+            "sample_id": key[0],
+            "variant": key[1],
+            "reuse_run_id": int(key[2]),
+            "first_raw_rel_l1": raw_vals[0],
+            "mean_raw_rel_l1": float(np.mean(raw_vals)),
+            "median_raw_rel_l1": float(np.median(raw_vals)),
+            "max_raw_rel_l1": float(np.max(raw_vals)),
+            "last_raw_rel_l1_before_reset": raw_vals[-1],
+            "slope_raw_rel_l1": slope,
+            "start_step": int(rows[0]["step"]),
+            "end_step": int(rows[-1]["step"]),
+            "start_sigma": sigmas[0],
+            "end_sigma": sigmas[-1],
+            "reuse_run_length": int(lookup.get("reuse_run_length", len(rows))),
+        })
+    if not run_feature_rows:
+        raise RuntimeError("no reuse-run feature rows found in stage1 traces")
+
+    runlength_path = Path(args.predictor_runlength_metrics_csv)
+    ensure_dir(runlength_path.parent)
+    target = np.asarray([int(r["reuse_run_length"]) for r in run_feature_rows], dtype=np.float64)
+    feat_specs = [
+        ("first_raw_rel_l1", "first raw rel-L1"),
+        ("mean_raw_rel_l1", "mean raw rel-L1"),
+        ("max_raw_rel_l1", "max raw rel-L1"),
+        ("start_sigma", "start sigma"),
+    ]
+    model_specs = [
+        ("raw_rel_l1_only", np.asarray([[r["first_raw_rel_l1"]] for r in run_feature_rows], dtype=np.float64)),
+        ("timestep_sigma_only", np.asarray([[r["start_step"], r["start_sigma"]] for r in run_feature_rows], dtype=np.float64)),
+        ("raw_rel_l1_plus_timestep_sigma", np.asarray([[r["first_raw_rel_l1"], r["start_step"], r["start_sigma"]] for r in run_feature_rows], dtype=np.float64)),
+        ("sequence_summary", np.asarray([[r["first_raw_rel_l1"], r["mean_raw_rel_l1"], r["median_raw_rel_l1"], r["max_raw_rel_l1"], r["last_raw_rel_l1_before_reset"], r["slope_raw_rel_l1"], r["start_step"], r["start_sigma"]] for r in run_feature_rows], dtype=np.float64)),
+    ]
+    with open(runlength_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["row_type", "name", "pearson_corr", "spearman_corr", "r2", "mae"])
+        w.writeheader()
+        for key, label in feat_specs:
+            values = [safe_float(r[key]) for r in run_feature_rows]
+            w.writerow({
+                "row_type": "feature",
+                "name": label,
+                "pearson_corr": f"{pearson_corr(values, target.tolist()):.6f}",
+                "spearman_corr": f"{spearman_corr(values, target.tolist()):.6f}",
+                "r2": "",
+                "mae": "",
+            })
+        for name, feats in model_specs:
+            reg = linear_regression_metrics(feats, target)
+            w.writerow({
+                "row_type": "model",
+                "name": name,
+                "pearson_corr": "",
+                "spearman_corr": "",
+                "r2": f"{reg['r2']:.6f}",
+                "mae": f"{reg['mae']:.6f}",
+            })
+
+    fig, axs = plt.subplots(2, 2, figsize=(10.8, 8.4))
+    plot_map = [
+        ("first_raw_rel_l1", "first raw rel-L1 vs run length", axs[0, 0]),
+        ("mean_raw_rel_l1", "mean raw rel-L1 vs run length", axs[0, 1]),
+        ("max_raw_rel_l1", "max raw rel-L1 vs run length", axs[1, 0]),
+        ("start_sigma", "start sigma vs run length", axs[1, 1]),
+    ]
+    for key, title, ax in plot_map:
+        xs = [safe_float(r[key]) for r in run_feature_rows]
+        ax.scatter(xs, target, s=28, alpha=0.75, color="#245c9a")
+        ax.set_xlabel(key)
+        ax.set_ylabel("reuse run length")
+        ax.set_title(title)
+        ax.grid(alpha=0.18)
+    p = assets_dir / "rel_l1_runlength_scatter_grid.png"
+    fig.tight_layout()
+    fig.savefig(p, dpi=170)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(9.2, 4.8))
+    lengths = np.asarray([int(r["reuse_run_length"]) for r in run_feature_rows], dtype=np.int64)
+    bins = np.arange(1, int(lengths.max()) + 2) - 0.5
+    ax.hist(lengths, bins=bins, color="#245c9a", edgecolor="white", alpha=0.9)
+    ax.set_xlabel("consecutive cache reuse length")
+    ax.set_ylabel("count")
+    ax.set_title("Histogram of multiple consecutive SeaCache reuse runs")
+    ax.grid(axis="y", alpha=0.18)
+    p_hist = assets_dir / "rel_l1_runlength_hist.png"
+    fig.tight_layout()
+    fig.savefig(p_hist, dpi=170)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(9.2, 4.8))
+    ax.scatter([safe_float(r["start_sigma"]) for r in run_feature_rows], [safe_float(r["first_raw_rel_l1"]) for r in run_feature_rows], c=lengths, cmap="viridis", s=40, alpha=0.8)
+    ax.set_xlabel("start sigma")
+    ax.set_ylabel("first raw rel-L1")
+    ax.set_title("Start sigma and first raw rel-L1 against run length")
+    ax.grid(alpha=0.18)
+    p_2d = assets_dir / "rel_l1_runlength_sigma2d.png"
+    fig.tight_layout()
+    fig.savefig(p_2d, dpi=170)
+    plt.close(fig)
+
+    write_json(
+        Path(args.predictor_summary_json),
+        {
+            "binary": {
+                "roc_auc": curves["roc_auc"],
+                "pr_auc": curves["pr_auc"],
+                "best_threshold": curves["best_threshold"],
+                "best_f1": curves["best_f1"],
+                "best_precision": curves["best_precision"],
+                "best_recall": curves["best_recall"],
+                "best_accuracy": curves["best_accuracy"],
+                "pearson_corr": pearson_corr(scores.tolist(), labels.astype(float).tolist()),
+                "spearman_corr": spearman_corr(scores.tolist(), labels.astype(float).tolist()),
+                "assets": binary_assets,
+            },
+            "run_length": {
+                "num_runs": len(run_feature_rows),
+                "assets": {
+                    "scatter_grid": str(p),
+                    "histogram": str(p_hist),
+                    "sigma2d": str(p_2d),
+                },
+            },
+        },
+    )
+
+
+def run_stage1_report(args: argparse.Namespace) -> None:
+    report_path = Path(args.stage1_html)
+    ensure_dir(report_path.parent)
+    audit = read_json(Path(args.audit_json))
+    predictor = read_json(Path(args.predictor_summary_json))
+    assets = predictor.get("binary", {}).get("assets", {})
+    run_assets = predictor.get("run_length", {}).get("assets", {})
+    binary = predictor.get("binary", {})
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SeaCache Predictor Diagnostics</title>
+<style>
+:root {{ --ink:#17211d; --muted:#5f6b65; --paper:#f4efe5; --card:#fffdf8; --line:#d5cbbb; --green:#0f766e; --red:#a33f2b; --blue:#245c9a; --gold:#9b6b2f; }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; background:linear-gradient(180deg,#efe5d4 0%,#f7f3ec 100%); color:var(--ink); font-family: Georgia, "Times New Roman", serif; }}
+main {{ width:min(100vw, 1680px); margin:0 auto; padding:28px 34px 38px; }}
+h1 {{ margin:0; font-size:46px; line-height:1; letter-spacing:-0.03em; }}
+h2 {{ margin:0 0 8px; font-size:22px; letter-spacing:-0.02em; }}
+p {{ margin:0; line-height:1.55; }}
+.hero {{ display:grid; grid-template-columns:1.3fr .9fr; gap:18px; align-items:end; }}
+.thesis {{ margin-top:10px; color:var(--muted); font-size:18px; max-width:60ch; }}
+.chips {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }}
+.chip,.section,.note,.plot {{ background:rgba(255,255,255,.7); border:1px solid var(--line); border-radius:18px; }}
+.chip {{ padding:12px; font-size:13px; }}
+.chip b {{ display:block; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:4px; }}
+.deck {{ display:grid; gap:18px; margin-top:18px; }}
+.section {{ padding:18px; box-shadow:0 8px 28px rgba(20,24,21,.05); }}
+.grid {{ display:grid; gap:14px; }}
+.grid.two {{ grid-template-columns:1fr 1fr; }}
+.grid.plots {{ grid-template-columns:1fr 1fr; }}
+.note {{ padding:14px; }}
+.lede {{ color:var(--muted); margin-bottom:14px; }}
+.audit-list div {{ margin:5px 0; }}
+.metric-strip {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }}
+.metric {{ background:#fff; border:1px solid var(--line); border-radius:16px; padding:12px; }}
+.metric b {{ display:block; font-size:24px; }}
+.metric span {{ display:block; color:var(--muted); font-size:13px; }}
+.plot {{ padding:10px; margin:0; }}
+.plot img {{ width:100%; display:block; border-radius:12px; border:1px solid var(--line); }}
+.plot figcaption {{ margin-top:8px; font-size:13px; color:var(--muted); line-height:1.45; }}
+@media (max-width:1280px) {{ .hero,.chips,.grid.two,.grid.plots,.metric-strip {{ grid-template-columns:1fr; }} }}
+</style>
+</head>
+<body><main>
+<section class="hero">
+  <div>
+    <h1>Stage 1: SeaCache Predictor Diagnostics</h1>
+    <p class="thesis">This report isolates the real SeaCache online predictor. The objective is narrower than the stage-0 DP slide: measure whether raw non-accumulated relative-L1 is a strong gate, a weak gate, or a misleading proxy for longer cache reuse behavior.</p>
+  </div>
+  <div class="chips">
+    <div class="chip"><b>Online signal</b>Raw relative-L1 on the SEA-filtered first-block modulation, before accumulation.</div>
+    <div class="chip"><b>Decision rule</b>SeaCache reuses cached residuals only while the accumulated relative-L1 stays below threshold.</div>
+    <div class="chip"><b>Why this matters</b>The earlier h-summary RMSE plots were offline proxies, not the gate the sampler actually uses online.</div>
+  </div>
+</section>
+<div class="deck">
+  <section class="section">
+    <h2>1. Exact Online Predictor</h2>
+    <p class="lede">This audit section is the contract for every downstream figure in this report. It separates the true online gate from the older offline proxy so the later diagnostics are evaluating the right tensor and the right scalar.</p>
+    <div class="grid two">
+      <div class="note audit-list">
+        <div><b>Tensor source:</b> {audit['predictor_tensor_source']}</div>
+        <div><b>SEA filter:</b> {audit['sea_filter']}</div>
+        <div><b>Raw formula:</b> {audit['raw_relative_l1_formula']}</div>
+        <div><b>Accumulator:</b> {audit['accumulated_variable']}</div>
+        <div><b>Gate/reset logic:</b> {audit['threshold_reset_logic']}</div>
+      </div>
+      <div class="note">
+        <p>The key distinction is simple: <b>raw relative-L1</b> is the per-step predictor, while <b>accumulated relative-L1</b> is the quantity the sampler thresholds online. The cache/fresh decision depends on the accumulator, not on the raw value in isolation.</p>
+        <p style="margin-top:10px;">The previous report’s h-summary RMSE was useful for cheap offline DP scoring, but it was not the value SeaCache uses at runtime. This report is structured around that correction.</p>
+      </div>
+    </div>
+  </section>
+  <section class="section">
+    <h2>2. Fresh-vs-Reuse Gate Quality</h2>
+    <p class="lede">This section answers the easy question first: if we only ask whether the current step becomes a fresh evaluation or a cache reuse, how predictive is the true raw relative-L1 signal?</p>
+    <div class="metric-strip">
+      <div class="metric"><b>{binary.get('roc_auc', float('nan')):.3f}</b><span>ROC-AUC</span></div>
+      <div class="metric"><b>{binary.get('pr_auc', float('nan')):.3f}</b><span>PR-AUC</span></div>
+      <div class="metric"><b>{binary.get('best_f1', float('nan')):.3f}</b><span>Best F1</span></div>
+      <div class="metric"><b>{binary.get('best_threshold', float('nan')):.4f}</b><span>Best raw rel-L1 threshold</span></div>
+    </div>
+    <div class="grid plots" style="margin-top:14px;">
+      <figure class="plot"><img src="{image_rel(Path(assets['timeseries']), report_path)}" alt="raw rel l1 over timestep"><figcaption>The time-series view shows the actual raw predictor values over timestep index, colored by the real online fresh/reuse decision. This is the direct visual answer to whether the signal cleanly separates the gate.</figcaption></figure>
+      <figure class="plot"><img src="{image_rel(Path(assets['hist']), report_path)}" alt="raw rel l1 distributions"><figcaption>The distribution split checks whether fresh steps and reuse steps occupy meaningfully different parts of the raw relative-L1 range. If the histograms overlap heavily, the gate is weak even if some thresholds look good locally.</figcaption></figure>
+      <figure class="plot"><img src="{image_rel(Path(assets['curves']), report_path)}" alt="roc pr curves"><figcaption>ROC and PR curves summarize the gate over all thresholds instead of relying on one cherry-picked cutoff. This is the right aggregate readout for “is the raw predictor actually discriminative?”</figcaption></figure>
+      <figure class="plot"><img src="{image_rel(Path(assets['thresholds']), report_path)}" alt="threshold sweep"><figcaption>The threshold sweep makes the tradeoff explicit: higher thresholds buy recall, lower thresholds buy precision. The dashed line marks the best-F1 operating point among the observed values.</figcaption></figure>
+    </div>
+    <div class="grid two" style="margin-top:14px;">
+      <figure class="plot"><img src="{image_rel(Path(assets['calibration']), report_path)}" alt="calibration plot"><figcaption>Calibration matters because even a useful ranking signal may be poorly calibrated. This plot asks whether larger raw relative-L1 values actually correspond to a higher probability of fresh evaluation.</figcaption></figure>
+      <div class="note">
+        <p><b>Interpretation rule:</b> if raw relative-L1 predicts fresh/reuse well but fails to estimate run length, the honest verdict is <b>PREDICTOR_GATE_ONLY</b>. That means the signal is useful as a gate, but not rich enough to explain how long reuse streaks persist.</p>
+      </div>
+    </div>
+  </section>
+  <section class="section">
+    <h2>3. Consecutive Reuse-Run Length</h2>
+    <p class="lede">The harder question is whether the raw non-accumulated predictor also explains reuse-run length. That is strictly stronger than gate quality: a signal can separate fresh from reuse but still be weak at estimating how long a reuse streak survives.</p>
+    <div class="grid plots">
+      <figure class="plot"><img src="{image_rel(Path(run_assets['scatter_grid']), report_path)}" alt="run length scatter grid"><figcaption>These scatter plots test several single-feature explanations of reuse-run length. If the points remain diffuse, raw relative-L1 is not enough on its own and needs timestep, sigma, or history context.</figcaption></figure>
+      <figure class="plot"><img src="{image_rel(Path(run_assets['histogram']), report_path)}" alt="run length histogram"><figcaption>The histogram shows whether long reuse streaks are rare accidents or a recurring regime. This matters for acceleration, because most savings come from repeated reuse, not isolated cache hits.</figcaption></figure>
+      <figure class="plot"><img src="{image_rel(Path(run_assets['sigma2d']), report_path)}" alt="sigma rel l1 run length"><figcaption>This 2D view asks whether run length depends jointly on start sigma and first raw relative-L1. If structure emerges here but not in the 1D scatter plots, the gate may only become predictive after adding schedule context.</figcaption></figure>
+      <div class="note">
+        <p>The report verdict should be strict here. Strong binary separation does not automatically imply strong run-length prediction. If only the combined features with timestep or sigma work, that is evidence for “gate only” rather than a fully sufficient scalar predictor.</p>
+      </div>
+    </div>
+  </section>
+</div>
+</main></body></html>"""
+    html = embed_local_images(html, report_path)
+    report_path.write_text(html, encoding="utf-8")
+
+
 def audit_seacache_predictor(args: argparse.Namespace) -> None:
     seacache_file = Path(args.seacache_dir) / "FLUX" / "seacache_generate.py"
     util_file = Path(args.seacache_dir) / "FLUX" / "util_seacache.py"
@@ -1681,6 +2199,7 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
         ensure_dir(sample_dir)
         prompt = sample["prompt"]
         seed = int(sample["seed"])
+        pipe = load_flux_pipeline(args.model_id, args.dtype, args.device, args.offload, args.bnb4)
         for threshold in thresholds:
             label = "vanilla" if threshold is None else f"delta_{str(threshold).replace('.', 'p')}"
             run_dir = sample_dir / label
@@ -1690,7 +2209,6 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
             ensure_dir(run_dir)
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats()
-            pipe = load_flux_pipeline(args.model_id, args.dtype, args.device, args.offload, args.bnb4)
             counter = {"fresh_evals": 0, "cached_evals": 0}
             if threshold is not None:
                 counter = install_seacache_forward(pipe, threshold, 50)
@@ -1751,9 +2269,9 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
                     "raw_predictor": "SeaCache raw relative-L1 after SEA filtering, before accumulation",
                 },
             )
-            if hasattr(pipe, "to"):
-                del out, generator, counter, pipe
-                gc.collect()
+            del out, generator, counter
+            gc.collect()
+            if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if threshold is None:
                 continue
@@ -1763,6 +2281,10 @@ def run_stage1_matched(args: argparse.Namespace) -> None:
             for row in reuse_runs:
                 row.update({"sample_id": sid, "category": sample.get("category", ""), "prompt": prompt, "seed": seed, "threshold": threshold, "variant": label})
             all_run_rows.extend(reuse_runs)
+        del pipe
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     step_csv = Path(args.step_traces_csv)
     ensure_dir(step_csv.parent)
@@ -1823,6 +2345,11 @@ def add_common(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--audit-json", default=str(REPO_ROOT / "reports" / "seacache_predictor_audit.json"))
     ap.add_argument("--step-traces-csv", default=str(REPO_ROOT / "metrics" / "seacache_step_traces.csv"))
     ap.add_argument("--reuse-runs-csv", default=str(REPO_ROOT / "metrics" / "seacache_reuse_runs.csv"))
+    ap.add_argument("--predictor-assets-dir", default=str(REPO_ROOT / "reports" / "assets_seacache_predictor"))
+    ap.add_argument("--predictor-binary-metrics-csv", default=str(REPO_ROOT / "metrics" / "seacache_predictor_binary_metrics.csv"))
+    ap.add_argument("--predictor-runlength-metrics-csv", default=str(REPO_ROOT / "metrics" / "seacache_predictor_runlength_metrics.csv"))
+    ap.add_argument("--predictor-summary-json", default=str(REPO_ROOT / "reports" / "seacache_predictor_summary.json"))
+    ap.add_argument("--stage1-html", default=str(REPO_ROOT / "reports" / "stage1_seacache_predictor_dp_comparison.html"))
     ap.add_argument("--sample-indices", default="", help="Comma-separated sample indices for a partial stage1 run.")
     ap.add_argument("--max-samples", type=int, default=None)
     ap.add_argument("--thresholds", default="0.1,0.2,0.3,0.4,0.5,0.6,0.8")
@@ -1838,6 +2365,8 @@ def parse_args() -> argparse.Namespace:
         ("report", run_report),
         ("audit", audit_seacache_predictor),
         ("stage1", run_stage1_matched),
+        ("stage1-analyze", analyze_stage1_predictor),
+        ("stage1-report", run_stage1_report),
         ("run-all", run_all),
     ]:
         p = sub.add_parser(name)
