@@ -1221,6 +1221,35 @@ def render_comparison_grid(traj_root: Path, sea_root: Path, dp_root: Path, out_p
     grid.save(out_path)
 
 
+def render_sample_comparison_grid(sample: str, traj_root: Path, dp_root: Path, out_path: Path) -> None:
+    panels: list[tuple[str, Path | None, str]] = [
+        ("100-step final", traj_root / sample / "final.png", "actual reference sampler output"),
+        ("Offline DP mono B10", dp_root / sample / "shortcut_B10_monotone_eval_nodes.png", "decoded from reconstructed latent"),
+        ("Offline DP cache B10", dp_root / sample / "shortcut_B10_cache_aware_h_reuse.png", "decoded from reconstructed latent"),
+        ("Offline DP cache B20", dp_root / sample / "shortcut_B20_cache_aware_h_reuse.png", "decoded from reconstructed latent"),
+    ]
+    tile_w, tile_h = 260, 266
+    grid = Image.new("RGB", (2 * tile_w, 2 * tile_h), (246, 242, 233))
+    draw = ImageDraw.Draw(grid)
+    for idx, (title, path, subtitle) in enumerate(panels):
+        x = (idx % 2) * tile_w
+        y = (idx // 2) * tile_h
+        draw.rounded_rectangle([x + 8, y + 8, x + tile_w - 8, y + tile_h - 8], radius=18, fill=(255, 255, 255), outline=(208, 197, 178), width=2)
+        if path is not None and path.exists():
+            img = Image.open(path).convert("RGB")
+            img.thumbnail((tile_w - 22, tile_h - 72))
+            px = x + (tile_w - img.width) // 2
+            py = y + 40 + (tile_h - 72 - img.height) // 2
+            grid.paste(img, (px, py))
+        else:
+            draw.rounded_rectangle([x + 22, y + 52, x + tile_w - 22, y + tile_h - 74], radius=16, fill=(237, 241, 245), outline=(197, 206, 216), width=2)
+            draw.text((x + 34, y + 112), "missing", fill=(78, 90, 105))
+        draw.text((x + 16, y + 14), title, fill=(18, 24, 20))
+        draw.text((x + 16, y + tile_h - 28), subtitle, fill=(90, 100, 95))
+    ensure_dir(out_path.parent)
+    grid.save(out_path)
+
+
 def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_path: Path, assets_dir: Path) -> dict[str, Any]:
     ensure_dir(assets_dir)
     assets: dict[str, Any] = {}
@@ -1232,6 +1261,12 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
     sea_imgs = [sea_root / v / "image.png" for v in ["vanilla", "delta_0p3", "delta_0p6"]]
     make_contact_sheet(sea_imgs, assets_dir / "seacache_grid.jpg", ["vanilla", "delta 0.3", "delta 0.6"], (260, 220))
     render_comparison_grid(traj_root, sea_root, dp_root, assets_dir / "comparison_grid_sample00.png")
+    per_sample_grids: dict[str, str] = {}
+    for sample_dir in sample_dirs:
+        sample = sample_dir.name
+        out_path = assets_dir / f"comparison_{sample}.png"
+        render_sample_comparison_grid(sample, traj_root, dp_root, out_path)
+        per_sample_grids[sample] = str(out_path)
     dp_summaries: dict[str, dict[str, Any]] = {}
     for sample_dir in sorted(dp_root.glob("sample_*")):
         summary = sample_dir / "dp_summary.json"
@@ -1401,6 +1436,9 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
         sample = sample_dir.name
         mono20 = metric_lookup.get((sample, "20", "monotone_eval_nodes"), {})
         mono40 = metric_lookup.get((sample, "40", "monotone_eval_nodes"), {})
+        mono10 = metric_lookup.get((sample, "10", "monotone_eval_nodes"), {})
+        cache10 = metric_lookup.get((sample, "10", "cache_aware_h_reuse"), {})
+        cache20 = metric_lookup.get((sample, "20", "cache_aware_h_reuse"), {})
         cache40 = metric_lookup.get((sample, "40", "cache_aware_h_reuse"), {})
         sample_cards.append({
             "sample": sample,
@@ -1408,9 +1446,17 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
             "prompt": meta.get("prompt", ""),
             "seed": meta.get("seed", ""),
             "image": str(sample_dir / "final.png"),
+            "comparison_grid": per_sample_grids.get(sample, ""),
+            "mono10_ssim": float(mono10.get("image_ssim", "nan")) if mono10 else float("nan"),
             "mono20_ssim": float(mono20.get("image_ssim", "nan")) if mono20 else float("nan"),
             "mono40_ssim": float(mono40.get("image_ssim", "nan")) if mono40 else float("nan"),
+            "cache10_ssim": float(cache10.get("image_ssim", "nan")) if cache10 else float("nan"),
+            "cache10_lpips": float(cache10.get("lpips", "nan")) if cache10 else float("nan"),
+            "cache20_ssim": float(cache20.get("image_ssim", "nan")) if cache20 else float("nan"),
+            "cache20_lpips": float(cache20.get("lpips", "nan")) if cache20 else float("nan"),
             "cache40_cost": int(float(cache40.get("cost", "0"))) if cache40 else 0,
+            "cache10_zero_cost_fraction": float(cache10.get("zero_cost_fraction", "nan")) if cache10 else float("nan"),
+            "cache20_zero_cost_fraction": float(cache20.get("zero_cost_fraction", "nan")) if cache20 else float("nan"),
         })
 
     assets["sample_cards"] = sample_cards
@@ -1419,6 +1465,7 @@ def build_report_assets(traj_root: Path, dp_root: Path, sea_root: Path, metrics_
     assets["sample_grid"] = str(assets_dir / "sample_grid.jpg")
     assets["seacache_grid"] = str(assets_dir / "seacache_grid.jpg")
     assets["comparison_grid_sample00"] = str(assets_dir / "comparison_grid_sample00.png")
+    assets["per_sample_grids"] = per_sample_grids
     return assets
 
 
@@ -1496,6 +1543,40 @@ def run_report(args: argparse.Namespace) -> None:
         f"<div class='stat'><b>B={b}</b><span>mono rel L2 {budget_stats[b]['mono_rel_l2']:.3f}</span><span>mono SSIM {budget_stats[b]['mono_ssim']:.3f}</span><span>cache SSIM {budget_stats[b]['cache_ssim']:.3f}</span></div>"
         for b in ["10", "20", "40"]
     )
+    metric_rows_html = "\n".join(
+        (
+            f"<tr><td>monotone</td><td>B{b}</td><td>{budget_stats[b]['mono_ssim']:.4f}</td><td>{budget_stats[b]['mono_lpips']:.4f}</td>"
+            f"<td>{budget_stats[b]['mono_clip_img']:.4f}</td><td>{budget_stats[b]['mono_dino_img']:.4f}</td><td>{budget_stats[b]['mono_clip_text']:.4f}</td><td>{budget_stats[b]['mono_rel_l2']:.4f}</td></tr>"
+            f"<tr><td>cache-aware proxy</td><td>B{b}</td><td>{budget_stats[b]['cache_ssim']:.4f}</td><td>{float(np.mean([float(r.get('lpips', 'nan')) for r in dp_rows if r['budget'] == b and r['cost_model'] == 'cache_aware_h_reuse'])):.4f}</td>"
+            f"<td>{float(np.mean([float(r.get('clip_img_sim', 'nan')) for r in dp_rows if r['budget'] == b and r['cost_model'] == 'cache_aware_h_reuse'])):.4f}</td>"
+            f"<td>{float(np.mean([float(r.get('dino_img_sim', 'nan')) for r in dp_rows if r['budget'] == b and r['cost_model'] == 'cache_aware_h_reuse'])):.4f}</td>"
+            f"<td>{float(np.mean([float(r.get('clip_text_score', 'nan')) for r in dp_rows if r['budget'] == b and r['cost_model'] == 'cache_aware_h_reuse'])):.4f}</td>"
+            f"<td>{budget_stats[b]['cache_rel_l2']:.4f}</td></tr>"
+        )
+        for b in ["10", "20", "40"]
+    )
+    sample_grid_blocks_html = "\n".join(
+        f"""<article class='sample-grid-block'>
+  <div>
+    <div class='sample-head'><b>{c['category']}</b><span>{c['sample']} · seed {c['seed']}</span></div>
+    <p class='lede'>This grid shows the actual 100-step reference next to the shortcut reconstructions already available on disk. The point is not that every shortcut is identical; it is to show what degrades first and how much quality remains at aggressive budgets.</p>
+    <div class='sample-metrics'>
+      <span>mono B10 SSIM {c['mono10_ssim']:.3f}</span>
+      <span>mono B20 SSIM {c['mono20_ssim']:.3f}</span>
+      <span>cache B10 SSIM {c['cache10_ssim']:.3f}</span>
+      <span>cache B10 LPIPS {c['cache10_lpips']:.4f}</span>
+      <span>cache B20 SSIM {c['cache20_ssim']:.3f}</span>
+      <span>cache B20 LPIPS {c['cache20_lpips']:.4f}</span>
+      <span>cache B10 zero-cost fraction {c['cache10_zero_cost_fraction']:.2f}</span>
+    </div>
+  </div>
+  <figure class='plot'>
+    <img src='{image_rel(Path(c['comparison_grid']), report_path)}' alt='{c['sample']} shortcut comparison grid'>
+    <figcaption>Panels: full 100-step reference, monotone B10 replay, cache-aware B10 replay, cache-aware B20 replay. All shortcut panels are offline latent reconstructions decoded through the VAE, not executable-sampler outputs.</figcaption>
+  </figure>
+</article>"""
+        for c in assets["sample_cards"]
+    )
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -1522,6 +1603,7 @@ h1 {{ margin:0; font-size:44px; line-height:1; letter-spacing:-.03em; }}
 .grid.three {{ grid-template-columns:1.2fr .95fr .95fr; }}
 .grid.samples {{ grid-template-columns:repeat(5, 1fr); }}
 .grid.reps {{ grid-template-columns:repeat(3, 1fr); }}
+.grid.sample-grids {{ grid-template-columns:repeat(2, 1fr); }}
 table {{ width:100%; border-collapse:collapse; font-size:13px; background:#fff; border-radius:16px; overflow:hidden; }}
 td, th {{ border-bottom:1px solid var(--line); padding:8px 9px; text-align:left; vertical-align:top; }}
 th {{ background:#f5efe4; text-transform:uppercase; letter-spacing:.06em; font-size:11px; color:var(--muted); }}
@@ -1534,6 +1616,8 @@ img {{ max-width:100%; display:block; border:1px solid var(--line); background:w
 .sample-head span {{ color:var(--muted); font-size:12px; }}
 .sample-card p {{ margin:4px 0 0; font-size:12px; line-height:1.4; color:var(--muted); }}
 .sample-card .mini {{ color:var(--ink); }}
+.sample-grid-block {{ background:#fff; border:1px solid var(--line); border-radius:18px; padding:12px; display:grid; gap:10px; align-content:start; }}
+.sample-metrics {{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px 12px; font-size:12px; color:var(--muted); margin-top:8px; }}
 .stat-grid {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }}
 .stat {{ background:#fff; border:1px solid var(--line); border-radius:16px; padding:12px; min-height:88px; }}
 .stat b {{ display:block; font-size:18px; margin-bottom:5px; }}
@@ -1551,7 +1635,7 @@ img {{ max-width:100%; display:block; border:1px solid var(--line); background:w
 .note {{ font-size:13px; color:var(--muted); line-height:1.5; background:#fff; border:1px solid var(--line); border-radius:18px; padding:14px; }}
 ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-height:1.5; }}
 @media (max-width: 1280px) {{
-  .grid.samples, .grid.reps, .grid.two, .grid.three, .hero, .footer, .meta, .stat-grid, .plots {{ grid-template-columns:1fr; }}
+  .grid.samples, .grid.reps, .grid.two, .grid.three, .grid.sample-grids, .hero, .footer, .meta, .stat-grid, .plots {{ grid-template-columns:1fr; }}
 }}
 </style>
 </head>
@@ -1644,7 +1728,7 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
 
   <section class="section">
     <h2>4. Perceptual Validation</h2>
-    <p class="lede">SSIM alone is not enough for generative outputs. This section adds LPIPS, CLIP image-image similarity, DINO similarity, and CLIP text-image score so the report does not overstate quality based on a single structural metric.</p>
+    <p class="lede">SSIM alone is not enough for generative outputs. This section adds LPIPS, CLIP image-image similarity, DINO similarity, and CLIP text-image score so the report does not overstate quality based on a single structural metric. The point of these figures is to show whether the shortcuts preserve perceptual identity and prompt alignment, not only pixel structure.</p>
     <div class="plots">
       <figure class="plot">
         <img src="{image_rel(Path(assets['perceptual_budget']), report_path)}" alt="Perceptual metrics by budget">
@@ -1655,11 +1739,31 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
         <figcaption>Path h versus perceptual quality. Lower h tends to sit on the better side of the perceptual metrics, but the scatter makes the important caveat visible: h is a useful gate, not a perfect quality surrogate.</figcaption>
       </figure>
     </div>
-    <div class="caption">The metrics CSV now includes LPIPS, CLIP image similarity, DINO similarity, CLIP text-image score, and path-level h summaries. That makes it possible to compare shortcut quality without relying on SSIM alone.</div>
+    <div class="grid two" style="margin-top:12px;">
+      <div>
+        <table>
+          <tr><th>path family</th><th>budget</th><th>SSIM</th><th>LPIPS</th><th>CLIP img</th><th>DINO img</th><th>CLIP text</th><th>latent rel L2</th></tr>
+          {metric_rows_html}
+        </table>
+      </div>
+      <div class="note">
+        <b>What the metric table says</b>
+        <p>Monotone B10 is the only clearly weaker regime: its mean LPIPS is about 0.0043 and its mean SSIM is about 0.981. By B20, the gap shrinks sharply. The cache-aware proxy paths stay near 0.0014 LPIPS and about 0.9977 CLIP image similarity even at B10-B20, which is why the offline results look strong.</p>
+        <p style="margin-top:10px;">That said, these are still offline replay images decoded from reconstructed latents. They are evidence that the shortcut path is plausible, not proof that an executable sampler will match it exactly.</p>
+      </div>
+    </div>
   </section>
 
   <section class="section">
-    <h2>5. What This Means</h2>
+    <h2>5. Figure For Each Experiment</h2>
+    <p class="lede">Each experiment below shows the actual generated sample and its shortcut counterparts. This is the most concrete way to inspect failure modes: some samples stay nearly unchanged at low cost, while others lose local detail or typography first. The captioned metrics make those visual impressions auditable.</p>
+    <div class="grid sample-grids">
+      {sample_grid_blocks_html}
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>6. What This Means</h2>
     <div class="grid two">
       <div class="note">
         <b>Mechanistic takeaway</b>
@@ -1670,8 +1774,9 @@ ul {{ margin:0; padding-left:18px; font-size:13px; color:var(--muted); line-heig
         <b>Limitations</b>
         <ul>
           <li>The cache-aware cost is an offline proxy based on compact h summaries, not a verbatim reimplementation of every online SeaCache state transition.</li>
-          <li>CLIP, LPIPS, and DINO were not included in this run. SSIM is available and was added to the metrics CSV.</li>
-          <li>Consecutive reuse has only a weak linear correlation with h alone, so the next step should include richer state than a single scalar summary.</li>
+          <li>The SeaCache image in this stage-0 slide is only the single replication prompt, not yet the matched 10-prompt sweep the stage-1 comparison needs.</li>
+          <li>Consecutive reuse has only a weak linear correlation with the compact h summary alone, so the next step should test the true SeaCache raw relative-L1 gate rather than only this proxy.</li>
+          <li>Executable DP remains unvalidated here. The offline DP panels are decoded from reconstructed latents, and that distinction matters.</li>
         </ul>
       </div>
     </div>
