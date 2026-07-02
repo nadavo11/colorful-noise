@@ -224,6 +224,8 @@ def calibration_bins(y_true: np.ndarray, scores: np.ndarray, bins: int = 10) -> 
 def make_feature_vector(
     raw_rel_l1: float,
     prev_raw_rel_l1: float,
+    accumulated_before: float,
+    age_since_refresh: int,
     step_index: int,
     sigma_value: float,
 ) -> list[float]:
@@ -232,6 +234,8 @@ def make_feature_vector(
         1.0,
         raw_rel_l1,
         prev_raw_rel_l1,
+        accumulated_before,
+        float(age_since_refresh),
         step_frac,
         sigma_value,
         raw_rel_l1 * step_frac,
@@ -360,6 +364,7 @@ def install_teacher_capture_forward(
         "rows": [],
         "prev_raw_rel_l1": 0.0,
         "sim_acc": 0.0,
+        "age_since_refresh": 0,
         "previous_modulated_input": None,
         "previous_residual": None,
         "fresh_evals": 0,
@@ -416,12 +421,20 @@ def install_teacher_capture_forward(
 
         acc_before = float(state["sim_acc"])
         acc_after = float(acc_before + raw_rel_l1)
+        age_before = int(state["age_since_refresh"])
         fixed_refresh = (
             step_index in (0, num_steps - 1)
             or state["previous_residual"] is None
             or not (acc_after < sea_threshold)
         )
-        feature_vec = make_feature_vector(raw_rel_l1, float(state["prev_raw_rel_l1"]), step_index, sigma_value)
+        feature_vec = make_feature_vector(
+            raw_rel_l1,
+            float(state["prev_raw_rel_l1"]),
+            acc_before,
+            age_before,
+            step_index,
+            sigma_value,
+        )
 
         ori_hs = hs
         hs_fresh = run_transformer_stack(
@@ -489,13 +502,16 @@ def install_teacher_capture_forward(
             "prev_raw_rel_l1": float(state["prev_raw_rel_l1"]),
             "accumulated_before": acc_before,
             "accumulated_after": acc_after,
+            "age_since_refresh": age_before,
             "feature_bias": float(feature_vec[0]),
             "feature_raw_rel_l1": float(feature_vec[1]),
             "feature_prev_raw_rel_l1": float(feature_vec[2]),
-            "feature_step_frac": float(feature_vec[3]),
-            "feature_sigma": float(feature_vec[4]),
-            "feature_raw_x_step": float(feature_vec[5]),
-            "feature_delta_raw": float(feature_vec[6]),
+            "feature_accumulated_before": float(feature_vec[3]),
+            "feature_age_since_refresh": float(feature_vec[4]),
+            "feature_step_frac": float(feature_vec[5]),
+            "feature_sigma": float(feature_vec[6]),
+            "feature_raw_x_step": float(feature_vec[7]),
+            "feature_delta_raw": float(feature_vec[8]),
             "fixed_threshold": float(sea_threshold),
             "fixed_refresh": bool(fixed_refresh),
             "teacher_defect": float(teacher_defect),
@@ -505,6 +521,7 @@ def install_teacher_capture_forward(
         state["previous_modulated_input"] = decision_feature.detach()
         state["prev_raw_rel_l1"] = float(raw_rel_l1)
         state["sim_acc"] = 0.0 if fixed_refresh else acc_after
+        state["age_since_refresh"] = 0 if fixed_refresh else age_before + 1
         state["previous_residual"] = fresh_residual
         state["fresh_evals"] += 1
         tr.cnt += 1
@@ -535,6 +552,8 @@ def fit_predictor_from_rows(rows: list[dict[str, Any]], label_quantile: float) -
         [
             float(r["feature_raw_rel_l1"]),
             float(r["feature_prev_raw_rel_l1"]),
+            float(r["feature_accumulated_before"]),
+            float(r["feature_age_since_refresh"]),
             float(r["feature_step_frac"]),
             float(r["feature_sigma"]),
             float(r["feature_raw_x_step"]),
@@ -548,6 +567,8 @@ def fit_predictor_from_rows(rows: list[dict[str, Any]], label_quantile: float) -
         x = np.asarray([[
             float(r["feature_raw_rel_l1"]),
             float(r["feature_prev_raw_rel_l1"]),
+            float(r["feature_accumulated_before"]),
+            float(r["feature_age_since_refresh"]),
             float(r["feature_step_frac"]),
             float(r["feature_sigma"]),
             float(r["feature_raw_x_step"]),
@@ -595,6 +616,8 @@ def fit_predictor_from_rows(rows: list[dict[str, Any]], label_quantile: float) -
         "feature_names": [
             "raw_rel_l1",
             "prev_raw_rel_l1",
+            "accumulated_before",
+            "age_since_refresh",
             "step_frac",
             "sigma",
             "raw_x_step",
@@ -626,6 +649,8 @@ def install_dynamic_refresh_forward(
         "previous_modulated_input": None,
         "previous_residual": None,
         "prev_raw_rel_l1": 0.0,
+        "accumulated_since_refresh": 0.0,
+        "age_since_refresh": 0,
     }
     tr.cnt = 0
     tr.num_steps = int(num_steps)
@@ -681,6 +706,8 @@ def install_dynamic_refresh_forward(
         x = np.asarray([[
             float(raw_rel_l1),
             float(state["prev_raw_rel_l1"]),
+            float(state["accumulated_since_refresh"]),
+            float(state["age_since_refresh"]),
             float(step_index) / float(max(1, N - 1)),
             float(sigma_value),
             float(raw_rel_l1 * (float(step_index) / float(max(1, N - 1)))),
@@ -756,6 +783,8 @@ def install_dynamic_refresh_forward(
             "scheduler_timestep": timestep_value,
             "raw_rel_l1": float(raw_rel_l1),
             "prev_raw_rel_l1": float(state["prev_raw_rel_l1"]),
+            "accumulated_before": float(state["accumulated_since_refresh"]),
+            "age_since_refresh": int(state["age_since_refresh"]),
             "predictor_score": float(score),
             "decision": decision,
             "expensive_probe_calls_so_far": int(state["expensive_probe_calls"]),
@@ -764,6 +793,8 @@ def install_dynamic_refresh_forward(
         })
         state["previous_modulated_input"] = decision_feature.detach()
         state["prev_raw_rel_l1"] = float(raw_rel_l1)
+        state["accumulated_since_refresh"] = 0.0 if refresh else float(state["accumulated_since_refresh"] + raw_rel_l1)
+        state["age_since_refresh"] = 0 if refresh else int(state["age_since_refresh"] + 1)
         tr.cnt += 1
         if tr.cnt == tr.num_steps:
             tr.cnt = 0
@@ -1024,9 +1055,12 @@ def write_outputs(
         "prev_raw_rel_l1",
         "accumulated_before",
         "accumulated_after",
+        "age_since_refresh",
         "feature_bias",
         "feature_raw_rel_l1",
         "feature_prev_raw_rel_l1",
+        "feature_accumulated_before",
+        "feature_age_since_refresh",
         "feature_step_frac",
         "feature_sigma",
         "feature_raw_x_step",
@@ -1125,6 +1159,8 @@ def write_outputs(
         "scheduler_timestep",
         "raw_rel_l1",
         "prev_raw_rel_l1",
+        "accumulated_before",
+        "age_since_refresh",
         "predictor_score",
         "decision",
         "cheap_prefix_calls_so_far",
