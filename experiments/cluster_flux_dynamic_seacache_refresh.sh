@@ -13,9 +13,9 @@ RUNAI_DIR=${RUNAI_DIR:-runs/runai/$(date +%Y%m%d_%H%M%S)__flux_seadefect_distill
 mkdir -p "$RUNAI_DIR"
 
 if [[ "$MODE" == "smoke" ]]; then
-  E55_ARGS="--smoke --num-samples 2"
+  E55_ARGS="--smoke --num-samples 2 --run-rare-probe"
 else
-  E55_ARGS="--num-samples ${NUM_SAMPLES:-8}"
+  E55_ARGS="--num-samples ${NUM_SAMPLES:-8} --run-rare-probe"
 fi
 GIT_REF=${GIT_REF:-origin/e55-dynamic-seacache-refresh}
 REMOTE_BRANCH=${REMOTE_BRANCH:-${GIT_REF#origin/}}
