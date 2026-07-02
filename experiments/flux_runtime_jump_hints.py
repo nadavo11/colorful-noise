@@ -1016,12 +1016,24 @@ def make_failure_grid(rows: list[dict[str, Any]], out: Path) -> None:
 
 
 def best_by_base(rows: list[dict[str, Any]], base: str, target: int | None = None) -> dict[str, Any] | None:
-    rs = [r for r in rows if r["base_method"] == base and r["causal"]]
+    rs = [
+        r for r in rows
+        if r["base_method"] == base
+        and r["causal"]
+        and is_finite_number(r.get("psnr_mean"))
+    ]
     if not rs:
         return None
     if target is None:
         return max(rs, key=lambda r: float(r["psnr_mean"]))
-    return max(rs, key=lambda r: -abs(float(r["actual_full_calls"]) - target) * 1000 + float(r["psnr_mean"]))
+    return min(
+        rs,
+        key=lambda r: (
+            abs(float(r["actual_full_calls"]) - target),
+            -float(r["psnr_mean"]),
+            float(r["actual_full_calls"]),
+        ),
+    )
 
 
 def write_report(run_dir: Path, args: argparse.Namespace, default_steps: int, sample_rows: list[dict[str, Any]], budget_rows: list[dict[str, Any]], corr_rows: list[dict[str, Any]], call_rows: list[dict[str, Any]], leakage_rows: list[dict[str, Any]]) -> None:
@@ -1029,14 +1041,24 @@ def write_report(run_dir: Path, args: argparse.Namespace, default_steps: int, sa
     best_sea = best_by_base(budget_rows, "seacache", 50)
     best_curv = best_by_base(budget_rows, "curvature", 50)
     best_ab2 = best_by_base(budget_rows, "ab2", 50)
+    best_sea_defect = best_by_base(budget_rows, "sea_defect", 50)
     best_hybrid = best_by_base(budget_rows, "hybrid", 50)
-    best_hint = max([x for x in [best_curv, best_ab2, best_hybrid] if x], key=lambda r: float(r["psnr_mean"]), default=None)
+    best_hint = max(
+        [x for x in [best_curv, best_ab2, best_sea_defect, best_hybrid] if x],
+        key=lambda r: float(r["psnr_mean"]),
+        default=None,
+    )
     beat_uniform = bool(best_hint and best_uniform and float(best_hint["psnr_mean"]) > float(best_uniform["psnr_mean"]))
     beat_sea = bool(best_hint and best_sea and float(best_hint["psnr_mean"]) > float(best_sea["psnr_mean"]))
     best_corr = max(corr_rows, key=lambda r: abs(float(r["spearman"])) if str(r["spearman"]) != "nan" else -1, default=None)
 
     def fmt(row: dict[str, Any] | None, key: str = "psnr_mean") -> str:
         return "n/a" if not row else f"{float(row[key]):.2f}"
+
+    def point_label(row: dict[str, Any] | None) -> str:
+        if not row:
+            return "n/a"
+        return f"{float(row['psnr_mean']):.2f} dB @ {int(row['actual_full_calls'])} calls"
 
     method_summary = table(
         ["method", "causal?", "extra full calls?", "prefix calls", "calls", "speedup", "PSNR", "LPIPS"],
@@ -1054,7 +1076,7 @@ def write_report(run_dir: Path, args: argparse.Namespace, default_steps: int, sa
             for r in sorted(budget_rows, key=lambda x: (x["base_method"], float(x["actual_full_calls"])))[:80]
         ],
     )
-    targets = [80, 50, 33, 28, 25, 20, 14]
+    targets = [80, 60, 50, 40, 33, 28, 25, 20, 14]
     matched_rows = []
     for target in targets:
         for base in ["uniform", "seacache", "curvature", "ab2", "sea_defect", "hybrid"]:
@@ -1096,14 +1118,14 @@ code{{background:#efe2ce;padding:1px 4px;border-radius:4px}}
 <h1>E54 — Causal runtime jump-size hints for FLUX</h1>
 <p class="lede">Runtime adaptive jump controllers for FLUX.1-dev at 1024×1024 bf16, compared by <b>actual full transformer calls</b> against uniform jumps, default FLUX, 100-step vanilla, and the official SeaCache accumulated SEA rel-L1 gate.</p>
 <div class="verdict">
-<div class="card"><span>Best runtime hint beats uniform?</span><b>{beat_uniform}</b><small>best hint PSNR {fmt(best_hint)} vs uniform {fmt(best_uniform)}</small></div>
-<div class="card"><span>Best runtime hint beats SeaCache?</span><b>{beat_sea}</b><small>best hint PSNR {fmt(best_hint)} vs SeaCache {fmt(best_sea)}</small></div>
+<div class="card"><span>Best runtime hint beats uniform?</span><b>{beat_uniform}</b><small>best hint {point_label(best_hint)} vs uniform {point_label(best_uniform)}</small></div>
+<div class="card"><span>Best runtime hint beats SeaCache?</span><b>{beat_sea}</b><small>best hint {point_label(best_hint)} vs SeaCache {point_label(best_sea)}</small></div>
 <div class="card"><span>Best local-error correlation</span><b>{best_corr['hint'] if best_corr else 'n/a'}</b><small>Spearman {float(best_corr['spearman']):.3f} in {best_corr['sigma_region'] if best_corr else 'n/a'}</small></div>
 </div>
 <div class="warn"><b>Do not overclaim:</b> all runtime controllers are causal; the offline saved-velocity rows, if present, are labelled non-causal diagnostics. A controller is only useful if it improves quality at matched actual calls and produces real call-count reduction.</div>
 
 <h2>Executive Summary</h2>
-<p>Default FLUX uses <b>{default_steps}</b> inference steps programmatically; mean default-vs-100-step PSNR is <b>{default_psnr:.2f} dB</b>. The best causal runtime hint at the inspected matched range has PSNR <b>{fmt(best_hint)}</b>. It {'does' if beat_uniform else 'does not'} beat uniform and {'does' if beat_sea else 'does not'} beat SeaCache at matched calls. The dominant option remains SeaCache unless the frontier above shows a hint strictly above it at the same actual full-call count.</p>
+<p>Default FLUX uses <b>{default_steps}</b> inference steps programmatically; mean default-vs-100-step PSNR is <b>{default_psnr:.2f} dB</b>. At the inspected ~50-call range, the best causal runtime hint is <b>{point_label(best_hint)}</b>. It {'does' if beat_uniform else 'does not'} beat uniform ({point_label(best_uniform)}) and {'does' if beat_sea else 'does not'} beat SeaCache ({point_label(best_sea)}). The dominant option remains SeaCache unless the frontier above shows a hint strictly above it at the same actual full-call count.</p>
 
 <h2>Prior Result Recap</h2>
 <p>E53 ran FLUX.1-dev, 1024×1024, bf16 on H100 NVL with a 100-step reference and 4 trajectories. The jump-DP oracle was teacher-forced: offline saved-velocity replay was strong, but causal DP-schedule replay only improved over causal uniform by +2.81 dB and trailed SeaCache by −6.54 dB at matched calls. E54 therefore tests causal runtime error hints rather than another offline DP schedule sweep.</p>
@@ -1164,6 +1186,13 @@ def table(headers: list[str], rows: list[list[Any]]) -> str:
     head = "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
     return f"<table>{head}{body}</table>"
+
+
+def is_finite_number(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def write_manifest(run_dir: Path, args: argparse.Namespace) -> None:
