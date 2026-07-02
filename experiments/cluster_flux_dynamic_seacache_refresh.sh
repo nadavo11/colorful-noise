@@ -9,15 +9,17 @@ JOB=${JOB:-flux-dynamic-seacache-${MODE}-${SHA}}
 GPU_MEMORY=${GPU_MEMORY:-48G}
 NODE_TYPE=${NODE_TYPE:-}
 NODE_POOLS=${NODE_POOLS:-}
-RUNAI_DIR=${RUNAI_DIR:-runs/runai/$(date +%Y%m%d_%H%M%S)__flux_dynamic_seacache_refresh_${MODE}__${SHA}}
+RUNAI_DIR=${RUNAI_DIR:-runs/runai/$(date +%Y%m%d_%H%M%S)__flux_seadefect_distilled_seacache_${MODE}__${SHA}}
 mkdir -p "$RUNAI_DIR"
 
 if [[ "$MODE" == "smoke" ]]; then
   E55_ARGS="--smoke --num-samples 2"
 else
-  E55_ARGS="--num-samples ${NUM_SAMPLES:-4}"
+  E55_ARGS="--num-samples ${NUM_SAMPLES:-8}"
 fi
 GIT_REF=${GIT_REF:-origin/e55-dynamic-seacache-refresh}
+REMOTE_BRANCH=${REMOTE_BRANCH:-${GIT_REF#origin/}}
+REMOTE_REPO_DIR=${REMOTE_REPO_DIR:-/storage/nada/colorful-noise-e55}
 
 cat >"$RUNAI_DIR/resolved_command.sh" <<SCRIPT
 set -euo pipefail
@@ -43,14 +45,14 @@ PY
 command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null)
 
 echo "== repo =="
-cd /storage/nada
-if [ -d colorful-noise-e55/.git ]; then
-  git -C colorful-noise-e55 fetch -q origin || true
-else
-  git clone -q https://github.com/nadavo11/colorful-noise.git colorful-noise-e55
+REPO_DIR="${REMOTE_REPO_DIR}"
+if [ ! -d "\$REPO_DIR/.git" ]; then
+  mkdir -p "$(dirname "\$REPO_DIR")"
+  git clone -q https://github.com/nadavo11/colorful-noise.git "\$REPO_DIR"
 fi
-cd colorful-noise-e55
-git checkout -q -B e55-dynamic-seacache-refresh "${GIT_REF}" || git checkout -q "${SHA}" || true
+cd "\$REPO_DIR"
+git fetch -q origin "${REMOTE_BRANCH}:${REMOTE_BRANCH}" || git fetch -q origin "${REMOTE_BRANCH}" || git fetch -q origin || true
+git checkout -q -B e55-dynamic-seacache-refresh "${GIT_REF}" || git checkout -q "${REMOTE_BRANCH}" || git checkout -q "${SHA}" || true
 git rev-parse --short HEAD || true
 python -m py_compile experiments/flux_dynamic_seacache_refresh.py
 
@@ -60,7 +62,7 @@ python -m pip install --quiet --upgrade \
   'transformers==4.57.6' \
   accelerate protobuf tokenizers sentencepiece safetensors \
   huggingface-hub hf-transfer bitsandbytes \
-  pillow numpy matplotlib scipy scikit-image lpips
+  pillow numpy matplotlib scipy scikit-image scikit-learn lpips pyarrow
 
 echo "== run E55 ${MODE} =="
 START=\$(date -Is)
@@ -70,13 +72,13 @@ python experiments/flux_dynamic_seacache_refresh.py \
   --height 1024 \
   --width 1024 \
   --run-root runs/h100 \
-  --trajectory-root outputs/flux_dynamic_seacache_refresh/trajectories \
+  --trajectory-root outputs/flux_seadefect_distilled_seacache/trajectories \
   ${E55_ARGS}
 END=\$(date -Is)
 echo "== complete =="
 echo "start=\$START"
 echo "end=\$END"
-find runs/h100 -maxdepth 2 -type f -name report.html -path '*flux_dynamic_seacache_refresh*' | sort | tail -5
+find runs/h100 -maxdepth 2 -type f -name report.html -path '*flux_seadefect_distilled_seacache*' | sort | tail -5
 SCRIPT
 
 chmod +x "$RUNAI_DIR/resolved_command.sh"
@@ -100,11 +102,19 @@ runai_dir: "$RUNAI_DIR"
 script: experiments/flux_dynamic_seacache_refresh.py
 e55_args: "$E55_ARGS"
 expected_outputs:
-  - runs/h100/<timestamp>__flux_dynamic_seacache_refresh*/report.html
-  - runs/h100/<timestamp>__flux_dynamic_seacache_refresh*/metrics/teacher_label_dataset.csv
-  - runs/h100/<timestamp>__flux_dynamic_seacache_refresh*/metrics/predictor_auc_calibration.csv
-  - runs/h100/<timestamp>__flux_dynamic_seacache_refresh*/metrics/seacache_dynamic_frontier.csv
-  - runs/h100/<timestamp>__flux_dynamic_seacache_refresh*/figures/*.png
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/report.html
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/teacher_label_dataset.parquet
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/teacher_label_dataset.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/predictor_training_metrics.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/predictor_calibration.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/fixed_seacache_frontier.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/dynamic_seacache_frontier.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/per_sample_metrics.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/call_counter_audit.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/wallclock_audit.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/metrics/leakage_audit.csv
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/schedules/*.json
+  - runs/h100/<timestamp>__flux_seadefect_distilled_seacache*/figures/*.png
 YAML
 
 echo "Submitting $JOB using $RUNAI_DIR"
