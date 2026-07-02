@@ -219,7 +219,7 @@ def pr_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
     recall = tp / max(1, int(y.sum()))
     precision = np.concatenate([[1.0], precision])
     recall = np.concatenate([[0.0], recall])
-    return float(np.trapz(precision, recall))
+    return float(np.trapezoid(precision, recall))
 
 
 def calibration_bins(y_true: np.ndarray, scores: np.ndarray, bins: int = 10) -> list[dict[str, Any]]:

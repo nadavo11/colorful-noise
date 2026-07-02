@@ -51,8 +51,9 @@ if [ ! -d "\$REPO_DIR/.git" ]; then
   git clone -q https://github.com/nadavo11/colorful-noise.git "\$REPO_DIR"
 fi
 cd "\$REPO_DIR"
-git fetch -q origin "${REMOTE_BRANCH}:${REMOTE_BRANCH}" || git fetch -q origin "${REMOTE_BRANCH}" || git fetch -q origin || true
-git checkout -q -B e55-dynamic-seacache-refresh "${GIT_REF}" || git checkout -q "${REMOTE_BRANCH}" || git checkout -q "${SHA}" || true
+git fetch -q origin || true
+git checkout -q "${REMOTE_BRANCH}" || git checkout -q -B e55-dynamic-seacache-refresh "${GIT_REF}" || git checkout -q "${SHA}" || true
+git reset -q --hard "${GIT_REF}" || git reset -q --hard "origin/${REMOTE_BRANCH}" || true
 git rev-parse --short HEAD || true
 python -m py_compile experiments/flux_dynamic_seacache_refresh.py
 
