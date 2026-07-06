@@ -53,8 +53,10 @@ class FluxCacheState:
     def __init__(self):
         self.prev_residual: torch.Tensor | None = None
         self.prev_h_filt: torch.Tensor | None = None
+        self.prev_h_raw: torch.Tensor | None = None   # unfiltered modulated (TeaCache family)
         self.prev_h_norm: float | None = None
-        self.acc: float = 0.0
+        self.acc: float = 0.0        # accumulated Wiener-filtered relL1 (SeaCache)
+        self.acc_raw: float = 0.0    # accumulated raw relL1 (TeaCache-family baseline)
         self.refresh_distance: int = 0
         self.prev_action: str = "fresh"
 
@@ -166,22 +168,39 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
         # meaningful. Mirror that: use raw modulated as the "previous" baseline at step 0.
         h_filt = _sea_filter_h(modulated, image_ids, sigma)
         h_prev_store = modulated.detach() if step_index == 0 else h_filt.detach()
+        mod_raw = modulated.detach()
         if state.prev_h_filt is not None and step_index not in (0, steps - 1):
             raw = rel_l1(h_filt, state.prev_h_filt)
         else:
             raw = 0.0
+        # unfiltered relL1 for the TeaCache-family baseline (no Wiener filter)
+        if state.prev_h_raw is not None and step_index not in (0, steps - 1):
+            raw_unfilt = rel_l1(mod_raw, state.prev_h_raw)
+        else:
+            raw_unfilt = 0.0
         # accumulate BEFORE deciding (SeaCache semantics)
         if step_index in (0, steps - 1):
             state.acc = 0.0
+            state.acc_raw = 0.0
         else:
             state.acc += raw
+            state.acc_raw += raw_unfilt
         feat = _features(sigma, sigma_next, step_index, steps, nodes_left, state, raw, h_filt)
+        feat["raw_unfilt_rel_l1"] = float(raw_unfilt)
+        feat["acc_raw_rel_l1"] = float(state.acc_raw)
 
         action = policy.act(feat, step_index, steps)
-        # if fresh, reset accumulator (refresh)
+        # normalize a continuous adaptive jump: ("jump", jf) -> name + factor
+        adaptive_jf = None
+        if isinstance(action, tuple):
+            adaptive_jf = float(action[1])
+            action = "jump_adaptive"
+        # if fresh, reset both accumulators (refresh)
         if action == "fresh":
             state.acc = 0.0
+            state.acc_raw = 0.0
             feat["acc_rel_l1"] = 0.0
+            feat["acc_raw_rel_l1"] = 0.0
 
         if record_states:
             snapshots.append({
@@ -201,8 +220,8 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
         regridded = False
         target_sigma = sigma_next
         if action.startswith("jump"):
-            jf = JUMP_FACTORS[action]
-            if getattr(policy, "cfg", None) is not None and getattr(policy.cfg, "jump_mode", "regrid") == "drop":
+            jf = adaptive_jf if adaptive_jf is not None else JUMP_FACTORS[action]
+            if adaptive_jf is None and getattr(policy, "cfg", None) is not None and getattr(policy.cfg, "jump_mode", "regrid") == "drop":
                 # on-grid drop: land two nodes ahead if possible
                 j = min(i + 2, len(sigmas) - 1)
                 target_sigma = sigmas[j]
@@ -227,6 +246,7 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
         ledger.record(action, skipped=skipped)
         # update SeaCache/cache bookkeeping
         state.prev_h_filt = h_prev_store
+        state.prev_h_raw = mod_raw
         state.prev_h_norm = feat["h_norm"]
         state.refresh_distance = 0 if action == "fresh" else state.refresh_distance + 1
         state.prev_action = action

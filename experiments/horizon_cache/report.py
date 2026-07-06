@@ -88,11 +88,11 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
     # ---- figures ----
     f_psnr = FIG.frontier_plot(rows, tau_grid, assets / "frontier_psnr.png", "psnr", "PSNR vs full (dB) ↑")
     f_lpips = FIG.frontier_plot(rows, tau_grid, assets / "frontier_lpips.png", "lpips", "LPIPS vs full ↓", higher=False)
-    f_delta = FIG.delta_plot(rows, tau_grid, assets / "delta_psnr.png")
+    f_delta = FIG.delta_plot(summ.get("matched_speedup_deltas_by_variant", {}), assets / "delta_psnr.png")
 
     # action timelines for representative traces (a horizon method that took jumps)
     timelines = []
-    trace_files = sorted((gen_dir / "traces").glob("*horizon_v0_t*.json"))
+    trace_files = sorted((gen_dir / "traces").glob("*horizon_*_t*.json"))
     picked = []
     for tf in trace_files:
         d = json.loads(tf.read_text())
@@ -121,38 +121,45 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
         for r in _csv.DictReader(open(rollout_csv)):
             label_hist[r["label_action"]] = label_hist.get(r["label_action"], 0) + 1
 
-    # ---- best-method extraction: the FAIR metric is ΔPSNR at matched achieved speedup ----
+    # ---- best-variant extraction: the FAIR metric is ΔPSNR at matched achieved speedup ----
     ma = summ["method_agg"]
-    matched = summ.get("matched_speedup_deltas", {})
-    same_tau = summ["matched_deltas_v0_vs_seacache"]
-    # best non-extrapolated matched-speedup operating point (largest positive ΔPSNR)
-    best = None
-    for t, d in matched.items():
-        if best is None or d["matched_delta_psnr"] > best[1]["matched_delta_psnr"]:
-            best = (t, d)
-    best_tau, best_m = best if best else (None, {})
-    # merge same-tau win-rate/speedup context for the chosen tau
-    best_d = dict(best_m)
+    variants = summ.get("variants", [])
+    matched_by_variant = summ.get("matched_speedup_deltas_by_variant", {})
+    same_tau_by_variant = summ.get("same_tau_deltas", {})
+    n_imgs = int(cfg.get("n", 0)) * int(cfg.get("seeds_per_prompt", 1))
+    bv = summ.get("best_variant")
+    best_variant = bv["variant"] if bv else (variants[0] if variants else "regrid_1.25")
+    best_tau = bv["tau"] if bv else None
+    matched = matched_by_variant.get(best_variant, {})
+    same_tau = same_tau_by_variant.get(best_variant, {})
+    best_d = dict(bv) if bv else {}
     if best_tau and best_tau in same_tau:
         best_d.update({"win_rate_psnr": same_tau[best_tau]["win_rate_psnr"],
                        "mean_delta_compute_speedup": same_tau[best_tau]["mean_delta_compute_speedup"],
                        "seacache_speedup": same_tau[best_tau]["seacache_speedup"]})
     best_d.setdefault("matched_delta_psnr", 0.0)
-    best_d.setdefault("horizon_speedup", best_m.get("horizon_speedup", 0.0))
+    best_d.setdefault("horizon_speedup", 0.0)
 
-    # verdict driven by matched-achieved-speedup ΔPSNR + fair-by-identity dominance
+    # DECISION RULE (user-specified, Experiment A):
+    #   KEEP if a non-extrapolated matched ΔPSNR >= +0.3 dB survives at N>=20 AND matched
+    #         win-rate > 60%
+    #   PARK if the mean gain survives but the win-rate is weak, or N<20 (directional)
+    #   KILL if the gain disappears (best matched ΔPSNR <= 0)
     def verdict_gen():
-        # Brutally honest at smoke scale: a ~0.5 dB edge at N=4 is directional, not a win.
-        # KEEP needs a clear, non-extrapolated margin; otherwise PARK (weak dominance signal).
-        pos = [d["matched_delta_psnr"] for d in matched.values() if not d.get("extrapolated")]
-        if pos and max(pos) > 0.8:
-            return "KEEP"
-        return "PARK"
+        cand = [(o["matched_delta_psnr"], o.get("matched_win_rate") or 0.0)
+                for d in matched_by_variant.values() for o in d.values() if not o.get("extrapolated")]
+        best_dp = max([c[0] for c in cand], default=(bv["matched_delta_psnr"] if bv else 0.0))
+        if best_dp <= 0.0:
+            return "KILL"
+        if n_imgs >= 20:
+            strong = [c for c in cand if c[0] >= 0.3 and c[1] > 0.60]
+            return "KEEP" if strong else "PARK"
+        return "PARK"  # N<20: directional at best
     v_gen = verdict_gen()
 
     verdicts = {
-        "horizon_cache_v0": "KEEP" if v_gen == "KEEP" else "PARK",
-        "horizon_cache_v1": "PARK" if v1_diag and v1_diag.get("status") == "DONE" else "PARK",
+        "horizon_cache_v0": v_gen,
+        "horizon_cache_v1": "PARK",
         "jump_1p25": "KEEP",
         "jump_1p5": "PARK",
         "jump_2p0": "KILL",
@@ -162,7 +169,7 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
     # ---- summary json ----
     def m_of(name, k):
         return round(ma[name][k], 4) if name in ma and ma[name].get(k) is not None else None
-    hor_name = f"horizon_v0_t{best_tau[1:]}" if best_tau else None
+    hor_name = f"horizon_{best_variant}_t{best_tau[1:]}" if best_tau else None
     summary_json = {
         "status": "PARTIAL",
         "runnable_paths": {"sd3_generation": bool(caps.get("sd3_generation")),
@@ -171,13 +178,15 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
                            "flowalign": bool(caps.get("flowalign"))},
         "best_methods": {
             "generation": {
-                "method": f"HorizonCache-v0 (regrid, τ={best_tau[1:] if best_tau else '?'})",
+                "method": f"HorizonCache-v0 {best_variant} (τ={best_tau[1:] if best_tau else '?'})",
                 "speedup": (m_of(hor_name, "compute_speedup") if hor_name else None),
                 "psnr": (m_of(hor_name, "psnr") if hor_name else None),
                 "lpips": (m_of(hor_name, "lpips") if hor_name else None),
                 "delta_psnr_vs_seacache": round(best_d.get("matched_delta_psnr", 0.0), 4),
                 "delta_psnr_metric": "ΔPSNR at matched achieved speedup (deck fair rule)",
-                "win_rate_vs_seacache": round(best_d.get("win_rate_psnr", 0.0), 4),
+                "win_rate_vs_seacache": round(best_d.get("matched_win_rate") or 0.0, 4),
+                "win_rate_metric": "per-image PSNR win vs SeaCache interpolated at matched speedup",
+                "same_tau_win_rate": round(best_d.get("win_rate_psnr", 0.0), 4),
             },
             "editing": {"method": "not run (capability-detected only)", "speedup": None,
                         "psnr_or_bg_psnr": None, "lpips": None, "delta_vs_seacache": None,
@@ -185,20 +194,22 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
         },
         "verdicts": verdicts,
         "key_findings": [
-            f"At matched ACHIEVED speedup, HorizonCache-v0 beats SeaCache by "
-            f"{best_d.get('matched_delta_psnr',0):+.2f} dB PSNR in the sweet spot "
-            f"(~{best_d.get('horizon_speedup',0):.1f}×); jumps convert SeaCache's spare "
-            f"staleness headroom into a bigger step. (N={cfg.get('n')} — promising smoke, not a headline.)",
-            "Regrid jumps FIRE on FLUX (conservative: jump_1.25 dominates). This slightly BEATS the "
-            "deck's FLUX prediction of a pure tie — the headroom-driven regrid finds small safe strides.",
-            "The win is on the frontier (matched speedup); at the SAME τ HorizonCache trades ~0.2 dB for "
-            "+0.25× speed — reads as sub-visible in pixels.",
-            "jump_2.0 overshoots past ~2.1× (KILL); reduces to SeaCache exactly when jumps disabled (fair by identity).",
+            f"At matched ACHIEVED speedup, the best HorizonCache variant ({best_variant}) beats SeaCache by "
+            f"{best_d.get('matched_delta_psnr',0):+.2f} dB PSNR at ~{best_d.get('horizon_speedup',0):.1f}× "
+            f"(per-image matched win-rate {(best_d.get('matched_win_rate') or 0)*100:.0f}%); jumps convert "
+            f"SeaCache's spare staleness headroom into a bigger step. N={n_imgs} images "
+            f"({'powered — decision rule applied' if n_imgs>=20 else 'directional smoke, not a headline'}).",
+            "The surviving primitive is the CONSERVATIVE regrid jump (jump_1.25 / adaptive→1.25). This edges "
+            "the deck's FLUX prediction of a pure tie: the headroom-driven small stride finds a narrow safe pocket "
+            "FLUX's bending field still permits.",
+            "The win lives only in a NARROW speed band (~1.7–2.7×) and collapses beyond it — aggressive jumps overshoot. "
+            "Honest statement: HorizonCache-v0 edges the SeaCache frontier in a conservative-jump regime, not everywhere.",
+            "Reduces to SeaCache exactly when jumps disabled (fair by identity); jump_2.0 = KILL on FLUX.",
         ],
         "failure_modes": [
-            "Past ~2.1× the longer live stride's Euler truncation error dominates: HorizonCache falls "
-            f"{matched.get('t0.4',{}).get('matched_delta_psnr',0):+.2f} dB below the SeaCache frontier at 2.5×.",
-            "FLUX field bends sooner than SD3 (deck): headroom for a safe long stride is small, so jumps stay at 1.25.",
+            "The win is confined to ~1.7–2.7×; past ~2.1× the longer live stride's Euler truncation dominates and "
+            "HorizonCache drops below the SeaCache frontier (regrid_1.5 / adaptive→1.5 overshoot first).",
+            "FLUX field bends sooner than SD3 (deck): the safe-jump pocket is small, so only jf≈1.25 survives.",
             "Absolute accumulated-score jump gates never fire (raw relL1 ~0.1-0.25/step); headroom = 1-acc/τ is the right signal.",
         ],
         "artifacts": {
@@ -215,21 +226,30 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
     }
     out_json.write_text(json.dumps(summary_json, indent=2))
 
-    # ---- HTML ----
+    # ---- read the rollout label metric (latent_l2 vs decoded_psnr) for an honest narrative ----
+    rollout_meta = None
+    if rollout_csv and Path(rollout_csv).exists():
+        mp = Path(rollout_csv).parent / "rollout_meta.json"
+        if mp.exists():
+            rollout_meta = json.loads(mp.read_text())
     if label_hist:
         n_jump_lbl = sum(v for k, v in label_hist.items() if k.startswith("jump"))
+        dm = (rollout_meta or {}).get("damage_metric", "latent_l2")
         summary_json["key_findings"].append(
-            f"Rollout safe-horizon labels ({sum(label_hist.values())} states) found {n_jump_lbl} states "
-            f"where a jump stayed under the strict 2% latent-L2 tolerance ({label_hist}). On FLUX jumps are "
-            "'barely safe' in latent-L2 even where decoded PSNR ties — so v1 degenerates to cache/fresh; "
-            "the jump win lives in decoded-PSNR, not latent-L2 tolerance. Relax tolerance / label on decoded PSNR next.")
+            "The v1 SAFE-HORIZON LABEL is the crux — and it is two-dimensional (metric AND horizon). "
+            "Strict latent-L2 (2%) labels 0 safe jumps (too pessimistic); short-H=5 decoded-PSNR labels "
+            f"{n_jump_lbl} safe jumps but 11/12 are jump_2.0 ({label_hist}) — which we KNOW kills end-to-end "
+            "quality. The short continuation is too OPTIMISTIC for big jumps (it misses compounding — the "
+            "deck's DP lesson). Neither is right: the correct target is a FRONTIER-IMPROVEMENT label (does this "
+            "action beat SeaCache end-to-end at matched budget), or a full-trajectory continuation.")
         summary_json["failure_modes"].append(
-            "Rollout labeling at tol=2% latent-L2 yields NO safe-jump positives on FLUX -> v1 can't learn to jump "
-            "(reinforces E53: jumps are borderline on FLUX). Needs a looser / decoded-PSNR damage metric or SD3.")
+            f"v1 label ({dm}) is mis-specified: latent-L2 gives 0 jump positives, short-H decoded-PSNR over-credits "
+            "jump_2.0 (compounding blindness). v1 stays PARK until the label is a full-horizon / frontier-improvement "
+            "target and the rollout dataset is scaled (currently n<=36 states).")
         out_json.write_text(json.dumps(summary_json, indent=2))
 
     html = _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen,
-                        verdicts, v1_diag, rollout_csv, label_hist,
+                        verdicts, v1_diag, rollout_csv, label_hist, best_variant, variants,
                         f_psnr, f_lpips, f_delta, timelines, f_scatter, f_conf, gen_dir)
     out_html.write_text(html)
 
@@ -238,11 +258,14 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
     return summary_json
 
 
-def _method_table(ma: dict, tau_grid) -> str:
+def _method_table(ma: dict, tau_grid, variants=None) -> str:
+    variants = variants or []
     order = ["full"] + [f"uniform_k{k}" for k in (2, 3)] + ["random_k"]
+    order += [m for m in ma if m.startswith("teacache_")]
     for t in tau_grid:
-        order += [f"seacache_t{t:g}", f"horizon_v0_t{t:g}"]
-    order += [m for m in ma if m.startswith("horizon_v0_jump2")]
+        order.append(f"seacache_t{t:g}")
+        for v in variants:
+            order.append(f"horizon_{v}_t{t:g}")
     if "horizon_v1" in ma:
         order.append("horizon_v1")
     rows = ["<tr><th>method</th><th>PSNR↑</th><th>LPIPS↓</th><th>SSIM↑</th><th>achieved speedup</th><th>wall speedup</th><th>mean jumps</th></tr>"]
@@ -259,11 +282,11 @@ def _method_table(ma: dict, tau_grid) -> str:
     return "<table>" + "".join(rows) + "</table>"
 
 
-def _qual_grid(gen_dir: Path, tau_grid) -> str:
+def _qual_grid(gen_dir: Path, tau_grid, best_variant="regrid_1.25") -> str:
     samples = gen_dir / "samples"
     keys = sorted({p.stem.split("__")[0] for p in samples.glob("*__full.png")})[:3]
     t = tau_grid[len(tau_grid) // 2]
-    cols = ["full", "uniform_k2", "random_k", f"seacache_t{t:g}", f"horizon_v0_t{t:g}"]
+    cols = ["full", "uniform_k2", "random_k", f"seacache_t{t:g}", f"horizon_{best_variant}_t{t:g}"]
     out = []
     for key in keys:
         cells = []
@@ -277,8 +300,8 @@ def _qual_grid(gen_dir: Path, tau_grid) -> str:
 
 
 def _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen, verdicts,
-                 v1_diag, rollout_csv, label_hist, f_psnr, f_lpips, f_delta, timelines,
-                 f_scatter, f_conf, gen_dir):
+                 v1_diag, rollout_csv, label_hist, best_variant, variants,
+                 f_psnr, f_lpips, f_delta, timelines, f_scatter, f_conf, gen_dir):
     method_diag = (
         "<span class='b'>latent x_i, sigma_i</span>\n"
         "        ↓ cheap <span class='a'>h</span> features (relL1, acc, h-drift, sigma)\n"
@@ -300,21 +323,25 @@ def _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen, 
 
     dsp = best_d.get("mean_delta_compute_speedup", 0.0)
     dp = best_d.get("matched_delta_psnr", 0.0)          # ΔPSNR at matched achieved speedup
-    wr = best_d.get("win_rate_psnr", 0.0)
+    wr = best_d.get("matched_win_rate") or 0.0   # per-image win-rate at matched speedup
     hsp = best_d.get("horizon_speedup", 0.0)
     ssp = best_d.get("seacache_psnr_at_matched_speedup", 0.0)
+    n_imgs = int(cfg.get("n", 0)) * int(cfg.get("seeds_per_prompt", 1))
 
     lh_note = ""
     if label_hist:
         njl = sum(v for k, v in label_hist.items() if k.startswith("jump"))
-        lh_note = (f"<div class='card'><b>Rollout label distribution</b> ({sum(label_hist.values())} states, "
-                   f"H={cfg.get('steps') and 5}-node full continuation, tol 2% latent-L2): "
-                   f"<code>{label_hist}</code>. <b class='warn'>{njl} states labeled a safe jump.</b> "
-                   "On FLUX a jump perturbs the latent past the 2% L2 tolerance even where the decoded PSNR "
-                   "ties SeaCache — so the honest rollout label says 'cache', and v1 collapses toward SeaCache. "
-                   "The frontier jump-win lives in <i>decoded</i> PSNR, not latent-L2 tolerance. This reinforces "
-                   "E53's finding that FLUX jumps are borderline. Fix: loosen tolerance or label on decoded PSNR/LPIPS, "
-                   "and/or move to SD3 where the flat region is real.</div>")
+        lh_note = (f"<div class='card'><b>The safe-horizon LABEL is the crux (two-dimensional: metric × horizon).</b>"
+                   "<ul>"
+                   "<li><b>latent-L2, 2% tol (E56 first pass):</b> <code>{{'fresh':4,'cache':20,'jump':0}}</code> — <b class='bad'>0 safe jumps</b>. "
+                   "A jump perturbs the latent past 2% even where decoded PSNR is fine ⟹ too pessimistic, v1 degenerates to cache/fresh.</li>"
+                   f"<li><b>decoded-PSNR, H=5, floor 32 dB (this run):</b> <code>{label_hist}</code> — <b class='warn'>{njl} safe jumps, "
+                   "but 11/12 are jump_2.0</b>, which we KNOW kills end-to-end quality. A 5-node continuation is too "
+                   "<b class='warn'>OPTIMISTIC</b> for big jumps: it misses compounding (the deck's DP surrogate lesson resurfacing).</li>"
+                   "</ul>"
+                   "<b>Neither label is correct.</b> The right target is a <b>frontier-improvement</b> label (does this action "
+                   "beat SeaCache end-to-end at matched budget) or a full-trajectory continuation — plus a much larger dataset. "
+                   "This is why v1 stays PARK: not because learning fails, but because the supervision is mis-specified.</div>")
     v1_html = lh_note + "<p class='mut'>v1 not trained in this run (rollout dataset small / skipped).</p>"
     if v1_diag and v1_diag.get("status") == "DONE":
         fi = v1_diag.get("feature_importance", {})
@@ -352,20 +379,25 @@ filtered-relL1 signal off the modulated input <code>h</code>, but expands the de
 {{refresh,cache}} to <b>{{fresh, cache, jump_1.25, jump_1.5, jump_2.0}}</b> with a drop/regrid
 jump scheduler and honest achieved-compute accounting. Two policies: a hand-designed rule
 (<b>v0</b>) and a learned tabular model (<b>v1</b>) trained on rollout safe-horizon labels.</p>
-<p><b>What worked.</b> Regrid jumps fire and convert SeaCache's spare staleness <i>headroom</i>
-(1−acc/τ) into a bigger step. At <b>matched achieved speedup</b> (the deck's fair rule),
-HorizonCache-v0 sits <b class="hl">{dp:+.2f} dB above</b> the SeaCache frontier at
-~<b class="hl">{hsp:.1f}×</b> ({best_d.get('horizon_psnr',0):.2f} dB vs SeaCache's
-{ssp:.2f} dB interpolated at the same speed). It reduces to SeaCache exactly when jumps are
-disabled — <b>fair by identity</b>, so it weakly dominates SeaCache here.</p>
-<p><b>What failed / the honest limit.</b> The margin is small (~0.5 dB) and N={cfg.get('n')} — a
-<b>promising smoke, not a headline</b>. Past ~2.1× the longer stride overshoots and drops below
-SeaCache (jump_2.0 = KILL). On <b>FLUX</b> the flat region is thin (deck: field bends sooner than
-SD3), so jumps stay conservative at 1.25×. <b>SD3 — where the deck's real jump win lives — could
-not be run: no SD3 weights are cached locally.</b></p>
-<p><b>Strongest next claim.</b> HorizonCache is a strictly-more-general SeaCache, free to deploy
-(fair-by-identity), that already edges the SeaCache frontier on FLUX in the 1.5–2.1× sweet spot;
-the larger SD3 flat-region win from the deck should transfer directly and is the priority next run.</p>
+<p><b>What worked (N={n_imgs}, consolidation run).</b> The surviving primitive is the
+<b>conservative <i>adaptive</i> jump</b> (continuous stride jf = 1+(jf_max−1)·headroom, capped at
+1.25) — it beats even fixed regrid_1.25. Where the field is flat (right after a refresh) it
+over-steps; where staleness has built up it does not. At <b>matched achieved speedup</b> (the
+deck's fair rule) the best variant ({best_variant}) sits <b class="hl">{dp:+.2f} dB above</b> the
+SeaCache frontier at ~<b class="hl">{hsp:.1f}×</b> ({best_d.get('horizon_psnr',0):.2f} dB vs
+SeaCache's {ssp:.2f} dB interpolated at the same speed), with a per-image win-rate of
+<b class="hl">{wr:.0%}</b>. Mechanism: the jump lets HorizonCache keep refreshing <i>often</i>
+(low τ) yet still save compute, giving a <b>gentler quality/speed tradeoff</b> than SeaCache's
+rare-refresh / long-cache — exactly where SeaCache's frontier drops steepest.</p>
+<p><b>The honest limit — it is a NARROW-band win.</b> The edge lives in roughly <b>1.7–2.7×</b> and
+<b>collapses past ~3×</b> (τ=0.65): there the stride overshoots and HorizonCache falls to/below
+SeaCache. So the claim is <b>not</b> "HorizonCache beats SeaCache on FLUX" — it is
+"<b>HorizonCache-v0 edges the SeaCache frontier in a conservative-jump regime, and aggressive
+jumps overshoot</b>." jump_2.0 = KILL. Single seed, 512px, FLUX only. <b>SD3 — where the deck's
+larger jump win lives — could not be run (no local weights)</b> and should show a wider band.</p>
+<p><b>Strongest next claim.</b> HorizonCache is a strictly-more-general, fair-by-identity SeaCache
+that measurably improves the FLUX frontier in the conservative-jump band; the win is driven by the
+<i>adaptive</i> headroom stride, and the SD3 flat-region transfer is the priority follow-up.</p>
 <p style="margin-top:10px">{vbadge(v_gen)} generation-v0 &nbsp; {vbadge(verdicts['jump_2p0'])} jump_2.0 &nbsp;
 {vbadge(verdicts['editing_branch_horizon'])} editing branch-horizon (not run)</p>
 </div>""")
@@ -434,7 +466,7 @@ speedup.</p>
 
     # 5 results
     parts.append(f"""<h2>5 · Results — generation (FLUX)</h2>
-{_method_table(summ['method_agg'], tau_grid)}
+{_method_table(summ['method_agg'], tau_grid, variants)}
 <p class="mut">Rows marked green are HorizonCache. "achieved speedup" is block-stack-equivalent
 (fresh=1, cache/jump≈1/{cfg.get('flux_L')}); wall speedup is measured.</p>
 <h3>Fair frontier: quality vs achieved speedup</h3>
@@ -455,7 +487,7 @@ speedup.</p>
 <p>Same prompt/seed across methods at τ={tau_grid[len(tau_grid)//2]:g}. Columns: reference full ·
 uniform · random · SeaCache · HorizonCache-v0. The cache is near-invisible; naive uniform/random
 drift.</p>
-{_qual_grid(gen_dir, tau_grid)}""")
+{_qual_grid(gen_dir, tau_grid, best_variant)}""")
 
     # 6 failure
     parts.append(f"""<h2>6 · Failure analysis</h2>
@@ -476,7 +508,7 @@ store the unfiltered modulated input at step 0 so step 1's relL1 is meaningful (
     parts.append(f"""<h2>7 · Verdict</h2>
 <table><tr><th>variant</th><th>verdict</th></tr>{kv}</table>
 <div class="card">
-<p><b>Does HorizonCache beat SeaCache at matched achieved budget?</b> On FLUX, in the 1.5–2.1×
+<p><b>Does HorizonCache beat SeaCache at matched achieved budget?</b> On FLUX, in the 1.7–2.7×
 sweet spot: <b>yes, by ~{dp:+.2f} dB</b> at matched achieved speedup — a small but consistent
 frontier edge, and because jumps-disabled = SeaCache exactly it never does worse there (weak
 dominance). Past 2.1× jumps overshoot and it falls below SeaCache. N={cfg.get('n')}, so treat the
@@ -515,7 +547,7 @@ def _render_md(sj, ma, tau_grid, best_tau, best_d):
              f"- PSNR: {sj['best_methods']['generation']['psnr']} dB, LPIPS: {sj['best_methods']['generation']['lpips']}",
              f"- ΔPSNR vs SeaCache at **matched achieved speedup** (deck fair rule): "
              f"{sj['best_methods']['generation']['delta_psnr_vs_seacache']:+.2f} dB "
-             f"(edges the SeaCache frontier in the 1.5–2.1× sweet spot; overshoots past 2.1×)", "",
+             f"(edges the SeaCache frontier in the 1.7–2.7× sweet spot; overshoots past 2.1×)", "",
              "## Verdicts"]
     for k, v in sj["verdicts"].items():
         lines.append(f"- {k}: **{v}**")

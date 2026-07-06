@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--tau-cache", type=float, default=0.3)
     ap.add_argument("--H", type=int, default=5)
     ap.add_argument("--tol-l2", type=float, default=0.02)
+    ap.add_argument("--damage-metric", choices=["latent_l2", "decoded_psnr"], default="latent_l2")
+    ap.add_argument("--psnr-floor", type=float, default=30.0)
     ap.add_argument("--stride", type=int, default=2)
     ap.add_argument("--max-seq-len", type=int, default=512)
     ap.add_argument("--out", default="metrics/horizon_cache")
@@ -55,7 +57,8 @@ def main():
     ds = build_dataset(pipe, prompts, seeds, args.steps, args.height, args.width,
                        args.guidance, "cuda", csv_p, pq_p, H=args.H, tol_l2=args.tol_l2,
                        max_seq_len=args.max_seq_len, tau_cache=args.tau_cache, L=L,
-                       stride=args.stride)
+                       stride=args.stride, damage_metric=args.damage_metric,
+                       psnr_floor=args.psnr_floor)
     print("[rollout]", json.dumps(ds, indent=2))
     diag = train(csv_p, Path(args.bundle), mode=args.mode)
     print("[train]", json.dumps(diag, indent=2))

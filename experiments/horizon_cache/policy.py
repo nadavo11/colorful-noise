@@ -58,7 +58,9 @@ class HorizonV0Config:
     tau_cache: float = 0.30          # SeaCache refresh threshold (acc >= tau -> fresh)
     enable_jump: bool = True
     allow_jump2: bool = False        # jump_2.0 is an ablation, off in the primary frontier
-    jf_max_frontier: float = 1.5     # cap for the conservative frontier
+    jf_max_frontier: float = 1.5     # cap for the conservative frontier (discrete mode)
+    adaptive: bool = False           # deck adaptive-jump: continuous stride, not a discrete pick
+    jf_max: float = 1.25             # adaptive cap: jf = 1 + (jf_max-1)*headroom
     # headroom needed to authorize each jump factor (larger factor needs more headroom)
     jump_headroom: dict = field(default_factory=lambda: {"jump_1.25": 0.45, "jump_1.5": 0.65, "jump_2.0": 0.82})
     raw_rel_l1_max: float = 0.18     # instantaneous staleness must be small to over-step
@@ -118,6 +120,10 @@ class HorizonCacheV0:
         # reuse territory: pick the largest jump the headroom authorizes, else cache
         if self._jump_allowed(feat):
             head = c.headroom(acc)
+            if c.adaptive:
+                # deck adaptive-jump: continuous stride scaled by flatness, capped at jf_max
+                jf = 1.0 + (c.jf_max - 1.0) * head
+                return ("jump", jf) if jf > 1.01 else "cache"
             candidates = ["jump_1.25", "jump_1.5"]
             if c.allow_jump2:
                 candidates.append("jump_2.0")

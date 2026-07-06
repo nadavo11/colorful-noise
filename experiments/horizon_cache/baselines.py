@@ -44,6 +44,23 @@ class RandomK:
         return "fresh" if step_index in self.fresh else "cache"
 
 
+class TeaCachePolicy:
+    """TeaCache-family gate: accumulate the RAW (unfiltered) relL1 of the modulated input,
+    refresh at tau. The deck attributes SeaCache's win to the Wiener filter TeaCache lacks;
+    this baseline isolates that by using the same accumulate-and-refresh loop on the
+    unfiltered signal (no fitted rescaling polynomial — we do not have FLUX-specific
+    coefficients, so this is the un-fitted TeaCache-family lower bound)."""
+
+    def __init__(self, tau: float):
+        self.tau = float(tau)
+        self.name = f"teacache_t{tau:g}"
+
+    def act(self, feat, step_index, num_steps):
+        if step_index == 0 or step_index >= num_steps - 1:
+            return "fresh"
+        return "cache" if feat.get("acc_raw_rel_l1", 0.0) < self.tau else "fresh"
+
+
 class SeaCachePolicy:
     """SeaCache gate: accumulate filtered rel-L1, refresh at tau. Implemented as v0 with
     jumps disabled so it shares HorizonCache's exact fresh/cache boundary."""

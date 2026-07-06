@@ -1,0 +1,16 @@
+{
+  "n_states": 36,
+  "label_hist": {
+    "fresh": 0,
+    "cache": 24,
+    "jump_1.25": 1,
+    "jump_1.5": 0,
+    "jump_2.0": 11
+  },
+  "csv": "../metrics/horizon_cache_decoded/action_dataset.csv",
+  "parquet": "../metrics/horizon_cache_decoded/action_dataset.parquet",
+  "H": 5,
+  "tol_l2": 0.02,
+  "damage_metric": "decoded_psnr",
+  "psnr_floor": 32.0
+}

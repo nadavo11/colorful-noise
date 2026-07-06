@@ -44,6 +44,14 @@ def data_uri(path: Path) -> str:
 
 
 # ---------------------------------------------------------------- frontier
+VARIANT_STYLE = {
+    "regrid_1.25": (ACC2, "-o", "regrid 1.25"),
+    "regrid_1.5": (WARN, "-s", "regrid 1.5"),
+    "adaptive_1.25": ("#7ee7c8", "-^", "adaptive→1.25"),
+    "adaptive_1.5": ("#d2a8ff", "-D", "adaptive→1.5"),
+}
+
+
 def frontier_plot(rows: list[dict], tau_grid, out: Path, ycol="psnr", ylabel="PSNR vs full (dB) ↑", higher=True):
     by_method = collections.defaultdict(list)
     for r in rows:
@@ -53,65 +61,69 @@ def frontier_plot(rows: list[dict], tau_grid, out: Path, ycol="psnr", ylabel="PS
         vals = [r[k] for r in rs if k in r and r[k] is not None]
         return float(np.mean(vals)) if vals else None
 
-    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    variants = sorted({m[len("horizon_"):m.rfind("_t")] for m in by_method if m.startswith("horizon_")})
+    fig, ax = plt.subplots(figsize=(7.6, 4.8))
     _style(ax)
-    # SeaCache frontier (sweep tau)
+    # SeaCache frontier (sweep tau) — the primary comparison
     sea = sorted([(mean(by_method[f"seacache_t{t:g}"], "compute_speedup"),
                    mean(by_method[f"seacache_t{t:g}"], ycol)) for t in tau_grid
                   if by_method.get(f"seacache_t{t:g}")])
-    hor = sorted([(mean(by_method[f"horizon_v0_t{t:g}"], "compute_speedup"),
-                   mean(by_method[f"horizon_v0_t{t:g}"], ycol)) for t in tau_grid
-                  if by_method.get(f"horizon_v0_t{t:g}")])
     if sea:
         xs, ys = zip(*sea)
-        ax.plot(xs, ys, "-o", color=ACC, label="SeaCache", linewidth=2, markersize=7)
-    if hor:
-        xs, ys = zip(*hor)
-        ax.plot(xs, ys, "-o", color=ACC2, label="HorizonCache-v0", linewidth=2, markersize=7)
+        ax.plot(xs, ys, "-o", color=ACC, label="SeaCache", linewidth=2.4, markersize=7, zorder=6)
+    # each HorizonCache variant as its own frontier
+    for v in variants:
+        col, mk, lab = VARIANT_STYLE.get(v, (INK, "-o", v))
+        pts = sorted([(mean(by_method[f"horizon_{v}_t{t:g}"], "compute_speedup"),
+                       mean(by_method[f"horizon_{v}_t{t:g}"], ycol)) for t in tau_grid
+                      if by_method.get(f"horizon_{v}_t{t:g}")])
+        if pts:
+            xs, ys = zip(*pts)
+            ax.plot(xs, ys, mk, color=col, label=lab, linewidth=1.8, markersize=6, zorder=5)
+    # TeaCache frontier
+    tea = sorted([(mean(v, "compute_speedup"), mean(v, ycol))
+                  for k, v in by_method.items() if k.startswith("teacache_") and v])
+    if len(tea) >= 1:
+        xs, ys = zip(*tea)
+        ax.plot(xs, ys, "-x", color="#b0724a", label="TeaCache (raw)", linewidth=1.4, markersize=6, zorder=4)
     # baselines as points
     for name, col, lab in [("uniform_k2", MUT, "uniform k2"), ("uniform_k3", "#6b7684", "uniform k3"),
                            ("random_k", BAD, "random-k")]:
         if by_method.get(name):
             ax.scatter([mean(by_method[name], "compute_speedup")], [mean(by_method[name], ycol)],
-                       color=col, s=55, marker="s", label=lab, zorder=5)
-    # jump2 ablation
-    ab = [m for m in by_method if m.startswith("horizon_v0_jump2")]
-    if ab:
-        ax.scatter([mean(by_method[ab[0]], "compute_speedup")], [mean(by_method[ab[0]], ycol)],
-                   color="#d2a8ff", s=70, marker="*", label="v0 +jump2 (ablation)", zorder=6)
-    # v1
+                       color=col, s=55, marker="s", label=lab, zorder=3)
     if by_method.get("horizon_v1"):
         ax.scatter([mean(by_method["horizon_v1"], "compute_speedup")], [mean(by_method["horizon_v1"], ycol)],
-                   color=WARN, s=90, marker="D", label="HorizonCache-v1", zorder=7)
+                   color="#f0b429", s=90, marker="*", label="HorizonCache-v1", zorder=7)
     ax.set_xlabel("achieved speedup (block-stack-equivalent) →")
     ax.set_ylabel(ylabel)
     ax.set_title("Frontier: quality vs achieved speedup (FLUX)")
-    leg = ax.legend(fontsize=8, facecolor=PANEL, edgecolor=LINE, labelcolor=INK, loc="best")
+    ax.legend(fontsize=8, facecolor=PANEL, edgecolor=LINE, labelcolor=INK, loc="best", ncol=2)
     return _save(fig, out)
 
 
 # ---------------------------------------------------------------- per-image delta
-def delta_plot(rows, tau_grid, out: Path):
-    by = collections.defaultdict(dict)
-    for r in rows:
-        by[r["method"]][r["key"]] = r
-    fig, ax = plt.subplots(figsize=(7.2, 4.0))
+def delta_plot(matched_by_variant: dict, out: Path):
+    """ΔPSNR at MATCHED achieved speedup (deck fair rule), one curve per variant."""
+    fig, ax = plt.subplots(figsize=(7.6, 4.2))
     _style(ax)
-    xs, ys, es = [], [], []
-    for t in tau_grid:
-        sea = by.get(f"seacache_t{t:g}", {}); hor = by.get(f"horizon_v0_t{t:g}", {})
-        keys = set(sea) & set(hor)
-        if not keys:
+    for v, d in matched_by_variant.items():
+        col, mk, lab = VARIANT_STYLE.get(v, (INK, "-o", v))
+        pts = sorted([(o["horizon_speedup"], o["matched_delta_psnr"], o.get("extrapolated"))
+                      for o in d.values()])
+        if not pts:
             continue
-        d = [hor[k]["psnr"] - sea[k]["psnr"] for k in keys]
-        sp = np.mean([hor[k]["compute_speedup"] for k in keys])
-        xs.append(sp); ys.append(np.mean(d)); es.append(np.std(d))
-    if xs:
-        ax.errorbar(xs, ys, yerr=es, fmt="-o", color=ACC2, ecolor=MUT, capsize=4, linewidth=2)
-    ax.axhline(0, color=BAD, linewidth=1, linestyle="--")
+        xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+        ax.plot(xs, ys, mk, color=col, label=lab, linewidth=1.9, markersize=6)
+        for x, y, ex in pts:
+            if ex:
+                ax.scatter([x], [y], facecolors="none", edgecolors=col, s=90, zorder=6)
+    ax.axhline(0, color=MUT, linewidth=1.2, linestyle="--")
+    ax.axvspan(1.5, 2.1, color=ACC2, alpha=0.06)
     ax.set_xlabel("HorizonCache achieved speedup →")
-    ax.set_ylabel("Δ PSNR vs SeaCache (same τ) dB")
-    ax.set_title("Per-image ΔPSNR (HorizonCache-v0 − SeaCache), same τ")
+    ax.set_ylabel("Δ PSNR vs SeaCache @ matched speedup (dB)")
+    ax.set_title("Fair frontier gap (hollow = extrapolated beyond SeaCache range)")
+    ax.legend(fontsize=8, facecolor=PANEL, edgecolor=LINE, labelcolor=INK, loc="best")
     return _save(fig, out)
 
 

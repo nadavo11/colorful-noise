@@ -26,10 +26,24 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # experiments/ on path
 
 from horizon_cache import capability, metrics as M
-from horizon_cache.baselines import FullPolicy, UniformEveryK, RandomK, SeaCachePolicy
+from horizon_cache.baselines import FullPolicy, UniformEveryK, RandomK, SeaCachePolicy, TeaCachePolicy
 from horizon_cache.policy import HorizonCacheV0, HorizonV0Config, HorizonCacheV1, FEATURE_NAMES
 from horizon_cache.flux_gen import sample_flux
 from horizon_cache.scheduler import ACTIONS
+
+# HorizonCache-v0 variant families for the Experiment-A stress test. Each maps to a config
+# builder(tau) -> HorizonV0Config. regrid = discrete fixed-factor cap; adaptive = continuous
+# stride jf = 1+(jf_max-1)*headroom (deck adaptive-jump).
+def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
+    if variant == "regrid_1.25":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.25)
+    if variant == "regrid_1.5":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.5)
+    if variant == "adaptive_1.25":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.25)
+    if variant == "adaptive_1.5":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.5)
+    raise ValueError(f"unknown variant {variant}")
 
 
 def git_hash() -> str:
@@ -41,8 +55,21 @@ def git_hash() -> str:
 
 
 def canonical_prompts(n: int) -> list[dict[str, Any]]:
-    from fixtures import canonical_prompts as cp
-    return cp()[:n]
+    """Up to n prompts: the frozen canonical fixture first (comparable by construction),
+    then deterministic GenEval extras if n exceeds the canonical set (needed to reach N>=20
+    for the decision rule). Records provenance in each dict's 'source'."""
+    from fixtures import canonical_prompts as cp, geneval_all
+    out = cp()
+    if n > len(out):
+        seen = {p["prompt"] for p in out}
+        for i, pr in enumerate(geneval_all()):
+            if len(out) >= n:
+                break
+            if pr in seen:
+                continue
+            seen.add(pr)
+            out.append({"id": f"geneval_extra_{i}", "prompt": pr, "tag": "geneval", "source": "geneval_all"})
+    return out[:n]
 
 
 def build_methods(args, num_steps: int, seed: int) -> dict[str, Any]:
@@ -53,17 +80,14 @@ def build_methods(args, num_steps: int, seed: int) -> dict[str, Any]:
     methods["uniform_k2"] = UniformEveryK(2)
     methods["uniform_k3"] = UniformEveryK(3)
     methods["random_k"] = RandomK(k_fresh=max(2, num_steps // 2), num_steps=num_steps, seed=seed)
-    # shared threshold grid for the causal gates
+    # shared threshold grid: SeaCache (the primary comparison) + each HorizonCache variant.
     for tau in args.tau_grid:
         methods[f"seacache_t{tau:g}"] = SeaCachePolicy(tau)
-        cfg = HorizonV0Config(tau_cache=tau, enable_jump=True, jump_mode=args.jump_mode,
-                              jf_max_frontier=1.5)
-        methods[f"horizon_v0_t{tau:g}"] = HorizonCacheV0(cfg)
-    # jump_2.0 ablation at the middle tau (deck: bigger stride overshoots)
-    mid = args.tau_grid[len(args.tau_grid) // 2]
-    ab = HorizonV0Config(tau_cache=mid, enable_jump=True, jump_mode=args.jump_mode,
-                         allow_jump2=True, jf_max_frontier=2.0)
-    methods[f"horizon_v0_jump2_t{mid:g}"] = HorizonCacheV0(ab)
+        for variant in args.variants:
+            methods[f"horizon_{variant}_t{tau:g}"] = HorizonCacheV0(_variant_cfg(variant, tau, args.jump_mode))
+    # TeaCache-family baseline swept over its own (raw-relL1) thresholds
+    for tau in args.teacache_taus:
+        methods[f"teacache_t{tau:g}"] = TeaCachePolicy(tau)
     # optional learned policy
     if args.v1_bundle and Path(args.v1_bundle).exists():
         import joblib
@@ -183,49 +207,77 @@ def summarize_generation(rows: list[dict[str, Any]], tau_grid) -> dict[str, Any]
 
     method_agg = {m: agg(rs) for m, rs in by_method.items()}
 
-    # matched-budget per-image delta: HorizonCache-v0 vs SeaCache at the SAME tau
-    deltas = {}
-    for tau in tau_grid:
-        sea = {r["key"]: r for r in by_method.get(f"seacache_t{tau:g}", [])}
-        hor = {r["key"]: r for r in by_method.get(f"horizon_v0_t{tau:g}", [])}
-        keys = set(sea) & set(hor)
-        if not keys:
-            continue
-        dpsnr = [hor[k]["psnr"] - sea[k]["psnr"] for k in keys]
-        dspeed = [hor[k]["compute_speedup"] - sea[k]["compute_speedup"] for k in keys]
-        wins = sum(1 for d in dpsnr if d > 0)
-        deltas[f"t{tau:g}"] = {
-            "n": len(keys),
-            "mean_delta_psnr": float(np.mean(dpsnr)),
-            "mean_delta_compute_speedup": float(np.mean(dspeed)),
-            "win_rate_psnr": wins / len(keys),
-            "seacache_psnr": float(np.mean([sea[k]["psnr"] for k in keys])),
-            "horizon_psnr": float(np.mean([hor[k]["psnr"] for k in keys])),
-            "seacache_speedup": float(np.mean([sea[k]["compute_speedup"] for k in keys])),
-            "horizon_speedup": float(np.mean([hor[k]["compute_speedup"] for k in keys])),
-        }
-    # matched-ACHIEVED-speedup frontier delta (the deck's fair rule): interpolate the
-    # SeaCache PSNR(speedup) curve at each HorizonCache operating point's achieved speedup.
+    # discover which HorizonCache variants ran, e.g. "regrid_1.25" from "horizon_regrid_1.25_t0.3"
+    variants = sorted({m[len("horizon_"):m.rfind("_t")] for m in by_method if m.startswith("horizon_")})
+
+    # SeaCache frontier for interpolation (the fair matched-achieved-speedup baseline curve)
     sea_pts = sorted([(method_agg[f"seacache_t{t:g}"]["compute_speedup"],
                        method_agg[f"seacache_t{t:g}"]["psnr"]) for t in tau_grid
                       if f"seacache_t{t:g}" in method_agg])
-    matched = {}
-    if len(sea_pts) >= 2:
-        sx = [p[0] for p in sea_pts]; sy = [p[1] for p in sea_pts]
-        for t in tau_grid:
-            hk = f"horizon_v0_t{t:g}"
-            if hk not in method_agg:
-                continue
-            hs = method_agg[hk]["compute_speedup"]; hp = method_agg[hk]["psnr"]
-            sea_at = float(np.interp(hs, sx, sy))
-            matched[f"t{t:g}"] = {
-                "horizon_speedup": round(hs, 4), "horizon_psnr": round(hp, 4),
-                "seacache_psnr_at_matched_speedup": round(sea_at, 4),
-                "matched_delta_psnr": round(hp - sea_at, 4),
-                "extrapolated": bool(hs > max(sx) or hs < min(sx)),
-            }
-    return {"method_agg": method_agg, "matched_deltas_v0_vs_seacache": deltas,
-            "matched_speedup_deltas": matched, "seacache_frontier": sea_pts}
+    sx = [p[0] for p in sea_pts]; sy = [p[1] for p in sea_pts]
+
+    # per-variant deltas: same-tau (context) + matched-achieved-speedup (the fair number)
+    same_tau: dict[str, dict] = {v: {} for v in variants}
+    matched: dict[str, dict] = {v: {} for v in variants}
+    for v in variants:
+        for tau in tau_grid:
+            sea = {r["key"]: r for r in by_method.get(f"seacache_t{tau:g}", [])}
+            hor = {r["key"]: r for r in by_method.get(f"horizon_{v}_t{tau:g}", [])}
+            keys = set(sea) & set(hor)
+            if keys:
+                dpsnr = [hor[k]["psnr"] - sea[k]["psnr"] for k in keys]
+                same_tau[v][f"t{tau:g}"] = {
+                    "n": len(keys),
+                    "mean_delta_psnr": float(np.mean(dpsnr)),
+                    "mean_delta_compute_speedup": float(np.mean([hor[k]["compute_speedup"] - sea[k]["compute_speedup"] for k in keys])),
+                    "win_rate_psnr": sum(1 for d in dpsnr if d > 0) / len(keys),
+                    "seacache_speedup": float(np.mean([sea[k]["compute_speedup"] for k in keys])),
+                }
+            hk = f"horizon_{v}_t{tau:g}"
+            if hk in method_agg and len(sea_pts) >= 2:
+                hs = method_agg[hk]["compute_speedup"]; hp = method_agg[hk]["psnr"]
+                sea_at = float(np.interp(hs, sx, sy))
+                # per-image matched win-rate: each image's HorizonCache PSNR vs SeaCache
+                # interpolated at that image's own achieved speedup
+                hor = by_method.get(hk, [])
+                per_img = []
+                for r in hor:
+                    same = [s for s in by_method.get(f"seacache_t{tau:g}", []) if s["key"] == r["key"]]
+                    # interpolate this image's SeaCache frontier across taus
+                    simg = sorted([(s["compute_speedup"], s["psnr"]) for t2 in tau_grid
+                                   for s in by_method.get(f"seacache_t{t2:g}", []) if s["key"] == r["key"]])
+                    if len(simg) >= 2:
+                        per_img.append(r["psnr"] - float(np.interp(r["compute_speedup"], [p[0] for p in simg], [p[1] for p in simg])))
+                matched[v][f"t{tau:g}"] = {
+                    "horizon_speedup": round(hs, 4), "horizon_psnr": round(hp, 4),
+                    "seacache_psnr_at_matched_speedup": round(sea_at, 4),
+                    "matched_delta_psnr": round(hp - sea_at, 4),
+                    "matched_win_rate": round(sum(1 for d in per_img if d > 0) / len(per_img), 4) if per_img else None,
+                    "extrapolated": bool(hs > max(sx) or hs < min(sx)) if sx else True,
+                }
+    # legacy keys (report/back-compat): pick the best variant as the headline
+    def _best_variant():
+        best = None
+        for v in variants:
+            for t, d in matched[v].items():
+                if not d.get("extrapolated") and (best is None or d["matched_delta_psnr"] > best[2]["matched_delta_psnr"]):
+                    best = (v, t, d)
+        if best is None:  # fall back to any
+            for v in variants:
+                for t, d in matched[v].items():
+                    if best is None or d["matched_delta_psnr"] > best[2]["matched_delta_psnr"]:
+                        best = (v, t, d)
+        return best
+    bv = _best_variant()
+    legacy_matched = matched.get(bv[0], {}) if bv else {}
+    legacy_same = same_tau.get(bv[0], {}) if bv else {}
+    return {"method_agg": method_agg, "variants": variants,
+            "same_tau_deltas": same_tau, "matched_speedup_deltas_by_variant": matched,
+            "best_variant": ({"variant": bv[0], "tau": bv[1], **bv[2]} if bv else None),
+            # legacy single-variant fields consumed by report.py
+            "matched_deltas_v0_vs_seacache": legacy_same,
+            "matched_speedup_deltas": legacy_matched,
+            "seacache_frontier": sea_pts}
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -245,7 +297,11 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--no-bnb4", dest="bnb4", action="store_false")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-seq-len", type=int, default=512)
-    ap.add_argument("--tau-grid", type=float, nargs="+", default=[0.2, 0.3, 0.4])
+    ap.add_argument("--tau-grid", type=float, nargs="+", default=[0.2, 0.3, 0.4, 0.5])
+    ap.add_argument("--variants", nargs="+",
+                    default=["regrid_1.25", "regrid_1.5", "adaptive_1.25"],
+                    help="HorizonCache-v0 variants to sweep (Experiment A stress test)")
+    ap.add_argument("--teacache-taus", type=float, nargs="+", default=[0.5, 0.8, 1.2])
     ap.add_argument("--jump-mode", choices=["regrid", "drop"], default="regrid")
     ap.add_argument("--allow-jump2", action="store_true")
     ap.add_argument("--v1-bundle", default="")
@@ -260,7 +316,9 @@ def main():
         args.n = min(args.n, 3)
         args.steps = 28
         args.width = args.height = 512
-        args.tau_grid = [0.3]
+        args.tau_grid = [0.3, 0.4]
+        args.variants = ["regrid_1.25", "adaptive_1.25"]
+        args.teacache_taus = [0.8]
         args.save_all_images = True
     if args.mode == "editing":
         print(json.dumps({"status": "PARTIAL", "reason":

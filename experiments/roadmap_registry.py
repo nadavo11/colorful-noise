@@ -1024,8 +1024,9 @@ EXPERIMENTS = [
      "script": "experiments/flux_dp_jump_oracle.py", "doc": "docs/experiment-reports/EXPERIMENT_53.md",
      "results": None, "image": None},
     {"id": "E56", "title": "HorizonCache -- causal safe-horizon prediction (fresh/cache/jump) for flow-model caching",
-     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit transformer (24GB A5000), 512px, 28 Euler steps, "
-               "canonical-fixture prompts (v1); SD3 unavailable (no local weights); editing capability-detected but not run",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit transformer (24GB A5000), 512px, 28 Euler steps, N=20 "
+               "prompts (canonical-fixture v1 + deterministic GenEval extras), 1 seed; SD3 unavailable (no local weights); "
+               "editing capability-detected but not run",
      "status": "active",
      "motivation": "SeaCache decides refresh-vs-cache from one cheap relative-L1 score off the modulated input h. We ask "
                    "whether the SAME signal supports ACTION SELECTION: predict how far the current computation stays "
@@ -1040,30 +1041,43 @@ EXPERIMENTS = [
                "(on-grid skip) and regrid (off-grid: sigma_target=sigma_i+jf*(sigma_{i+1}-sigma_i), then re-space the tail to "
                "0, net -1 node). v0 picks the jump factor by HEADROOM h=1-acc/tau (deck adaptive-jump), gated hard on sigma "
                "band, instantaneous relL1, h-cosine-drift, tail length; jumps disabled == SeaCache exactly (fair by identity). "
-               "Achieved-compute accounting: fresh=1 forward, cache/jump~1/L (L=57), jumps also remove executed nodes; report "
-               "block-stack-equivalent AND measured wall speedup, never nominal. v1: sklearn HistGradientBoosting on causal "
-               "features only, trained on rollout SAFE-HORIZON labels (branch each candidate action from a state, continue "
-               "FULL for H nodes, label the largest-horizon action under a latent-L2 damage tolerance). Baselines full/uniform-k/"
-               "random-k/SeaCache on a shared tau grid; fair frontier = dPSNR at MATCHED ACHIEVED speedup (interpolate the "
-               "SeaCache PSNR(speedup) curve). Env fix: patched a broken xformers flash_attn_3 _C.so ABI import; FLUX runs 4-bit "
+               "TWO v0 jump families: fixed regrid_{1.25,1.5} (discrete factor cap) and ADAPTIVE (continuous stride "
+               "jf=1+(jf_max-1)*headroom, deck adaptive-jump). Achieved-compute accounting: fresh=1 forward, cache/jump~1/L (L=57), "
+               "jumps also remove executed nodes; report block-stack-equivalent AND measured wall speedup, never nominal. v1: "
+               "sklearn HistGradientBoosting on causal features only, trained on rollout SAFE-HORIZON labels (branch each candidate "
+               "action, continue FULL for H nodes, label the largest-horizon action under a damage tolerance -- damage metric is "
+               "either latent-L2 OR decoded-PSNR (both tested)). Baselines full/uniform-k/random-k/SeaCache + TeaCache-raw on a "
+               "shared tau grid; fair frontier = dPSNR at MATCHED ACHIEVED speedup (interpolate the SeaCache PSNR(speedup) curve) "
+               "with per-image matched win-rate. Env fix: patched a broken xformers flash_attn_3 _C.so ABI import; FLUX runs 4-bit "
                "(bitsandbytes) to fit 24GB.",
-     "result": "SMOKE (N=4 prompts, 1 seed, 512px/28 steps -- directional, not powered). Regrid jumps FIRE on FLUX and are "
-               "conservative (jump_1.25 dominates, 1-5 jumps/traj). At MATCHED ACHIEVED speedup HorizonCache-v0 edges the "
-               "SeaCache frontier by +0.49 dB @1.54x and +0.51 dB @2.12x (horizon 33.04/28.57 dB vs seacache interp 32.55/28.07), "
-               "then OVERSHOOTS past ~2.1x (-0.97 dB @2.5x). Same-tau it trades ~0.2 dB for +0.25x speed (sub-visible). Naive "
-               "uniform/random collapse (17.9/20.7 dB). This slightly BEATS the deck's FLUX prediction of a pure tie -- the "
-               "headroom-driven regrid finds small safe strides FLUX's bending field still permits. jump_2.0 = KILL (overshoot). "
-               "v1 rollout pipeline runs end-to-end (safe-horizon dataset + HistGB + asymmetric cost + confusion/importance) but "
-               "on a tiny dataset -- a pipeline demonstration, not a trained win yet. SD3 (the deck's real jump win) NOT run: no "
-               "local weights. Editing path capability-detected (FlowEdit/FlowAlign harness + PIE-Bench present) but not executed.",
-     "verdict": "PARK-leaning-KEEP (directional). HorizonCache is a strictly-more-general, fair-by-identity SeaCache that already "
-                "weakly dominates the SeaCache frontier on FLUX in the 1.5-2.1x sweet spot (+~0.5 dB at matched achieved speedup) "
-                "and never does worse there; past 2.1x jumps overshoot. Margin is small and N=4, so not yet a demonstrated win. "
-                "jump_2.0 KILL; v0 KEEP-directional; v1 PARK (pipeline only); editing-branch-horizon PARK (not run).",
-     "nxt": "(1) Run SD3 generation (download SD3.5-medium) -- the deck's flat-region jump win is the highest-value transfer and "
-            "HorizonCache should show a larger margin there. (2) Scale N>=20 + multiple seeds and paired-bootstrap the matched-"
-            "speedup delta for significance. (3) Grow the rollout dataset and retrain v1; test whether it beats v0. (4) Wire the "
-            "editing path: cos(h_src,h_tar) branch-horizon on FlowEdit/PIE-Bench (features already in the schema).",
+     "result": "CONSOLIDATION (N=20 prompts, 1 seed, 512px/28 steps; tau grid 0.2/0.35/0.5/0.65; variants regrid_1.25, "
+               "regrid_1.5, adaptive_1.25; TeaCache-raw baseline). Two runs: an N=4 smoke first showed a ~+0.5 dB edge; the N=20 "
+               "run is STRONGER and refines the finding. The SURVIVING PRIMITIVE is the CONSERVATIVE ADAPTIVE jump "
+               "(jf=1+(jf_max-1)*headroom capped at 1.25) -- it BEATS fixed regrid_1.25. At MATCHED ACHIEVED speedup adaptive_1.25 "
+               "sits +1.0 to +2.4 dB ABOVE the SeaCache frontier across ~1.7-2.7x with 85-100% per-image win-rate (headline: "
+               "+2.36 dB @2.46x, 100% win, vs SeaCache interp 25.94 dB; SeaCache frontier 35.4/28.99/25.8/23.37 dB @1.48/2.11/2.48/"
+               "3.0x). Mechanism: the jump lets HorizonCache keep refreshing OFTEN (low tau) yet still save compute -> a gentler "
+               "quality/speed tradeoff than SeaCache's rare-refresh/long-cache, exactly where SeaCache's frontier drops steepest. "
+               "NARROW-BAND win: collapses past ~3x (tau0.65: -0.2 dB, win 0-15%). regrid_1.25/1.5 also win but smaller (+0.3 to "
+               "+1.0 dB). Naive uniform/random and TeaCache-raw collapse. jump_2.0 = KILL. "
+               "v1 LABEL FINDING (the methodological crux): the safe-horizon label is two-dimensional (metric x horizon). "
+               "Strict latent-L2 (2%) labels 0 safe jumps (too pessimistic; v1 degenerates). Short-H=5 decoded-PSNR (floor 32 dB) "
+               "labels 12 safe jumps but 11/12 are jump_2.0 -- which KILLS end-to-end quality: the short continuation is too "
+               "OPTIMISTIC for big jumps (misses compounding, the deck's DP-surrogate lesson). Neither label is right; the fix is a "
+               "FRONTIER-IMPROVEMENT / full-horizon target. So v1 stays PARK because the supervision is mis-specified, not because "
+               "learning fails. SD3 (deck's larger jump win) NOT run (no local weights); editing capability-detected, not executed.",
+     "verdict": "KEEP (v0, narrow-band; N=20, single seed, FLUX 512px). HorizonCache-v0 with the CONSERVATIVE ADAPTIVE jump "
+                "measurably improves the SeaCache frontier on FLUX in the ~1.7-2.7x band (+1.0 to +2.4 dB at matched achieved "
+                "speedup, 85-100% per-image win-rate) and reduces to SeaCache exactly when jumps are disabled (fair by identity, "
+                "so never worse in-band). The claim is deliberately bounded: NOT 'HorizonCache beats SeaCache on FLUX' but "
+                "'edges the frontier in a conservative-jump regime; aggressive jumps (jf>=1.5, tau>=0.65) overshoot'. "
+                "adaptive_1.25 KEEP (surviving primitive) > regrid_1.25 KEEP; regrid_1.5 PARK; jump_2.0 KILL; v1 PARK (label "
+                "mis-specified); editing-branch-horizon PARK (not run). Needs multi-seed + bootstrap to move from KEEP to headline.",
+     "nxt": "(1) SD3 generation (download SD3.5-medium) -- deck's flat-region win should give a WIDER band than FLUX. (2) Multi-seed "
+            "+ paired bootstrap on the matched-speedup delta to make the KEEP a demonstrated (significant) win. (3) v1: replace the "
+            "label with a FRONTIER-IMPROVEMENT target (does the action beat SeaCache end-to-end at matched budget) or a full-horizon "
+            "continuation, scale the rollout dataset, then test v1>v0. (4) Editing: cos(h_src,h_tar) branch-CACHE-horizon on "
+            "FlowEdit/PIE-Bench (features already in the schema) -- start with cache-length prediction, not sigma jumps.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_56.md",
      "results": None, "image": None},
 ]

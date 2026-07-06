@@ -74,11 +74,32 @@ def _rollout_action(pipe, tr, latent0, prev_residual, sigmas, i, ctx, action, H,
 def build_dataset(pipe, prompts, seeds, steps, height, width, guidance, device,
                   out_csv: Path, out_parquet: Path, H: int = 6, tol_l2: float = 0.02,
                   max_seq_len: int = 512, tau_cache: float = 0.3, L: int = 57,
-                  stride: int = 1) -> dict[str, Any]:
-    """Log rollout safe-horizon labels. Damage tolerance `tol_l2` is on relative latent L2
-    of the H-node continuation vs the full-from-here continuation."""
+                  stride: int = 1, damage_metric: str = "latent_l2",
+                  psnr_floor: float = 30.0) -> dict[str, Any]:
+    """Log rollout safe-horizon labels.
+
+    `damage_metric`:
+      - "latent_l2"    : damage = relative latent-L2 of the H-node continuation vs the
+                         full-from-here continuation; action safe if damage <= tol_l2.
+                         (E56 found this too strict on FLUX — 0 jump positives.)
+      - "decoded_psnr" : decode both continuations; action safe if PSNR(cand, full) >=
+                         `psnr_floor` dB. Aligns the label with what we actually care about
+                         (perceptual closeness to full sampling) — Experiment B fix.
+    """
     from .baselines import SeaCachePolicy
     from .flux_gen import sample_flux
+    from .metrics import psnr as _psnr
+    from flux_seacache_dp_shortcuts import decode_flux_latents
+
+    def _damage(out_latent, ref_latent, ref_norm, ref_img=None):
+        if damage_metric == "decoded_psnr":
+            ci = decode_flux_latents(pipe, out_latent, height, width)
+            ri = ref_img if ref_img is not None else decode_flux_latents(pipe, ref_latent, height, width)
+            return _psnr(ri, ci)                      # higher = safer
+        return float(((out_latent.float() - ref_latent.float()) ** 2).mean().sqrt().item()) / ref_norm
+
+    def _is_safe(dmg):
+        return (dmg >= psnr_floor) if damage_metric == "decoded_psnr" else (dmg <= tol_l2)
 
     rows: list[dict[str, Any]] = []
     for p in prompts:
@@ -104,16 +125,16 @@ def build_dataset(pipe, prompts, seeds, steps, height, width, guidance, device,
                 # reference: full continuation from here
                 ref = _rollout_action(pipe, tr, latent0, prev_res, sig, i, ctx, "fresh", H, ctx["guidance_t"])
                 ref_norm = float((ref.float() ** 2).mean().sqrt().item()) + 1e-8
+                ref_img = decode_flux_latents(pipe, ref, height, width) if damage_metric == "decoded_psnr" else None
                 damages = {}
                 for a in ACTIONS:
                     out = _rollout_action(pipe, tr, latent0, prev_res, sig, i, ctx, a, H, ctx["guidance_t"])
-                    d = float(((out.float() - ref.float()) ** 2).mean().sqrt().item()) / ref_norm
-                    damages[a] = d
-                # safe-horizon label = largest-horizon action under tolerance
+                    damages[a] = _damage(out, ref, ref_norm, ref_img)
+                # safe-horizon label = largest-horizon action whose damage is within tolerance
                 safe = "fresh"
                 best_h = 0.0
                 for a in ACTIONS:
-                    if damages[a] <= tol_l2 and action_to_horizon(a) >= best_h:
+                    if _is_safe(damages[a]) and action_to_horizon(a) >= best_h:
                         safe, best_h = a, action_to_horizon(a)
                 row = {"prompt_id": p["id"], "seed": seed, "step_index": snap["step_index"],
                        "node_i": i, "label_action": safe, "label_horizon": best_h}
@@ -137,4 +158,5 @@ def build_dataset(pipe, prompts, seeds, steps, height, width, guidance, device,
             print(f"[rollout] parquet skipped ({e})", flush=True)
     label_hist = {a: sum(1 for r in rows if r["label_action"] == a) for a in ACTIONS}
     return {"n_states": len(rows), "label_hist": label_hist,
-            "csv": str(out_csv), "parquet": str(out_parquet), "H": H, "tol_l2": tol_l2}
+            "csv": str(out_csv), "parquet": str(out_parquet), "H": H, "tol_l2": tol_l2,
+            "damage_metric": damage_metric, "psnr_floor": psnr_floor}
