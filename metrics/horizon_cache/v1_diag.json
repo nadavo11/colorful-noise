@@ -1,0 +1,61 @@
+{
+  "status": "DONE",
+  "backend": "sklearn_histgb",
+  "mode": "classify",
+  "n_total": 24,
+  "n_test": 6,
+  "accuracy": 0.8333,
+  "false_jump_rate": 0.0,
+  "false_cache_rate": 0.1667,
+  "conservative_fresh_overpredict_rate": 0.0,
+  "confusion_matrix": {
+    "fresh": {
+      "fresh": 0,
+      "cache": 1,
+      "jump_1.25": 0,
+      "jump_1.5": 0,
+      "jump_2.0": 0
+    },
+    "cache": {
+      "fresh": 0,
+      "cache": 5,
+      "jump_1.25": 0,
+      "jump_1.5": 0,
+      "jump_2.0": 0
+    },
+    "jump_1.25": {
+      "fresh": 0,
+      "cache": 0,
+      "jump_1.25": 0,
+      "jump_1.5": 0,
+      "jump_2.0": 0
+    },
+    "jump_1.5": {
+      "fresh": 0,
+      "cache": 0,
+      "jump_1.25": 0,
+      "jump_1.5": 0,
+      "jump_2.0": 0
+    },
+    "jump_2.0": {
+      "fresh": 0,
+      "cache": 0,
+      "jump_1.25": 0,
+      "jump_1.5": 0,
+      "jump_2.0": 0
+    }
+  },
+  "bundle": "../results/horizon_cache/v1_bundle.joblib",
+  "feature_importance": {
+    "dv_norm_proxy": 0.0,
+    "h_norm_drift": 0.0,
+    "delta_sigma": 0.0,
+    "progress": 0.0,
+    "remaining_steps": 0.0,
+    "raw_rel_l1": 0.0,
+    "acc_rel_l1": 0.0,
+    "h_norm": 0.0,
+    "h_cos_drift": 0.0,
+    "branch_asymmetry": 0.0
+  }
+}

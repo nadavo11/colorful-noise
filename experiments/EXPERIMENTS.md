@@ -1470,3 +1470,39 @@ cached-residual DP on short spans scored from the reached state.
 `figures/causal_{vs_offline_frontier,call_count_audit,replay_sample_grid}.png`; code
 `experiments/flux_dp_jump_oracle.py` + `experiments/flux_dp_jump_causal_replay.py`; manifest
 `experiments/manifests/E53.json`; doc `docs/experiment-reports/EXPERIMENT_53.md`.
+
+## E56 — HorizonCache: causal safe-horizon prediction (fresh/cache/jump) (FLUX.1-dev)
+
+**Method.** Reuse SeaCache's one cheap score off the modulated input `h`, but expand the decision from
+{refresh, cache} to **action selection** {fresh, cache, jump_1.25/1.5/2.0} — predict the local *safe
+integration horizon* and, where the field is flat, take a longer σ-stride that removes an integration node.
+New module `experiments/horizon_cache/` reuses the SeaCache harness (`flux_seacache_dp_shortcuts.py`) for the
+faithful Wiener-filtered-`h` signal + cached-residual step, re-implemented as an explicit first-order Euler
+loop so it can jump. Jump scheduler: `drop` (on-grid skip) and `regrid` (off-grid
+`σ_target=σ_i+jf·(σ_{i+1}−σ_i)`, tail re-spaced to 0, net −1 node). **v0** picks the jump factor by headroom
+`1−acc/τ` (deck adaptive-jump) behind a hard safety gate; jumps disabled ⇒ SeaCache exactly (fair by
+identity). **v1** = sklearn HistGradientBoosting on causal features only, trained on rollout **safe-horizon**
+labels (branch each action, continue full for H nodes, label the largest-horizon action under a latent-L2
+damage tolerance; asymmetric false-jump≫false-cache cost). Compute is **achieved** (fresh=1, cache/jump≈1/L,
+jumps remove nodes); fair comparison = ΔPSNR at **matched achieved speedup** (interpolate SeaCache's
+PSNR(speedup) curve). FLUX runs 4-bit to fit a 24 GB A5000; patched a broken xformers `flash_attn_3` ABI.
+
+**Key result (smoke, N=4×1 seed, 512px/28 steps — directional).** Regrid jumps FIRE and stay conservative
+(jump_1.25 dominates). At matched achieved speedup HorizonCache-v0 **edges the SeaCache frontier +0.49 dB
+@1.54× and +0.51 dB @2.12×**, then overshoots past ~2.1× (−0.97 dB @2.5×). Naive uniform/random collapse
+(17.9/20.7 dB). Slightly beats the deck's FLUX "pure tie" prediction. Rollout labeling at 2% latent-L2
+tolerance found **0 safe-jump positives** — FLUX jumps are borderline in latent-L2 even where decoded PSNR
+ties — so v1 degenerates to cache/fresh (accuracy 0.83, false-jump 0.0, but never jumps). Reinforces E53
+(rel-L1 ranks jump length weakly). `jump_2.0` = KILL.
+
+**Verdict.** PARK-leaning-KEEP (directional). Strictly-more-general, fair-by-identity SeaCache that weakly
+dominates the SeaCache frontier on FLUX in the 1.5–2.1× sweet spot (~+0.5 dB at matched speedup) and never
+worse there; overshoots past 2.1×. Margin small, N=4 → not yet a demonstrated win. v0 KEEP-directional,
+v1 PARK (pipeline only, no jump labels), jump_2.0 KILL, editing branch-horizon PARK (not run). SD3 — the
+deck's real jump win — not run (no local weights) and is the priority next transfer.
+
+**Artifacts.** `reports/horizon_cache.html` (self-contained), `reports/horizon_cache_summary.{md,json}`,
+`reports/horizon_cache_assets/`; `results/horizon_cache/gen_20260706_210216/{metrics.csv,metrics.json,summary.json,traces/,samples/}`;
+`metrics/horizon_cache/action_dataset.{csv,parquet}` + `v1_diag.json`; `results/horizon_cache/v1_bundle.joblib`;
+code `experiments/horizon_cache/`; manifest `experiments/manifests/E56.json`; doc
+`docs/experiment-reports/EXPERIMENT_56.md`.

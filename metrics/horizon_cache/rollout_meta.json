@@ -1,0 +1,14 @@
+{
+  "n_states": 24,
+  "label_hist": {
+    "fresh": 4,
+    "cache": 20,
+    "jump_1.25": 0,
+    "jump_1.5": 0,
+    "jump_2.0": 0
+  },
+  "csv": "../metrics/horizon_cache/action_dataset.csv",
+  "parquet": "../metrics/horizon_cache/action_dataset.parquet",
+  "H": 5,
+  "tol_l2": 0.02
+}

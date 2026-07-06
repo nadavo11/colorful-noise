@@ -1,0 +1,54 @@
+{
+  "eid": "E56",
+  "logged": "2026-07-06",
+  "git_commit": "7713f55",
+  "source": "run",
+  "script": "experiments/horizon_cache/run.py",
+  "results_dir": "results/horizon_cache/gen_20260706_210216",
+  "config": {
+    "model": "FLUX.1-dev 4bit",
+    "width": 512,
+    "height": 512,
+    "steps": 28,
+    "n_prompts": 4,
+    "seeds": 1,
+    "tau_grid": [
+      0.2,
+      0.3,
+      0.4
+    ],
+    "jump_mode": "regrid",
+    "fixture": "canonical_prompts v1",
+    "jump_actions": [
+      "fresh",
+      "cache",
+      "jump_1.25",
+      "jump_1.5",
+      "jump_2.0"
+    ],
+    "L": 57,
+    "v1_backend": "sklearn_histgb",
+    "rollout_H": 5,
+    "rollout_tol_l2": 0.02
+  },
+  "metrics": {
+    "matched_delta_psnr_at_1p54x": 0.4865,
+    "matched_delta_psnr_at_2p12x": 0.5081,
+    "matched_delta_psnr_at_2p50x": -0.9715,
+    "seacache_psnr_2p11x": 28.07,
+    "horizon_v0_psnr_2p12x": 28.57,
+    "uniform_k2_psnr": 17.85,
+    "random_k_psnr": 20.74,
+    "v1_accuracy": 0.8333,
+    "v1_false_jump_rate": 0.0,
+    "rollout_safe_jump_labels": 0,
+    "rollout_n_states": 24
+  },
+  "artifacts": [
+    "reports/horizon_cache.html",
+    "reports/horizon_cache_summary.json",
+    "reports/horizon_cache_summary.md",
+    "metrics/horizon_cache/action_dataset.csv",
+    "results/horizon_cache/gen_20260706_210216/metrics.csv"
+  ]
+}

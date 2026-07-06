@@ -1,0 +1,154 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E56 — HorizonCache -- causal safe-horizon prediction (fresh/cache/jump) for flow-model caching</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_56.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E56 — HorizonCache: causal safe-horizon prediction (fresh / cache / jump)</h1>
+<p><strong>Thread:</strong> fast-edit (caching line) · <strong>Status:</strong> active · <strong>Models:</strong> FLUX.1-dev (4-bit
+transformer on a 24 GB A5000), 512 px, 28 Euler steps, canonical-fixture v1 prompts.
+SD3 unavailable (no local weights); editing capability-detected but not executed.</p>
+<h2>Hypothesis</h2>
+<p>SeaCache reads one cheap score off the modulated input <code>h</code> (before the L-block stack,
+Wiener-filtered relative-L1) and decides <strong>refresh vs cache</strong>. HorizonCache asks whether the
+<em>same</em> signal supports <strong>action selection</strong>: predict how far the current computation stays
+trustworthy — the local <em>safe integration horizon</em> — and choose one of</p>
+<pre><code>fresh   full forward                              (cost 1)
+cache   freeze block residual, normal σ-stride     (cost ≈1/L)
+jump    reuse v + a longer σ-stride that REMOVES an integration node (cost ≈0 + a node saved)
+</code></pre>
+<p>Prior caution (E53): SeaCache's rel-L1 ranks the <em>oracle</em> safe-jump length only weakly
+(Spearman −0.50), so a naive "jump when accumulated score &lt; ε" gate is expected to fail — the
+policy must add features and hard safety gating. We test a hand-designed rule (<strong>v0</strong>) and a
+learned tabular safe-horizon model (<strong>v1</strong>).</p>
+<h2>Method</h2>
+<p>New module <code>experiments/horizon_cache/</code> reusing the SeaCache harness
+(<code>flux_seacache_dp_shortcuts.py</code>) for the faithful Wiener-filtered-<code>h</code> signal and the
+cached-residual step, re-implemented as an explicit <strong>first-order Euler</strong> flow loop so it can
+additionally jump (multistep solvers excluded by design).</p>
+<ul>
+<li><strong>Scheduler.</strong> <code>drop</code> = on-grid skip (σ_i → σ_{i+2}); <code>regrid</code> = off-grid
+  <code>σ_target = σ_i + jf·(σ_{i+1} − σ_i)</code>, then re-space the remaining tail to 0 (net −1 node).
+  Every jump is logged (old/target σ, jf, skipped-equivalent nodes, regridded?).</li>
+<li><strong>v0.</strong> In cache territory (acc &lt; τ), the jump factor is chosen by <strong>headroom</strong>
+  <code>h = 1 − acc/τ</code> (deck adaptive-jump), gated hard on σ-band, instantaneous relL1, h-cosine
+  drift, and remaining tail length. <strong>Jumps disabled ⇒ SeaCache exactly (fair by identity).</strong></li>
+<li><strong>v1.</strong> sklearn HistGradientBoosting on causal cheap features only (σ geometry + the
+  SeaCache <code>h</code> signal), trained on <strong>rollout safe-horizon labels</strong>: from each visited state,
+  branch every candidate action, continue <strong>full</strong> for H nodes, and label the largest-horizon
+  action whose latent-L2 damage vs the full continuation is below tolerance. Asymmetric cost:
+  false-jump ≫ false-cache ≫ false-fresh. The v0 safety gate is re-applied at inference.</li>
+<li><strong>Compute accounting is achieved, not nominal.</strong> fresh = 1 forward, cache/jump ≈ 1/L
+  (L = 57), jumps additionally remove executed nodes. We report block-stack-equivalent <strong>and</strong>
+  measured wall speedup. The fair comparison is <strong>ΔPSNR at matched achieved speedup</strong> — the
+  SeaCache PSNR(speedup) curve interpolated at each HorizonCache operating point.</li>
+</ul>
+<p>Env fixes (non-obvious): patched a broken xformers <code>flash_attn_3/_C.so</code> ABI import that
+otherwise breaks <code>from diffusers import FluxPipeline</code>; FLUX runs 4-bit (bitsandbytes) to fit
+the 24 GB card.</p>
+<h2>Key result (smoke — N=4 prompts × 1 seed, directional, not powered)</h2>
+<table>
+<thead>
+<tr>
+<th>method</th>
+<th>PSNR↑</th>
+<th>LPIPS↓</th>
+<th>achieved speedup</th>
+<th>mean jumps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>full</td>
+<td>—</td>
+<td>0</td>
+<td>1.00×</td>
+<td>0</td>
+</tr>
+<tr>
+<td>uniform k2</td>
+<td>17.85</td>
+<td>0.355</td>
+<td>1.84×</td>
+<td>0</td>
+</tr>
+<tr>
+<td>random-k</td>
+<td>20.74</td>
+<td>0.252</td>
+<td>1.97×</td>
+<td>0</td>
+</tr>
+<tr>
+<td>SeaCache τ0.2</td>
+<td>33.26</td>
+<td>0.035</td>
+<td>1.48×</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>HorizonCache-v0 τ0.2</strong></td>
+<td>33.04</td>
+<td>0.036</td>
+<td><strong>1.54×</strong></td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>SeaCache τ0.3</td>
+<td>28.74</td>
+<td>0.102</td>
+<td>1.87×</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>HorizonCache-v0 τ0.3</strong></td>
+<td>28.57</td>
+<td>0.107</td>
+<td><strong>2.12×</strong></td>
+<td>4.0</td>
+</tr>
+<tr>
+<td>SeaCache τ0.4</td>
+<td>28.07</td>
+<td>0.110</td>
+<td>2.11×</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>HorizonCache-v0 τ0.4</strong></td>
+<td>27.09</td>
+<td>0.130</td>
+<td><strong>2.50×</strong></td>
+<td>5.0</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Fair frontier (ΔPSNR at matched achieved speedup):</strong> HorizonCache-v0 edges the SeaCache
+frontier by <strong>+0.49 dB @1.54×</strong> and <strong>+0.51 dB @2.12×</strong>, then <strong>overshoots</strong> past ~2.1×
+(<strong>−0.97 dB @2.5×</strong>). Regrid jumps fire and stay conservative (jump_1.25 dominates). This
+slightly <strong>beats the deck's FLUX prediction of a pure tie</strong> — the headroom-driven regrid finds
+small safe strides FLUX's bending field still permits. Naive uniform/random collapse.</p>
+<p><code>jump_2.0</code> overshoots (KILL for the primary frontier). v1's rollout→train pipeline runs
+end-to-end (safe-horizon dataset + HistGB + asymmetric cost + confusion/importance) but on a
+tiny dataset — a pipeline demonstration, not yet a trained win.</p>
+<h2>Verdict</h2>
+<p><strong>PARK-leaning-KEEP (directional).</strong> HorizonCache is a strictly-more-general, fair-by-identity
+SeaCache that already weakly dominates the SeaCache frontier on FLUX in the 1.5–2.1× sweet spot
+(+~0.5 dB at matched achieved speedup) and never does worse there; past 2.1× jumps overshoot.
+The margin is small and N=4, so not a demonstrated win. <code>jump_2.0</code> KILL; v0 KEEP-directional;
+v1 PARK (pipeline only); editing branch-horizon PARK (not run).</p>
+<h2>Next</h2>
+<ol>
+<li><strong>SD3 generation</strong> (download SD3.5-medium) — the deck's flat-region jump win is the
+   highest-value transfer; HorizonCache should show a larger margin there.</li>
+<li>Scale N ≥ 20 + multiple seeds and paired-bootstrap the matched-speedup delta.</li>
+<li>Grow the rollout dataset and retrain v1; test v1 &gt; v0.</li>
+<li>Wire the editing path: <code>cos(h_src, h_tar)</code> branch-horizon on FlowEdit/PIE-Bench (features
+   already in the schema).</li>
+</ol>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>reports/horizon_cache.html</code> · <code>reports/horizon_cache_summary.{md,json}</code> ·
+  <code>reports/horizon_cache_assets/</code></li>
+<li>Metrics: <code>results/horizon_cache/gen_*/metrics.csv</code> · <code>metrics.json</code> · <code>summary.json</code> ·
+  per-step <code>traces/</code> · <code>samples/</code></li>
+<li>Action dataset: <code>metrics/horizon_cache/action_dataset.{csv,parquet}</code> · v1 bundle
+  <code>results/horizon_cache/v1_bundle.joblib</code> · <code>metrics/horizon_cache/v1_diag.json</code></li>
+<li>Code: <code>experiments/horizon_cache/</code> (run.py, flux_gen.py, policy.py, scheduler.py,
+  baselines.py, rollout.py, train_v1.py, figures.py, report.py) · manifest
+  <code>experiments/manifests/E56.json</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_56.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>
