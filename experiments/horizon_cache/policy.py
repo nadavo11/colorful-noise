@@ -83,6 +83,19 @@ class HorizonV0Config:
     pc_endpoint_fresh: bool = False  # ORACLE ablation: endpoint velocity is a FULL forward
     #                                  (costs a full block-stack call, accounted as such) —
     #                                  isolates whether the cached endpoint's staleness is the cause.
+    # --- E58 Residual Motion Cache ---
+    # On cached/jump steps, predict the slow motion of the block residual instead of freezing it:
+    #   r_pred = r_anchor + β·λ(t)·P(r_anchor - r_prev);  v = head(front(x_t,σ_t) + r_pred).
+    # Pure tensor arithmetic — NO extra block-stack forward (unlike E57 PC). β=0 ≡ plain HorizonCache.
+    rm_enabled: bool = False
+    rm_beta: float = 0.5             # shrink factor on the extrapolation (0 → frozen residual)
+    rm_lambda_mode: str = "sigma"    # "sigma" | "age" | "h" — progress coefficient λ
+    rm_lambda_max: float = 1.5       # clamp λ ∈ [0, rm_lambda_max]
+    rm_projection: str = "raw"       # "raw" | "lowpass" | "topk" | "sea" — P(Δr)
+    rm_topk_frac: float = 0.25       # topk: keep this fraction of the most energetic channels
+    rm_lowpass_pool: int = 2         # lowpass: avg-pool kernel over the token grid
+    rm_gate_rho: float = 0.0         # optional safety gate: cancel motion if extrap ratio > rho (0 = off)
+    rm_oracle_diag: bool = False     # diagnostic only: also run the TRUE block residual to score r_pred
 
     def headroom(self, acc: float) -> float:
         return max(0.0, 1.0 - acc / max(1e-9, self.tau_cache))

@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
+import torch.nn.functional as Fnn
 
 # reuse the project's faithful SeaCache helpers
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -59,12 +60,126 @@ class FluxCacheState:
         self.acc_raw: float = 0.0    # accumulated raw relL1 (TeaCache-family baseline)
         self.refresh_distance: int = 0
         self.prev_action: str = "fresh"
+        # --- E58 Residual Motion Cache: fresh-residual history for secant extrapolation ---
+        # prev_residual above IS r_anchor (most recent fresh block residual). We also keep the
+        # penultimate fresh residual r_prev + the sigmas / filtered-h / step-age at both anchors
+        # so a cached step can predict r_pred = r_anchor + β·λ·P(r_anchor - r_prev).
+        self.r_prev: torch.Tensor | None = None
+        self.sigma_anchor: float | None = None
+        self.sigma_prev: float | None = None
+        self.h_anchor_filt: torch.Tensor | None = None
+        self.h_prev_filt: torch.Tensor | None = None
+        self.steps_since_anchor: int = 0
+        self.steps_prev_to_anchor: int = 1
+
+
+# ------------------------- E58 residual-motion primitives -------------------------
+
+def _grid_hw(image_ids: torch.Tensor) -> tuple[int, int]:
+    ids = image_ids[0] if image_ids.ndim == 3 else image_ids
+    return int(ids[:, 1].max().item() + 1), int(ids[:, 2].max().item() + 1)
+
+
+def _project_residual(dr: torch.Tensor, image_ids: torch.Tensor, sigma: float, cfg) -> torch.Tensor:
+    """Stable-subspace projection P(Δr) of the residual secant.
+    raw = identity · lowpass = avg-pool+upsample over token grid · topk = keep most energetic
+    channels · sea = SeaCache Wiener filter (a,b)=(1-σ,σ) on the residual grid."""
+    proj = getattr(cfg, "rm_projection", "raw")
+    if proj == "raw":
+        return dr
+    if proj == "topk":
+        energy = dr.abs().float().mean(dim=(0, 1))               # [C]
+        k = max(1, int(round(float(getattr(cfg, "rm_topk_frac", 0.25)) * energy.numel())))
+        thresh = torch.topk(energy, k).values.min()
+        mask = (energy >= thresh).to(dr.dtype)
+        return dr * mask.view(1, 1, -1)
+    h, w = _grid_hw(image_ids)
+    grid = dr.reshape(dr.shape[0], h, w, dr.shape[-1])
+    if proj == "lowpass":
+        pool = max(1, int(getattr(cfg, "rm_lowpass_pool", 2)))
+        x = grid.permute(0, 3, 1, 2).float()                     # [B,C,H,W]
+        xp = Fnn.avg_pool2d(x, kernel_size=pool, ceil_mode=True)
+        xl = Fnn.interpolate(xp, size=(h, w), mode="nearest")     # low-pass = pool then upsample
+        return xl.permute(0, 2, 3, 1).reshape(dr.shape).to(dr.dtype)
+    if proj == "sea":
+        a, b = 1.0 - sigma, sigma
+        return apply_sea_from_ab(grid, a, b, dims=(-2, -3), norm_mode="mean").reshape(dr.shape).to(dr.dtype)
+    return dr
+
+
+def _rm_lambda(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float, cfg):
+    """Progress coefficient λ(t) since the anchor. Returns (lambda_used, λ_sigma, λ_age, λ_h)."""
+    eps = 1e-8
+    ds = (state.sigma_anchor - state.sigma_prev) if (state.sigma_anchor is not None and state.sigma_prev is not None) else 0.0
+    lam_sigma = 0.0 if ds == 0 else (sigma - state.sigma_anchor) / (ds - eps if ds < 0 else ds + eps)
+    lam_age = state.steps_since_anchor / float(max(1, state.steps_prev_to_anchor))
+    lam_h = 0.0
+    if state.h_anchor_filt is not None and state.h_prev_filt is not None:
+        num = rel_l1(h_filt, state.h_anchor_filt)
+        den = rel_l1(state.h_anchor_filt, state.h_prev_filt) + eps
+        lam_h = num / den
+    mode = getattr(cfg, "rm_lambda_mode", "sigma")
+    lam = {"sigma": lam_sigma, "age": lam_age, "h": lam_h}.get(mode, lam_sigma)
+    lam = float(min(max(lam, 0.0), float(getattr(cfg, "rm_lambda_max", 1.5))))
+    return lam, float(lam_sigma), float(lam_age), float(lam_h)
+
+
+def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float,
+                     image_ids: torch.Tensor, cfg):
+    """Predict the moved residual r_pred = r_anchor + β·λ·P(Δr) and return (r_pred, diag)."""
+    r_anchor = state.prev_residual
+    dr = r_anchor - state.r_prev
+    P = _project_residual(dr, image_ids, sigma, cfg)
+    lam, lam_s, lam_a, lam_h = _rm_lambda(state, h_filt, sigma, cfg)
+    beta = float(getattr(cfg, "rm_beta", 0.5))
+    denom = float(r_anchor.abs().float().sum().item()) + 1e-8
+    secant_norm = float(P.abs().float().sum().item()) / denom
+    motion = beta * lam * P
+    extrap_ratio = float(motion.abs().float().sum().item()) / denom
+    cancelled = False
+    rho = float(getattr(cfg, "rm_gate_rho", 0.0) or 0.0)
+    if rho > 0 and extrap_ratio > rho:
+        motion = torch.zeros_like(motion)
+        extrap_ratio = 0.0
+        cancelled = True
+    r_pred = r_anchor + motion
+    diag = {
+        "rm_used": True, "rm_was_cancelled": cancelled, "rm_beta": beta,
+        "rm_projection": getattr(cfg, "rm_projection", "raw"), "rm_lambda": lam,
+        "rm_lambda_sigma": lam_s, "rm_lambda_age": lam_a, "rm_lambda_h": lam_h,
+        "rm_residual_secant_norm": secant_norm, "rm_residual_extrapolation_ratio": extrap_ratio,
+    }
+    return r_pred, diag
+
+
+def _rm_event_kv(rm_diag, feat, cfg) -> dict[str, Any]:
+    """Map a residual-motion diagnostic dict onto the JumpEvent's rm_* fields."""
+    if not rm_diag:
+        return {}
+    head = cfg.headroom(feat.get("acc_rel_l1")) if cfg is not None else None
+    er = rm_diag["rm_residual_extrapolation_ratio"]
+    return {
+        "rm_used": True, "rm_was_cancelled": rm_diag["rm_was_cancelled"],
+        "rm_beta": rm_diag["rm_beta"], "rm_projection": rm_diag["rm_projection"],
+        "rm_lambda": rm_diag["rm_lambda"], "rm_lambda_sigma": rm_diag["rm_lambda_sigma"],
+        "rm_lambda_age": rm_diag["rm_lambda_age"], "rm_lambda_h": rm_diag["rm_lambda_h"],
+        "rm_residual_secant_norm": rm_diag["rm_residual_secant_norm"],
+        "rm_residual_extrapolation_ratio": er,
+        "rm_motion_per_headroom": (er / (head + 1e-8)) if head is not None else None,
+    }
 
 
 @torch.no_grad()
 def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_ids,
-               sigma: float, do_full: bool, state: FluxCacheState):
-    """Run one FLUX forward. Returns (velocity, filtered_h, ran_full)."""
+               sigma: float, do_full: bool, state: FluxCacheState,
+               rm_cfg=None, ledger=None):
+    """Run one FLUX forward. Returns (velocity, filtered_h, ran_full, rm_diag).
+
+    rm_cfg (E58): when set with rm_enabled, a cached forward uses a predicted (moved) block
+    residual r_pred instead of the frozen r_anchor. Pure tensor arithmetic — no extra block
+    stack. On a fresh forward it also shifts the residual/sigma/h history (r_prev←r_anchor).
+    Passing rm_cfg=None keeps the E56/E57 path byte-identical."""
+    rm_on = bool(rm_cfg is not None and getattr(rm_cfg, "rm_enabled", False))
     hs = tr.x_embedder(latents)
     ts = timestep.to(hs.dtype) * 1000
     guidance_in = guidance.to(hs.dtype) * 1000 if guidance is not None else None
@@ -77,25 +192,57 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
     modulated, *_ = tr.transformer_blocks[0].norm1(hs, emb=temb)
     h_filt = _sea_filter_h(modulated, image_ids, sigma)
 
+    def _full_stack(x0):
+        """Run the whole block stack from x0 and return the residual (cur - x0)."""
+        cur = x0
+        e = enc
+        for block in tr.transformer_blocks:
+            e, cur = block(hidden_states=cur, encoder_hidden_states=e, temb=temb,
+                           image_rotary_emb=rotary, joint_attention_kwargs=None)
+        for block in tr.single_transformer_blocks:
+            e, cur = block(hidden_states=cur, encoder_hidden_states=e, temb=temb,
+                           image_rotary_emb=rotary, joint_attention_kwargs=None)
+        return cur
+
+    rm_diag = None
     if (not do_full) and state.prev_residual is not None:
-        hs2 = hs + state.prev_residual
+        if rm_on and state.r_prev is not None:
+            r_pred, rm_diag = _residual_motion(state, h_filt, sigma, image_ids, rm_cfg)
+            if ledger is not None:
+                ledger.record_resmotion(cancelled=rm_diag["rm_was_cancelled"])
+            # optional oracle: score r_pred against the TRUE residual at this cached state
+            if getattr(rm_cfg, "rm_oracle_diag", False):
+                r_true = (_full_stack(hs) - hs).detach()
+                if ledger is not None:
+                    ledger.record_rm_oracle()
+                dn = float(r_true.abs().float().sum().item()) + 1e-8
+                rm_diag["rm_oracle_frozen_err"] = float((state.prev_residual - r_true).abs().float().sum().item()) / dn
+                rm_diag["rm_oracle_motion_err"] = float((r_pred - r_true).abs().float().sum().item()) / dn
+            hs2 = hs + r_pred
+        else:
+            hs2 = hs + state.prev_residual
         ran_full = False
     else:
         ori = hs
-        cur = hs
-        for block in tr.transformer_blocks:
-            enc, cur = block(hidden_states=cur, encoder_hidden_states=enc, temb=temb,
-                             image_rotary_emb=rotary, joint_attention_kwargs=None)
-        for block in tr.single_transformer_blocks:
-            enc, cur = block(hidden_states=cur, encoder_hidden_states=enc, temb=temb,
-                             image_rotary_emb=rotary, joint_attention_kwargs=None)
-        state.prev_residual = (cur - ori).detach()
+        cur = _full_stack(hs)
+        new_res = (cur - ori).detach()
+        if rm_on and state.prev_residual is not None:
+            # shift fresh-residual history for the secant (penultimate ← previous anchor)
+            state.r_prev = state.prev_residual
+            state.sigma_prev = state.sigma_anchor
+            state.h_prev_filt = state.h_anchor_filt
+            state.steps_prev_to_anchor = max(1, state.steps_since_anchor)
+        state.prev_residual = new_res
+        if rm_on:
+            state.sigma_anchor = float(sigma)
+            state.h_anchor_filt = h_filt.detach()
+            state.steps_since_anchor = 0
         hs2 = cur
         ran_full = True
 
     hs2 = tr.norm_out(hs2, temb)
     v = tr.proj_out(hs2)
-    return v, h_filt, ran_full
+    return v, h_filt, ran_full, rm_diag
 
 
 def _features(sigma, sigma_next, step_index, num_steps, nodes_left, state: FluxCacheState,
@@ -211,15 +358,16 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
             })
 
         # --- execute the chosen forward exactly once ---
+        cfg = getattr(policy, "cfg", None)
         do_full = (action == "fresh")
-        v, _hf, ran_full = _flux_node(pipe, tr, latents, timestep, guidance_t, ppe, pe,
-                                      text_ids, image_ids, sigma, do_full, state)
+        v, _hf, ran_full, rm_diag = _flux_node(pipe, tr, latents, timestep, guidance_t, ppe, pe,
+                                               text_ids, image_ids, sigma, do_full, state,
+                                               rm_cfg=cfg, ledger=ledger)
 
         # --- scheduler update ---
         skipped = 0
         regridded = False
         target_sigma = sigma_next
-        cfg = getattr(policy, "cfg", None)
         pc_on = bool(getattr(cfg, "pc_enabled", False))
         if action.startswith("jump"):
             jf = adaptive_jf if adaptive_jf is not None else JUMP_FACTORS[action]
@@ -251,12 +399,12 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
                         # fresh endpoint = a real full forward; do NOT let it overwrite the
                         # cache anchor (save/restore prev_residual). Accounted as a full forward.
                         saved = state.prev_residual
-                        vv, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
+                        vv, _, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
                                               text_ids, image_ids, sig_end, True, state)
                         state.prev_residual = saved
                         ledger.record_pc_oracle()
                     else:
-                        vv, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
+                        vv, _, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
                                               text_ids, image_ids, sig_end, False, state)
                         ledger.record_pc_endpoint()
                     return vv
@@ -305,6 +453,7 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
                 regridded = True
                 skipped = 1
                 i += 1
+            rm_kv = _rm_event_kv(rm_diag, feat, cfg)
             jumps.append(JumpEvent(
                 step_index, ("jump_cancelled" if pc["cancelled"] else action), jf, sigma,
                 target_sigma, skipped, regridded, action_source,
@@ -312,7 +461,7 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
                 accumulated_score=feat.get("acc_rel_l1"), v_start_norm=pc["v0n"],
                 v_endpoint_norm=pc["ven"], curvature_l1=pc["curv_l1"], curvature_l2=pc["curv_l2"],
                 pc_correction_norm=pc["pc_norm"], was_cancelled=pc["cancelled"],
-                was_shrunk=pc["shrunk"], effective_skipped_nodes=skipped).as_dict())
+                was_shrunk=pc["shrunk"], effective_skipped_nodes=skipped, **rm_kv).as_dict())
         else:
             latents = latents + (sigma_next - sigma) * v
             i += 1
@@ -323,11 +472,18 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
         state.prev_h_raw = mod_raw
         state.prev_h_norm = feat["h_norm"]
         state.refresh_distance = 0 if action == "fresh" else state.refresh_distance + 1
+        state.steps_since_anchor += 1     # E58 step-age (reset to 0 inside a fresh forward)
         state.prev_action = action
 
         trace = {"step_index": step_index, "node_i_after": i, "action": action,
                  "sigma": sigma, "sigma_next_target": target_sigma, "ran_full": ran_full,
                  **feat}
+        if rm_diag is not None:           # E58 per-step residual-motion diagnostics
+            hr = feat.get("acc_rel_l1")
+            head = cfg.headroom(hr) if cfg is not None else None
+            trace.update(rm_diag)
+            trace["rm_motion_per_headroom"] = (
+                rm_diag["rm_residual_extrapolation_ratio"] / (head + 1e-8) if head is not None else None)
         traces.append(trace)
         step_index += 1
 

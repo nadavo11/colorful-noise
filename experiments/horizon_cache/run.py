@@ -34,16 +34,41 @@ from horizon_cache.scheduler import ACTIONS
 # HorizonCache-v0 variant families for the Experiment-A stress test. Each maps to a config
 # builder(tau) -> HorizonV0Config. regrid = discrete fixed-factor cap; adaptive = continuous
 # stride jf = 1+(jf_max-1)*headroom (deck adaptive-jump).
-def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
+def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | None = None) -> HorizonV0Config:
     """Parse a variant name into a HorizonV0Config.
 
-    Grammar: [pc<alpha>_]<base>[_cancel<kappa>|_shrink<kappa>]
+    Grammar: [rm<proj><beta>_ | pc<alpha>_]<base>[_cancel<kappa>|_shrink<kappa>]
       base   = regrid_1.25 | regrid_1.5 | adaptive_1.25 | adaptive_1.5 | adaptive_2.0
-      pc     = HorizonCache-PC cached-endpoint predictor-corrector, alpha in [0,1]
+      pc     = HorizonCache-PC cached-endpoint predictor-corrector, alpha in [0,1]  (E57)
+      rm     = E58 Residual Motion Cache: proj in {raw,lowpass,topk,sea}, beta the shrink factor
+               (λ-mode / λ-max / gate ρ / top-k frac / pool come from rm_defaults, run-level)
       gate   = optional curvature accept/reject on the jump
-    Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · pc0.5_adaptive_2.0_cancel0.06
+    Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · rmraw0.5_adaptive_1.5 · rmlowpass0.25_adaptive_2.0
     """
     v = variant
+    rm = dict(rm_enabled=False)
+    if v.startswith("rm"):
+        rest = v[2:]
+        proj = "raw"
+        for cand in ("lowpass", "topk", "sea", "raw"):
+            if rest.startswith(cand):
+                proj = cand
+                rest = rest[len(cand):]
+                break
+        beta_str, _, base = rest.partition("_")
+        try:
+            beta = float(beta_str)
+        except ValueError:
+            beta = 0.5
+        d = rm_defaults or {}
+        rm = dict(rm_enabled=True, rm_projection=proj, rm_beta=beta,
+                  rm_lambda_mode=d.get("rm_lambda_mode", "sigma"),
+                  rm_lambda_max=d.get("rm_lambda_max", 1.5),
+                  rm_topk_frac=d.get("rm_topk_frac", 0.25),
+                  rm_lowpass_pool=d.get("rm_lowpass_pool", 2),
+                  rm_gate_rho=d.get("rm_gate_rho", 0.0),
+                  rm_oracle_diag=d.get("rm_oracle_diag", False))
+        v = base
     pc_enabled = False
     pc_alpha = 0.5
     pc_mode = "none"
@@ -81,18 +106,19 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
         v = base
     pc = dict(pc_enabled=pc_enabled, pc_alpha=pc_alpha, pc_curvature_mode=pc_mode,
               pc_curvature_kappa=pc_kappa, pc_endpoint_fresh=pc_oracle)
+    extra = {**pc, **rm}
     if v == "regrid_1.25":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.25, **pc)
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.25, **extra)
     if v == "regrid_1.5":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.5, **pc)
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.5, **extra)
     if v == "adaptive_1.25":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.25, **pc)
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.25, **extra)
     if v == "adaptive_1.5":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.5, **pc)
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.5, **extra)
     if v == "adaptive_2.0":
         # aggressive-jump ablation: same headroom-adaptive primitive, higher cap. Expected to
         # overshoot the safe band (the failure half of the E56 story), included for the frontier.
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=2.0, **pc)
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=2.0, **extra)
     raise ValueError(f"unknown variant {variant}")
 
 
@@ -135,10 +161,19 @@ def build_methods(args, num_steps: int, seed: int) -> dict[str, Any]:
         for tau in args.teacache_taus:
             methods[f"teacache_t{tau:g}"] = TeaCachePolicy(tau)
     # shared threshold grid: SeaCache (the primary comparison) + each HorizonCache variant.
+    rm_defaults = dict(
+        rm_lambda_mode=getattr(args, "rm_lambda_mode", "sigma"),
+        rm_lambda_max=getattr(args, "rm_lambda_max", 1.5),
+        rm_topk_frac=getattr(args, "rm_topk_frac", 0.25),
+        rm_lowpass_pool=getattr(args, "rm_lowpass_pool", 2),
+        rm_gate_rho=getattr(args, "rm_gate_rho", 0.0),
+        rm_oracle_diag=getattr(args, "rm_oracle", False),
+    )
     for tau in args.tau_grid:
         methods[f"seacache_t{tau:g}"] = SeaCachePolicy(tau)
         for variant in args.variants:
-            methods[f"horizon_{variant}_t{tau:g}"] = HorizonCacheV0(_variant_cfg(variant, tau, args.jump_mode))
+            methods[f"horizon_{variant}_t{tau:g}"] = HorizonCacheV0(
+                _variant_cfg(variant, tau, args.jump_mode, rm_defaults))
     # optional learned policy
     if args.v1_bundle and Path(args.v1_bundle).exists():
         import joblib
@@ -371,6 +406,14 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="significance run: only full + SeaCache + variant(s), skip uniform/random/teacache")
     ap.add_argument("--jump-mode", choices=["regrid", "drop"], default="regrid")
     ap.add_argument("--allow-jump2", action="store_true")
+    # E58 Residual Motion Cache (run-level knobs; projection+beta are in the variant name)
+    ap.add_argument("--rm-lambda-mode", choices=["sigma", "age", "h"], default="sigma")
+    ap.add_argument("--rm-lambda-max", type=float, default=1.5)
+    ap.add_argument("--rm-topk-frac", type=float, default=0.25)
+    ap.add_argument("--rm-lowpass-pool", type=int, default=2)
+    ap.add_argument("--rm-gate-rho", type=float, default=0.0)
+    ap.add_argument("--rm-oracle", action="store_true",
+                    help="diagnostic: score r_pred vs the TRUE residual (extra full forward, N<=4 only)")
     ap.add_argument("--v1-bundle", default="")
     ap.add_argument("--save-all-images", action="store_true")
     ap.add_argument("--out", default="results/horizon_cache")

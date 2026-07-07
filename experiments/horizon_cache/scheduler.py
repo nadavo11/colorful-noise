@@ -64,6 +64,12 @@ class ComputeLedger:
     num_pc_oracle_full_forwards: int = 0   # oracle ablation: fresh endpoint = a full forward
     num_cancelled_jumps: int = 0
     num_shrunk_jumps: int = 0
+    # E58 Residual Motion Cache: r_pred extrapolation is pure tensor arithmetic (NO extra
+    # forward), so it does not change block_stack_equiv_cost — we only COUNT applications
+    # and (for the oracle diagnostic) any true-residual full forwards, tracked separately.
+    num_residual_motion_applications: int = 0
+    num_residual_motion_cancelled: int = 0
+    num_rm_oracle_full_forwards: int = 0    # diagnostic-only true-residual evals (not in deploy cost)
 
     def record(self, action: str, skipped: int = 0) -> None:
         self.num_executed_nodes += 1
@@ -82,6 +88,16 @@ class ComputeLedger:
     def record_pc_oracle(self, n: int = 1) -> None:
         """Oracle ablation: endpoint velocity is a FULL forward (full block stack ≈ cost 1)."""
         self.num_pc_oracle_full_forwards += n
+
+    def record_resmotion(self, cancelled: bool = False) -> None:
+        """One residual-motion application on a cached/jump step (free tensor arithmetic)."""
+        self.num_residual_motion_applications += 1
+        if cancelled:
+            self.num_residual_motion_cancelled += 1
+
+    def record_rm_oracle(self, n: int = 1) -> None:
+        """Diagnostic true-residual full forward (measured, NOT charged to deploy cost)."""
+        self.num_rm_oracle_full_forwards += n
 
     @property
     def block_stack_equiv_cost(self) -> float:
@@ -118,6 +134,9 @@ class ComputeLedger:
             "num_pc_oracle_full_forwards": self.num_pc_oracle_full_forwards,
             "num_cancelled_jumps": self.num_cancelled_jumps,
             "num_shrunk_jumps": self.num_shrunk_jumps,
+            "num_residual_motion_applications": self.num_residual_motion_applications,
+            "num_residual_motion_cancelled": self.num_residual_motion_cancelled,
+            "num_rm_oracle_full_forwards": self.num_rm_oracle_full_forwards,
         }
 
 
@@ -165,6 +184,18 @@ class JumpEvent:
     was_cancelled: bool = False
     was_shrunk: bool = False
     effective_skipped_nodes: int | None = None
+    # --- E58 Residual Motion Cache diagnostics; None when RM disabled ---
+    rm_lambda: float | None = None
+    rm_lambda_sigma: float | None = None
+    rm_lambda_age: float | None = None
+    rm_lambda_h: float | None = None
+    rm_beta: float | None = None
+    rm_projection: str | None = None
+    rm_residual_secant_norm: float | None = None
+    rm_residual_extrapolation_ratio: float | None = None
+    rm_motion_per_headroom: float | None = None
+    rm_used: bool = False
+    rm_was_cancelled: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
