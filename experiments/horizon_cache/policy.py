@@ -80,6 +80,9 @@ class HorizonV0Config:
     pc_curvature_mode: str = "none"  # "none" | "cancel" | "shrink"
     pc_curvature_kappa: float = 0.06  # curvature (relL1 of v_pred vs v_i) gate threshold
     pc_shrink_factor: float = 0.5    # shrink rule: jf ← 1 + shrink_factor·(jf-1)
+    pc_endpoint_fresh: bool = False  # ORACLE ablation: endpoint velocity is a FULL forward
+    #                                  (costs a full block-stack call, accounted as such) —
+    #                                  isolates whether the cached endpoint's staleness is the cause.
 
     def headroom(self, acc: float) -> float:
         return max(0.0, 1.0 - acc / max(1e-9, self.tau_cache))

@@ -61,6 +61,7 @@ class ComputeLedger:
     # HorizonCache-PC (E57): a cached endpoint velocity call is an EXTRA cached forward
     # (~1/L) — accounted separately so PC never claims free speedup.
     num_pc_endpoint_cached_forwards: int = 0
+    num_pc_oracle_full_forwards: int = 0   # oracle ablation: fresh endpoint = a full forward
     num_cancelled_jumps: int = 0
     num_shrunk_jumps: int = 0
 
@@ -78,11 +79,16 @@ class ComputeLedger:
         """One extra cached forward for the predictor-corrector endpoint velocity."""
         self.num_pc_endpoint_cached_forwards += n
 
+    def record_pc_oracle(self, n: int = 1) -> None:
+        """Oracle ablation: endpoint velocity is a FULL forward (full block stack ≈ cost 1)."""
+        self.num_pc_oracle_full_forwards += n
+
     @property
     def block_stack_equiv_cost(self) -> float:
-        """Compute in units of one fresh forward: fresh=1, cached/jump/PC-endpoint≈1/L."""
-        return self.num_full_forwards + (self.num_cached_forwards
-                                         + self.num_pc_endpoint_cached_forwards) / float(self.L)
+        """Compute in units of one fresh forward: fresh=1, cached/jump/PC-endpoint≈1/L,
+        oracle fresh endpoint = a full forward (≈1)."""
+        return (self.num_full_forwards + self.num_pc_oracle_full_forwards
+                + (self.num_cached_forwards + self.num_pc_endpoint_cached_forwards) / float(self.L))
 
     @property
     def compute_speedup(self) -> float:
@@ -109,6 +115,7 @@ class ComputeLedger:
             "baseline_wall_time": round(self.baseline_wall_time, 4),
             "wall_speedup": round(self.wall_speedup, 4) if self.measured_wall_time > 0 else None,
             "num_pc_endpoint_cached_forwards": self.num_pc_endpoint_cached_forwards,
+            "num_pc_oracle_full_forwards": self.num_pc_oracle_full_forwards,
             "num_cancelled_jumps": self.num_cancelled_jumps,
             "num_shrunk_jumps": self.num_shrunk_jumps,
         }

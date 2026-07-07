@@ -243,11 +243,22 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
                 mode = getattr(cfg, "pc_curvature_mode", "none")
                 kappa = float(getattr(cfg, "pc_curvature_kappa", 0.06))
 
+                oracle = bool(getattr(cfg, "pc_endpoint_fresh", False))
+
                 def _endpoint_v(x_end, sig_end):
                     tstep = torch.full((latents.shape[0],), sig_end, device=device, dtype=latents.dtype)
-                    vv, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
-                                          text_ids, image_ids, sig_end, False, state)
-                    ledger.record_pc_endpoint()
+                    if oracle:
+                        # fresh endpoint = a real full forward; do NOT let it overwrite the
+                        # cache anchor (save/restore prev_residual). Accounted as a full forward.
+                        saved = state.prev_residual
+                        vv, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
+                                              text_ids, image_ids, sig_end, True, state)
+                        state.prev_residual = saved
+                        ledger.record_pc_oracle()
+                    else:
+                        vv, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
+                                              text_ids, image_ids, sig_end, False, state)
+                        ledger.record_pc_endpoint()
                     return vv
 
                 x_pred = latents + dsigma * v

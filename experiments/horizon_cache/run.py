@@ -48,6 +48,7 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
     pc_alpha = 0.5
     pc_mode = "none"
     pc_kappa = 0.06
+    pc_oracle = False
     # curvature gate suffix (_cancelK / _shrinkK)
     for gate in ("cancel", "shrink"):
         idx = v.find(f"_{gate}")
@@ -60,8 +61,17 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
                 pass
             v = v[:idx]
             break
-    # PC prefix (pc<alpha>_)
-    if v.startswith("pc"):
+    # PC prefix: pc<alpha>_ (cached endpoint) or pcoracle<alpha>_ (fresh endpoint ablation)
+    if v.startswith("pcoracle"):
+        pc_enabled = True
+        pc_oracle = True
+        a, _, base = v[len("pcoracle"):].partition("_")
+        try:
+            pc_alpha = float(a)
+        except ValueError:
+            pc_alpha = 0.5
+        v = base
+    elif v.startswith("pc"):
         pc_enabled = True
         a, _, base = v[2:].partition("_")
         try:
@@ -70,7 +80,7 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
             pc_alpha = 0.5
         v = base
     pc = dict(pc_enabled=pc_enabled, pc_alpha=pc_alpha, pc_curvature_mode=pc_mode,
-              pc_curvature_kappa=pc_kappa)
+              pc_curvature_kappa=pc_kappa, pc_endpoint_fresh=pc_oracle)
     if v == "regrid_1.25":
         return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.25, **pc)
     if v == "regrid_1.5":
