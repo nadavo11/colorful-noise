@@ -72,6 +72,14 @@ class HorizonV0Config:
     # editing safety: block a jump right after a branch-alignment drop
     cos_branch_min: float = 0.30     # require cos(h_src,h_tar) above this to jump
     branch_drop_block: float = 0.10  # if cos dropped by more than this vs prev, no jump
+    # --- HorizonCache-PC (E57): cached-endpoint predictor-corrector jump ---
+    # x_corr = x_i + Δσ·[(1-α)·v_i + α·v_pred], v_pred = cached velocity at (x_pred, σ_target)
+    # reusing the SAME cached residual (one extra cached forward ≈ 1/L, accounted separately).
+    pc_enabled: bool = False
+    pc_alpha: float = 0.5            # 0 → plain Euler, 0.5 → trapezoid, 1.0 → endpoint-only
+    pc_curvature_mode: str = "none"  # "none" | "cancel" | "shrink"
+    pc_curvature_kappa: float = 0.06  # curvature (relL1 of v_pred vs v_i) gate threshold
+    pc_shrink_factor: float = 0.5    # shrink rule: jf ← 1 + shrink_factor·(jf-1)
 
     def headroom(self, acc: float) -> float:
         return max(0.0, 1.0 - acc / max(1e-9, self.tau_cache))

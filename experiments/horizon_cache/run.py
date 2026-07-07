@@ -35,18 +35,54 @@ from horizon_cache.scheduler import ACTIONS
 # builder(tau) -> HorizonV0Config. regrid = discrete fixed-factor cap; adaptive = continuous
 # stride jf = 1+(jf_max-1)*headroom (deck adaptive-jump).
 def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
-    if variant == "regrid_1.25":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.25)
-    if variant == "regrid_1.5":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.5)
-    if variant == "adaptive_1.25":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.25)
-    if variant == "adaptive_1.5":
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.5)
-    if variant == "adaptive_2.0":
+    """Parse a variant name into a HorizonV0Config.
+
+    Grammar: [pc<alpha>_]<base>[_cancel<kappa>|_shrink<kappa>]
+      base   = regrid_1.25 | regrid_1.5 | adaptive_1.25 | adaptive_1.5 | adaptive_2.0
+      pc     = HorizonCache-PC cached-endpoint predictor-corrector, alpha in [0,1]
+      gate   = optional curvature accept/reject on the jump
+    Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · pc0.5_adaptive_2.0_cancel0.06
+    """
+    v = variant
+    pc_enabled = False
+    pc_alpha = 0.5
+    pc_mode = "none"
+    pc_kappa = 0.06
+    # curvature gate suffix (_cancelK / _shrinkK)
+    for gate in ("cancel", "shrink"):
+        idx = v.find(f"_{gate}")
+        if idx != -1:
+            pc_mode = gate
+            pc_enabled = True
+            try:
+                pc_kappa = float(v[idx + len(gate) + 2:])
+            except ValueError:
+                pass
+            v = v[:idx]
+            break
+    # PC prefix (pc<alpha>_)
+    if v.startswith("pc"):
+        pc_enabled = True
+        a, _, base = v[2:].partition("_")
+        try:
+            pc_alpha = float(a)
+        except ValueError:
+            pc_alpha = 0.5
+        v = base
+    pc = dict(pc_enabled=pc_enabled, pc_alpha=pc_alpha, pc_curvature_mode=pc_mode,
+              pc_curvature_kappa=pc_kappa)
+    if v == "regrid_1.25":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.25, **pc)
+    if v == "regrid_1.5":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, jf_max_frontier=1.5, **pc)
+    if v == "adaptive_1.25":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.25, **pc)
+    if v == "adaptive_1.5":
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.5, **pc)
+    if v == "adaptive_2.0":
         # aggressive-jump ablation: same headroom-adaptive primitive, higher cap. Expected to
         # overshoot the safe band (the failure half of the E56 story), included for the frontier.
-        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=2.0)
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=2.0, **pc)
     raise ValueError(f"unknown variant {variant}")
 
 

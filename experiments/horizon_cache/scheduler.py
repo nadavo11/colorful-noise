@@ -58,6 +58,11 @@ class ComputeLedger:
     baseline_nodes: int = 0          # nodes a full (no-cache) run would execute
     measured_wall_time: float = 0.0
     baseline_wall_time: float = 0.0
+    # HorizonCache-PC (E57): a cached endpoint velocity call is an EXTRA cached forward
+    # (~1/L) — accounted separately so PC never claims free speedup.
+    num_pc_endpoint_cached_forwards: int = 0
+    num_cancelled_jumps: int = 0
+    num_shrunk_jumps: int = 0
 
     def record(self, action: str, skipped: int = 0) -> None:
         self.num_executed_nodes += 1
@@ -69,10 +74,15 @@ class ComputeLedger:
             self.num_jump_actions += 1
         self.num_skipped_nodes += skipped
 
+    def record_pc_endpoint(self, n: int = 1) -> None:
+        """One extra cached forward for the predictor-corrector endpoint velocity."""
+        self.num_pc_endpoint_cached_forwards += n
+
     @property
     def block_stack_equiv_cost(self) -> float:
-        """Compute in units of one fresh forward: fresh=1, cached/jump≈1/L."""
-        return self.num_full_forwards + self.num_cached_forwards / float(self.L)
+        """Compute in units of one fresh forward: fresh=1, cached/jump/PC-endpoint≈1/L."""
+        return self.num_full_forwards + (self.num_cached_forwards
+                                         + self.num_pc_endpoint_cached_forwards) / float(self.L)
 
     @property
     def compute_speedup(self) -> float:
@@ -98,6 +108,9 @@ class ComputeLedger:
             "measured_wall_time": round(self.measured_wall_time, 4),
             "baseline_wall_time": round(self.baseline_wall_time, 4),
             "wall_speedup": round(self.wall_speedup, 4) if self.measured_wall_time > 0 else None,
+            "num_pc_endpoint_cached_forwards": self.num_pc_endpoint_cached_forwards,
+            "num_cancelled_jumps": self.num_cancelled_jumps,
+            "num_shrunk_jumps": self.num_shrunk_jumps,
         }
 
 
@@ -132,6 +145,19 @@ class JumpEvent:
     skipped_equiv_nodes: int
     regridded: bool
     action_source: str  # "v0" | "v1" | "seacache" | "fixed"
+    # --- HorizonCache-PC (E57) diagnostics; None on plain Euler jumps ---
+    sigma_next_original: float | None = None
+    alpha: float | None = None
+    headroom: float | None = None
+    accumulated_score: float | None = None
+    v_start_norm: float | None = None
+    v_endpoint_norm: float | None = None
+    curvature_l1: float | None = None
+    curvature_l2: float | None = None
+    pc_correction_norm: float | None = None
+    was_cancelled: bool = False
+    was_shrunk: bool = False
+    effective_skipped_nodes: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

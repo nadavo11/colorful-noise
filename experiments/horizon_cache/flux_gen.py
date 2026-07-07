@@ -219,26 +219,89 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
         skipped = 0
         regridded = False
         target_sigma = sigma_next
+        cfg = getattr(policy, "cfg", None)
+        pc_on = bool(getattr(cfg, "pc_enabled", False))
         if action.startswith("jump"):
             jf = adaptive_jf if adaptive_jf is not None else JUMP_FACTORS[action]
-            if adaptive_jf is None and getattr(policy, "cfg", None) is not None and getattr(policy.cfg, "jump_mode", "regrid") == "drop":
-                # on-grid drop: land two nodes ahead if possible
+            drop_mode = (adaptive_jf is None and cfg is not None
+                         and getattr(cfg, "jump_mode", "regrid") == "drop")
+            sigma_next_orig = sigma_next
+            if drop_mode:
                 j = min(i + 2, len(sigmas) - 1)
                 target_sigma = sigmas[j]
-                latents = latents + (target_sigma - sigma) * v
+            else:
+                target_sigma = max(0.0, sigma + jf * (sigma_next - sigma))
+            dsigma = target_sigma - sigma
+
+            # ---- HorizonCache-PC: cached-endpoint predictor-corrector (E57) ----
+            v_eff = v
+            pc = dict(alpha=None, headroom=feat.get("acc_rel_l1"), curv_l1=None, curv_l2=None,
+                      pc_norm=None, v0n=float(v.float().abs().sum().item()), ven=None,
+                      cancelled=False, shrunk=False)
+            if pc_on:
+                alpha = float(getattr(cfg, "pc_alpha", 0.5))
+                mode = getattr(cfg, "pc_curvature_mode", "none")
+                kappa = float(getattr(cfg, "pc_curvature_kappa", 0.06))
+
+                def _endpoint_v(x_end, sig_end):
+                    tstep = torch.full((latents.shape[0],), sig_end, device=device, dtype=latents.dtype)
+                    vv, _, _ = _flux_node(pipe, tr, x_end, tstep, guidance_t, ppe, pe,
+                                          text_ids, image_ids, sig_end, False, state)
+                    ledger.record_pc_endpoint()
+                    return vv
+
+                x_pred = latents + dsigma * v
+                v_pred = _endpoint_v(x_pred, target_sigma)
+                diff = (v_pred - v).float()
+                vabs = float(v.float().abs().sum().item())
+                pc["curv_l1"] = float(diff.abs().sum().item()) / (vabs + 1e-8)
+                pc["curv_l2"] = float(diff.norm().item()) / (float(v.float().norm().item()) + 1e-8)
+                pc["ven"] = float(v_pred.float().abs().sum().item())
+                pc["alpha"] = alpha
+
+                if mode == "cancel" and pc["curv_l1"] > kappa:
+                    # curvature too high → abandon the jump, take a normal cached step
+                    ledger.num_cancelled_jumps += 1
+                    pc["cancelled"] = True
+                    action = "cache"
+                elif mode == "shrink" and pc["curv_l1"] > kappa:
+                    # shrink the stride, then re-predict the endpoint at the smaller target
+                    shrink = float(getattr(cfg, "pc_shrink_factor", 0.5))
+                    jf = 1.0 + shrink * (jf - 1.0)
+                    target_sigma = max(0.0, sigma + jf * (sigma_next - sigma))
+                    dsigma = target_sigma - sigma
+                    x_pred = latents + dsigma * v
+                    v_pred = _endpoint_v(x_pred, target_sigma)
+                    ledger.num_shrunk_jumps += 1
+                    pc["shrunk"] = True
+                    v_eff = (1.0 - alpha) * v + alpha * v_pred
+                    pc["pc_norm"] = float((dsigma * (v_eff - v)).float().abs().sum().item())
+                else:
+                    v_eff = (1.0 - alpha) * v + alpha * v_pred
+                    pc["pc_norm"] = float((dsigma * (v_eff - v)).float().abs().sum().item())
+
+            # ---- integrate the (possibly corrected / cancelled) step ----
+            if action == "cache":              # cancelled jump → normal cached step
+                latents = latents + (sigma_next - sigma) * v
+                i += 1
+            elif drop_mode:
+                latents = latents + dsigma * v_eff
                 skipped = j - (i + 1)
                 i = j
             else:
-                # off-grid regrid
-                target_sigma = sigma + jf * (sigma_next - sigma)
-                target_sigma = max(0.0, target_sigma)
-                latents = latents + (target_sigma - sigma) * v
+                latents = latents + dsigma * v_eff
                 sigmas = regrid_tail(sigmas, i, target_sigma)
                 regridded = True
                 skipped = 1
                 i += 1
-            jumps.append(JumpEvent(step_index, action, jf, sigma, target_sigma, skipped,
-                                   regridded, action_source).as_dict())
+            jumps.append(JumpEvent(
+                step_index, ("jump_cancelled" if pc["cancelled"] else action), jf, sigma,
+                target_sigma, skipped, regridded, action_source,
+                sigma_next_original=sigma_next_orig, alpha=pc["alpha"], headroom=pc["headroom"],
+                accumulated_score=feat.get("acc_rel_l1"), v_start_norm=pc["v0n"],
+                v_endpoint_norm=pc["ven"], curvature_l1=pc["curv_l1"], curvature_l2=pc["curv_l2"],
+                pc_correction_norm=pc["pc_norm"], was_cancelled=pc["cancelled"],
+                was_shrunk=pc["shrunk"], effective_skipped_nodes=skipped).as_dict())
         else:
             latents = latents + (sigma_next - sigma) * v
             i += 1
