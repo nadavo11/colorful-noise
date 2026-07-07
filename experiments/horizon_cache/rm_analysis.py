@@ -83,6 +83,28 @@ def matched_delta_vs(df, method, ref_templates, metric="psnr", higher=True):
     return deltas
 
 
+def matched_vs_seacache(df, method, tau_grid, metric="psnr", higher=True):
+    """Per-tau matched-achieved-speedup delta of `method` vs the SeaCache frontier (paired,
+    each image vs SeaCache interpolated at that image's own speedup). Returns [{tau,speedup,
+    delta,ci,win,n}]. This is the E56 fair-comparison protocol, unchanged."""
+    sea = [f"seacache_t{t:g}" for t in tau_grid]
+    out = []
+    for tau in tau_grid:
+        m = f"horizon_{method}_t{tau:g}"
+        sub = df[df.method == m]
+        if sub.empty:
+            continue
+        d = matched_delta_vs(df, m, sea, metric, higher)
+        if not d:
+            continue
+        lo, hi = boot_ci(d)
+        out.append({"tau": tau, "speedup": float(sub.compute_speedup.mean()),
+                    "delta": float(np.mean(d)), "ci": (lo, hi),
+                    "excl0": (lo is not None and (lo > 0 or hi < 0)),
+                    "win": float(np.mean([1.0 if x > 0 else 0.0 for x in d])), "n": len(d)})
+    return out
+
+
 def rm_minus_plain(df, rm_variant, base, tau, metric="psnr", higher=True):
     """Paired per-image (RM - plain) for the SAME base family + tau (pure residual-motion effect)."""
     rm_m = f"horizon_{rm_variant}_t{tau:g}"
@@ -192,15 +214,18 @@ BANDS = [("1.7-2.0x", 1.7, 2.0), ("2.0-2.5x", 2.0, 2.5), ("2.5-2.8x", 2.5, 2.8),
 def summarize(gen: Path, tau_grid):
     df = pd.read_csv(gen / "metrics.csv")
     fams = rm_families(df)
-    out = {"rm_families": fams, "rm_minus_plain": {}, "motion": motion_signal(gen),
+    out = {"rm_families": fams, "rm_minus_plain": {}, "vs_seacache": {}, "motion": motion_signal(gen),
            "oracle": oracle_residual(gen)}
+    bases = sorted({b for _, b in fams})
     for rm_variant, base in fams:
-        key = rm_variant
-        out["rm_minus_plain"][key] = []
+        out["rm_minus_plain"][rm_variant] = []
         for tau in tau_grid:
             r = rm_minus_plain(df, rm_variant, base, tau, "psnr", True)
             if r:
-                out["rm_minus_plain"][key].append(r)
+                out["rm_minus_plain"][rm_variant].append(r)
+    # matched vs SeaCache for every RM variant AND its plain base (for the overshoot-flip verdict)
+    for m in [v for v, _ in fams] + bases:
+        out["vs_seacache"][m] = matched_vs_seacache(df, m, tau_grid, "psnr", True)
     return out
 
 

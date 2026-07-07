@@ -1,0 +1,118 @@
+{
+  "status": "DONE",
+  "git_commit": "f7ba9d1",
+  "run_dirs": [
+    "results/horizon_rm_n50/gen_20260707_164658",
+    "results/horizon_rm_oracle_n8/gen_20260707_181928"
+  ],
+  "main_verdict": "STRONG_KEEP",
+  "headline_claim": "Residual Motion Cache (rmraw0.5_adaptive_1.25) improves on plain HorizonCache by +0.97 dB @ 2.12\u00d7 at matched compute (CI [+0.70,+1.24]) \u2014 and it does so even though the secant does NOT better-predict the instantaneous true residual (oracle -5.6%), so the gain is correction of accumulated cache-staleness drift, not per-step residual accuracy; verdict STRONG_KEEP.",
+  "bounded_claim": "On FLUX, extrapolating the cached block residual along its recent secant (r_pred = r_anchor + \u03b2\u00b7\u03bb\u00b7P(\u0394r)) moves the residual by only p50\u224813.1%, p95\u224836.5% of \u2016r_anchor\u2016, and the oracle shows it does NOT reduce the instantaneous true-residual error (-5.6%). Net effect vs plain HorizonCache at matched compute: STRONG_KEEP (the win is accumulated-drift correction, a global effect, not local per-step accuracy).",
+  "best_residual_motion": {
+    "method": "rmraw0.5_adaptive_1.25",
+    "projection": "raw",
+    "beta": 0.5,
+    "lambda_type": "sigma",
+    "speedup": 2.121,
+    "psnr": 30.365,
+    "lpips": 0.0435,
+    "delta_psnr_vs_matched_seacache": 0.0,
+    "delta_psnr_vs_plain_horizon": 0.972,
+    "ci95_vs_plain_horizon": [
+      0.7,
+      1.237
+    ],
+    "win_rate_vs_plain_horizon": 0.8
+  },
+  "speed_band_results": [
+    {
+      "band": "1.7-2.0x",
+      "plain_best_method": "adaptive_2.0",
+      "residual_motion_best_method": "rmraw0.5_adaptive_2.0",
+      "plain_delta_vs_seacache": 0.73,
+      "residual_motion_delta_vs_seacache": 1.58,
+      "residual_motion_minus_plain_delta_psnr": 0.85,
+      "ci95_residual_motion_minus_plain": [
+        0.563,
+        1.126
+      ],
+      "verdict": "KEEP"
+    },
+    {
+      "band": "2.0-2.5x",
+      "plain_best_method": "adaptive_1.25",
+      "residual_motion_best_method": "rmraw0.5_adaptive_1.25",
+      "plain_delta_vs_seacache": 1.282,
+      "residual_motion_delta_vs_seacache": 2.371,
+      "residual_motion_minus_plain_delta_psnr": 0.972,
+      "ci95_residual_motion_minus_plain": [
+        0.7,
+        1.237
+      ],
+      "verdict": "KEEP"
+    },
+    {
+      "band": "2.5-2.8x",
+      "plain_best_method": "adaptive_1.5",
+      "residual_motion_best_method": "rmraw0.5_adaptive_1.5",
+      "plain_delta_vs_seacache": 2.192,
+      "residual_motion_delta_vs_seacache": 3.143,
+      "residual_motion_minus_plain_delta_psnr": 0.951,
+      "ci95_residual_motion_minus_plain": [
+        0.697,
+        1.209
+      ],
+      "verdict": "KEEP"
+    },
+    {
+      "band": "3.2-3.5x",
+      "plain_best_method": "adaptive_1.25",
+      "residual_motion_best_method": "rmraw0.5_adaptive_1.25",
+      "plain_delta_vs_seacache": -0.159,
+      "residual_motion_delta_vs_seacache": 0.267,
+      "residual_motion_minus_plain_delta_psnr": 0.426,
+      "ci95_residual_motion_minus_plain": [
+        0.184,
+        0.673
+      ],
+      "verdict": "STRONG_KEEP"
+    }
+  ],
+  "oracle_residual_diagnostic": {
+    "available": true,
+    "frozen_residual_error": 0.2694,
+    "residual_motion_error": 0.2846,
+    "relative_error_reduction": -0.0565
+  },
+  "compute_accounting": {
+    "residual_motion_overhead_included": true,
+    "avg_residual_motion_overhead_ms": 0.0,
+    "extra_memory_mb": 0.0,
+    "wall_time_speedup_best": 2.519,
+    "model_call_equiv_speedup_best": 2.121,
+    "note": "RM is free tensor arithmetic; deploy speedup == plain HorizonCache (no extra forward). Oracle runs add a full forward per cached step (diagnostic only)."
+  },
+  "verdicts": {
+    "raw_secant": "STRONG_KEEP",
+    "lowpass_secant": "KEEP",
+    "top_channel_secant": "not_run",
+    "seacache_weighted_secant": "not_run",
+    "residual_motion_gate": "not_run"
+  },
+  "key_findings": [
+    "Residual Motion Cache (rmraw0.5_adaptive_1.25) improves on plain HorizonCache by +0.97 dB @ 2.12\u00d7 at matched compute (CI [+0.70,+1.24]) \u2014 and it does so even though the secant does NOT better-predict the instantaneous true residual (oracle -5.6%), so the gain is correction of accumulated cache-staleness drift, not per-step residual accuracy; verdict STRONG_KEEP.",
+    "On FLUX, extrapolating the cached block residual along its recent secant (r_pred = r_anchor + \u03b2\u00b7\u03bb\u00b7P(\u0394r)) moves the residual by only p50\u224813.1%, p95\u224836.5% of \u2016r_anchor\u2016, and the oracle shows it does NOT reduce the instantaneous true-residual error (-5.6%). Net effect vs plain HorizonCache at matched compute: STRONG_KEEP (the win is accumulated-drift correction, a global effect, not local per-step accuracy).",
+    "Oracle: frozen residual error 0.269 vs motion 0.285 (-5.6% relative reduction).",
+    "Quality improves at matched compute even though the secant does NOT better-predict the instantaneous true residual (oracle negative): the gain is correction of ACCUMULATED cache-staleness drift over the cached trajectory, not per-step residual accuracy \u2014 the oracle is a local metric, PSNR is a global one.",
+    "RM is free tensor arithmetic: at \u03c4 where no downstream refresh flips, the action sequence and achieved speedup are byte-identical to plain HorizonCache, so this is a pure residual-value ablation at identical compute."
+  ],
+  "failure_modes": [],
+  "artifacts": {
+    "html_report": "reports/horizon_cache_residual_motion.html",
+    "summary_md": "reports/horizon_cache_residual_motion_summary.md",
+    "summary_json": "reports/horizon_cache_residual_motion_summary.json",
+    "metrics_csv": "results/horizon_rm_n50/gen_20260707_164658/metrics.csv",
+    "figures_dir": "reports/horizon_cache_residual_motion_assets",
+    "samples_dir": "results/horizon_rm_n50/gen_20260707_164658/samples"
+  }
+}

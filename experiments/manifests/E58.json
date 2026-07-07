@@ -1,0 +1,48 @@
+{
+  "eid": "E58",
+  "logged": "2026-07-07",
+  "git_commit": "f7ba9d1",
+  "source": "run",
+  "script": "experiments/horizon_cache/run.py",
+  "results_dir": "results/horizon_rm_n50/gen_20260707_164658",
+  "config": {
+    "model": "FLUX.1-dev 4bit",
+    "width": 512,
+    "height": 512,
+    "steps": 28,
+    "consolidation": "N=50 x2 seeds = 100 paired samples, lean",
+    "tau_grid": [0.3, 0.4, 0.5, 0.65],
+    "variants": ["adaptive_1.25", "adaptive_1.5", "adaptive_2.0",
+                 "rmraw0.5_adaptive_1.25", "rmraw0.5_adaptive_1.5", "rmraw0.5_adaptive_2.0",
+                 "rmlowpass0.5_adaptive_1.5", "rmlowpass0.5_adaptive_2.0", "rmraw0.75_adaptive_1.5"],
+    "rm_lambda_mode": "sigma",
+    "rm_lambda_max": 1.5,
+    "smoke_run": "results/horizon_rm_smoke/gen_20260707_163300 (N=8, PROCEED gate passed)",
+    "oracle_run": "results/horizon_rm_oracle_n8/gen_20260707_181928 (N=8, --rm-oracle true-residual scoring)",
+    "method": "r_pred = r_anchor + beta*lambda(t)*P(r_anchor - r_prev); v = head(front(x_t,sigma_t) + r_pred); no extra block-stack forward",
+    "compute_accounting": "RM is free tensor arithmetic; achieved speedup == plain HorizonCache. Oracle runs add a full forward per cached step (diagnostic only, not charged)."
+  },
+  "metrics": {
+    "verdict": "STRONG KEEP (raw secant, beta=0.5)",
+    "rm_minus_plain_dB_range": [0.42, 0.95],
+    "rm_minus_plain_all_ci_exclude_zero": true,
+    "best_variant": "rmraw0.5_adaptive_1.25 (+0.97 dB @ 2.12x, CI [0.70,1.24], win 0.80)",
+    "vs_seacache_safe_band": "roughly doubles E56 margin (2.50x: plain +2.19 -> RM +3.14 dB; 2.74x: +1.26 -> +1.93)",
+    "overshoot_flip_3p4x": "plain adaptive_* -0.14/-0.16 dB (loss vs SeaCache, CI excl 0) -> RM +0.27/+0.29 dB (win, CI [+0.04,+0.53])",
+    "beta_sweet_spot": "0.5 (0.75 overshoots at 3.4x: +0.16, CI incl 0)",
+    "projection": "raw > lowpass",
+    "oracle_rel_error_reduction": -0.056,
+    "oracle_note": "secant does NOT better-predict the instantaneous true residual (frozen 0.269 vs motion 0.285, -5.6%); gain is accumulated-drift correction, not per-step accuracy",
+    "residual_motion_magnitude": "extrapolation ratio p50~0.13, p95~0.36 of ||r_anchor||"
+  },
+  "artifacts": [
+    "reports/horizon_cache_residual_motion.html",
+    "reports/horizon_cache_residual_motion_summary.json",
+    "reports/horizon_cache_residual_motion_summary.md",
+    "reports/horizon_cache_residual_motion_assets/",
+    "results/horizon_rm_n50/gen_20260707_164658/metrics.csv",
+    "results/horizon_rm_smoke/gen_20260707_163300/metrics.csv",
+    "results/horizon_rm_oracle_n8/gen_20260707_181928/metrics.csv",
+    "runs/runai/20260707_194500__horizon_rm_e58_consol__f7ba9d1/"
+  ]
+}

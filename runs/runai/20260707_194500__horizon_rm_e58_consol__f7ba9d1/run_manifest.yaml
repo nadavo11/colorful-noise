@@ -1,0 +1,32 @@
+run_id: "20260707_194500__horizon_rm_e58_consol__f7ba9d1"
+job_name: "horizon-e58-rm-consol-f7ba9d1"
+status: "submitted"
+created_at: "2026-07-07T19:45:00+03:00"
+git_commit: "f7ba9d1"
+git_branch: "e58-residual-motion"
+repo_root: "/storage/nada/colorful-noise-e58"
+experiment: "E58 Residual Motion Cache — consolidation"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+gate_decision: "PROCEED — smoke (N=8) showed RM beats plain HorizonCache by +0.5 to +1.4 dB at MATCHED speed (identical action sequence at tau 0.4/0.5) in the 2.0-2.8x band, CI excludes 0."
+stages:
+  - name: consolidation
+    n: 50
+    seeds_per_prompt: 2
+    tau_grid: [0.3, 0.4, 0.5, 0.65]
+    variants: [adaptive_1.25, adaptive_1.5, adaptive_2.0,
+               rmraw0.5_adaptive_1.25, rmraw0.5_adaptive_1.5, rmraw0.5_adaptive_2.0,
+               rmlowpass0.5_adaptive_1.5, rmlowpass0.5_adaptive_2.0, rmraw0.75_adaptive_1.5]
+    out: "results/horizon_rm_n50"
+  - name: oracle_diag
+    n: 8
+    tau_grid: [0.5]
+    variants: [rmraw0.5_adaptive_1.5, rmlowpass0.5_adaptive_1.5]
+    rm_oracle: true
+    out: "results/horizon_rm_oracle_n8"
+smoke_run: "results/horizon_rm_smoke/gen_20260707_163300 (N=8, PROCEED)"
+smoke_oracle: "results/horizon_rm_oracle/gen_20260707_163933 (rel_reduction=-5.5% — secant does NOT better-predict instantaneous true residual; gain is trajectory-level)"
+tarballs:
+  consol: "/storage/nada/colorful-noise-e58/e58_consol_light.tar.gz"
+  oracle: "/storage/nada/colorful-noise-e58/e58_oracle_n8_light.tar.gz"
+notes: "RM is free tensor arithmetic; achieved speedup == plain HorizonCache. The improvement is at matched compute. Honest nuance to preserve: oracle shows r_pred is NOT closer to the instantaneous true residual, so the gain is accumulated-drift correction, not per-step residual prediction."

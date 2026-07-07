@@ -1557,3 +1557,36 @@ Next: partial-stack/low-rank endpoint refresh, or accept the ~1.7–2.7× safe b
 `results/horizon_pc_smoke/gen_20260707_140532/`, `results/horizon_pc_oracle/gen_20260707_141523/`;
 code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,pc_analysis,pc_report}.py`; manifest
 `experiments/manifests/E57.json`; doc `docs/experiment-reports/EXPERIMENT_57.md`.
+
+## E58 — HorizonCache Residual Motion Cache: move the cached block residual (FLUX.1-dev)
+
+**Method.** E57 showed a cached-endpoint correction fails because re-querying the head reuses the *frozen*
+block residual. E58 moves the residual itself: `r_pred = r_anchor + β·λ(t)·P(r_anchor − r_prev)`,
+`v = head(front(x_t,σ_t) + r_pred)`, where `r_anchor`/`r_prev` are the two most recent fresh block residuals,
+`P` a stable-subspace projection (raw / lowpass / topk / sea), `λ(t)` normalized progress since the anchor
+(σ-linear default), `β` a shrink. **Pure tensor arithmetic — no extra block-stack forward, so achieved speedup
+== plain HorizonCache.** Non-RM path byte-identical to E56/E57; matched-achieved-speedup + bootstrap unchanged.
+Oracle diagnostic (`--rm-oracle`) scores `r_pred` against the true residual `r_true = B(h_t)`.
+
+**Key result (consolidation N=50×2 seeds = 100 paired, τ 0.3/0.4/0.5/0.65).** RM (raw, β=0.5) beats **plain
+HorizonCache at matched compute** by **+0.4 to +0.95 dB across the whole 2.0–3.4× range — every 95% CI excludes
+0** (e.g. rmraw0.5_adaptive_1.5: +0.86@2.01×, +0.95@2.50×, +0.67@2.74×, +0.42@3.40×); at τ where no refresh
+flips, the action sequence + speedup are byte-identical to plain (a pure residual-value ablation). vs SeaCache
+(matched speedup): RM roughly **doubles** the E56 margin in the safe band (2.50×: plain +2.19 → RM +3.14 dB) and
+**flips the ~3.4× overshoot** — plain adaptive *loses* to SeaCache (−0.14 dB, CI excl 0) but RM *wins* (+0.29 dB,
+CI [+0.04,+0.53]). LPIPS improves everywhere. β=0.5 sweet spot (0.75 overshoots at 3.4×); raw > lowpass.
+**Honest nuance (oracle N=8):** the secant does **not** better-predict the instantaneous true residual (frozen
+0.269 vs motion 0.285, −5.6%) — the gain is **accumulated-drift correction** (global trajectory fidelity), not
+per-step residual accuracy. Residual motion is small (extrap ratio p50≈13%, p95≈36% of ‖r_anchor‖).
+
+**Verdict.** **STRONG KEEP** (raw secant, β=0.5): beats plain HorizonCache at matched compute (100 pairs, all
+CI>0) **and** extends the positive SeaCache margin past 2.7× to ~3.4×, for free. lowpass KEEP (~half the gain);
+β=0.75 KEEP but begins to overshoot; topk/sea/gate not yet run. Bounded: a matched-compute quality gain + frontier
+extension on FLUX text2img, *not* a per-step residual predictor (oracle-negative). Next: fold into the E56 frontier
+(RM strictly dominates plain), sweep β×λ, N=100 + qualitative grids, SD3 replication.
+
+**Artifacts.** `reports/horizon_cache_residual_motion.{html,md,json}`,
+`reports/horizon_cache_residual_motion_assets/`; `results/horizon_rm_n50/gen_20260707_164658/`,
+`results/horizon_rm_smoke/gen_20260707_163300/`, `results/horizon_rm_oracle_n8/gen_20260707_181928/`;
+code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,rm_analysis,rm_report}.py`; manifest
+`experiments/manifests/E58.json`; doc `docs/experiment-reports/EXPERIMENT_58.md`.

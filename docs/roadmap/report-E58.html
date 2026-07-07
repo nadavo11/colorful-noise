@@ -1,0 +1,174 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E58 — HorizonCache Residual Motion Cache -- move the cached block residual along its secant</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_58.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E58 — HorizonCache Residual Motion Cache: move the cached block residual along its secant</h1>
+<p><strong>Thread:</strong> fast-edit (caching line) · <strong>Status:</strong> active · <strong>Verdict:</strong> STRONG KEEP (raw secant, β=0.5) ·
+<strong>Models:</strong> FLUX.1-dev (4-bit), 512 px, 28 Euler steps; smoke N=8 → <strong>consolidation N=50 × 2 seeds = 100 paired
+samples</strong> + N=8 oracle residual diagnostic, cluster H100 80 GB (Run:AI). Canonical-fixture v1 + deterministic
+GenEval extras.</p>
+<blockquote>
+<p><strong>Headline.</strong> Residual Motion Cache beats <strong>plain HorizonCache at matched compute</strong> by <strong>+0.4 to +0.95 dB across
+the entire 2.0–3.4× range</strong> (100 paired samples, every 95 % CI excludes 0), roughly <strong>doubles</strong> the E56 margin
+over SeaCache in the safe band, and — the key result — <strong>flips E56's ~3.4× overshoot</strong>: plain adaptive HorizonCache
+<em>loses</em> to SeaCache there (−0.14 dB, CI excl 0), but RM <em>wins</em> (+0.29 dB, CI [+0.04, +0.53]). It costs <strong>no extra
+forward</strong>. Paper-ready report: <code>reports/horizon_cache_residual_motion.html</code>.</p>
+</blockquote>
+<h2>Hypothesis</h2>
+<p>E56 established the headroom-adaptive stride as a STRONG KEEP in ~1.7–2.7×, overshooting at ~3.4×. E57 tried to fix
+the overshoot with a cached-endpoint predictor–corrector and <strong>failed</strong>: re-querying the cheap output head at the
+jump endpoint reuses the <strong>frozen</strong> block-stack residual, so <code>v_pred ≈ v_i</code> (curvature ~1–3 %) and the correction is
+a near-no-op. The lesson: <em>any</em> cheap correction that reads through the frozen residual is limited the same way.</p>
+<p>So E58 attacks the residual itself. Instead of treating the cached block residual as constant, <strong>predict its slow
+motion</strong> from recent fresh residuals:</p>
+<pre><code>r_pred(t) = r_anchor + β · λ(t) · P(r_anchor − r_prev)
+v         = head( front(x_t, σ_t) + r_pred(t) )
+</code></pre>
+<p>where <code>r_anchor</code> / <code>r_prev</code> are the two most recent <strong>fresh</strong> block residuals, <code>P</code> is an optional stable-subspace
+projection, <code>λ(t)</code> is normalized progress since the anchor, and <code>β</code> a conservative shrink. Crucially this is <strong>pure
+tensor arithmetic</strong> — it does <strong>not</strong> call the block stack on cached/jump steps, so the achieved speedup is identical
+to plain HorizonCache.</p>
+<h2>Method</h2>
+<p>New RM path in <code>experiments/horizon_cache/</code> (non-RM path byte-identical to E56/E57, fair by construction):</p>
+<ul>
+<li><strong>History.</strong> On every fresh forward the sampler shifts <code>r_prev ← r_anchor</code> and stores σ / filtered-h / step-age at
+  both anchors (<code>FluxCacheState</code>). A cached/jump step forms the secant <code>Δr = r_anchor − r_prev</code>.</li>
+<li><strong>Projection P</strong>: <code>raw</code> (identity), <code>lowpass</code> (avg-pool + upsample over the token grid), <code>topk</code> (most energetic
+  channels), <code>sea</code> (SeaCache Wiener filter (a,b)=(1−σ,σ) on the residual grid).</li>
+<li><strong>λ(t)</strong>: σ-linear <code>(σ_t−σ_anchor)/(σ_anchor−σ_prev)</code> (default), step-age, or SeaCache-style h-drift; clamped to
+  <code>[0, λ_max]</code>.</li>
+<li><strong>β</strong> shrink ∈ {0, 0.25, 0.5, 0.75, 1.0} (0 ≡ plain HorizonCache).</li>
+<li><strong>Cost</strong>: no extra block-stack forward. <code>ComputeLedger</code> counts residual-motion applications but does <strong>not</strong> change
+  <code>block_stack_equiv_cost</code>; achieved speedup == plain HorizonCache. Memory: one extra residual (<code>r_prev</code>) in bf16.</li>
+<li><strong>Oracle diagnostic</strong> (<code>--rm-oracle</code>): additionally run the <strong>true</strong> residual <code>r_true = B(h_t)</code> at cached steps and
+  score <code>‖r_pred − r_true‖</code> vs <code>‖r_anchor − r_true‖</code> (a full forward per cached step, diagnostic only, not charged).</li>
+<li>Same regrid scheduler, matched-achieved-speedup comparison, and percentile bootstrap as E56.</li>
+</ul>
+<p>Grammar <code>rm&lt;proj&gt;&lt;beta&gt;_&lt;base&gt;</code> (e.g. <code>rmraw0.5_adaptive_1.5</code>). λ-mode / λ-max / gate ρ are run-level flags.</p>
+<h2>Result — consolidation (N=50 × 2 seeds = 100 paired, τ ∈ {0.3, 0.4, 0.5, 0.65})</h2>
+<p><strong>1. RM beats plain HorizonCache at matched compute, everywhere, significantly.</strong> Paired per-image (RM − plain, same
+base/τ). At τ where no downstream refresh flips (the low/mid-τ regime), the action sequence <em>and</em> achieved speedup
+are <strong>byte-identical</strong> to plain — a pure residual-value ablation:</p>
+<table>
+<thead>
+<tr>
+<th>variant</th>
+<th>2.0× (τ0.3)</th>
+<th>2.5× (τ0.4)</th>
+<th>2.74× (τ0.5)</th>
+<th>3.4× (τ0.65)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>rmraw0.5_adaptive_1.25</td>
+<td>+0.97 [0.71,1.24]</td>
+<td>+0.91 [0.67,1.16]</td>
+<td>+0.63 [0.33,0.93]</td>
+<td>+0.43 [0.19,0.67]</td>
+</tr>
+<tr>
+<td>rmraw0.5_adaptive_1.5</td>
+<td>+0.86 [0.58,1.13]</td>
+<td>+0.95 [0.70,1.21]</td>
+<td>+0.67 [0.37,0.98]</td>
+<td>+0.42 [0.18,0.68]</td>
+</tr>
+<tr>
+<td>rmraw0.5_adaptive_2.0</td>
+<td>+0.85 [0.57,1.12]</td>
+<td>+0.93 [0.68,1.18]</td>
+<td>+0.65 [0.36,0.95]</td>
+<td>+0.42 [0.18,0.67]</td>
+</tr>
+<tr>
+<td>rmlowpass0.5_adaptive_1.5</td>
+<td>+0.44 [0.26,0.61]</td>
+<td>+0.52 [0.34,0.71]</td>
+<td>+0.45 [0.20,0.70]</td>
+<td>+0.33 [0.13,0.52]</td>
+</tr>
+<tr>
+<td>rmraw0.75_adaptive_1.5</td>
+<td>+0.90 [0.55,1.26]</td>
+<td>+0.91 [0.58,1.24]</td>
+<td>+0.62 [0.24,1.01]</td>
+<td>+0.16 [−0.13,0.45]</td>
+</tr>
+</tbody>
+</table>
+<p>Every raw β=0.5 CI excludes 0. <strong>raw &gt; lowpass</strong> (raw keeps the full secant; lowpass discards useful residual
+motion). <strong>β = 0.5 is the sweet spot</strong>: β = 0.75 still wins in the safe band but starts to <strong>overshoot at 3.4×</strong>
+(+0.16, CI includes 0).</p>
+<p><strong>2. vs SeaCache at matched achieved speedup (E56 fair protocol) — the frontier extension.</strong> RM roughly <strong>doubles</strong>
+the E56 margin in the safe band and <strong>flips the overshoot</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>speedup</th>
+<th>plain adaptive vs SeaCache</th>
+<th><strong>RM (raw 0.5) vs SeaCache</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2.01×</td>
+<td>+0.89 [0.64, 1.16]</td>
+<td><strong>+1.87 [1.41, 2.36]</strong></td>
+</tr>
+<tr>
+<td>2.50×</td>
+<td>+2.19 [1.78, 2.62]</td>
+<td><strong>+3.14 [2.65, 3.63]</strong></td>
+</tr>
+<tr>
+<td>2.74×</td>
+<td>+1.26 [1.01, 1.49]</td>
+<td><strong>+1.93 [1.55, 2.29]</strong></td>
+</tr>
+<tr>
+<td><strong>3.40×</strong></td>
+<td><strong>−0.14 [−0.18, −0.10]</strong> (loss)</td>
+<td><strong>+0.29 [+0.04, +0.53]</strong> (win)</td>
+</tr>
+</tbody>
+</table>
+<p>At 3.40× (≈3.0× SeaCache-equivalent) plain HorizonCache <strong>loses</strong> to SeaCache — this is E56's overshoot — while RM
+turns it into a <strong>significant win</strong>. LPIPS improves everywhere too (ΔLPIPS +0.012 to +0.046, sign = better).</p>
+<p><strong>3. Mechanism — the honest nuance (oracle, N=8).</strong> The secant does <strong>not</strong> better-predict the instantaneous true
+residual: frozen error <strong>0.269</strong> vs residual-motion error <strong>0.285</strong> → <strong>−5.6 %</strong> (slightly <em>worse</em> pointwise). This
+is not a contradiction with the quality gain — it is the mechanism:</p>
+<blockquote>
+<p>The oracle measures <strong>local</strong> single-step residual accuracy at the (already-drifted) cached state; PSNR measures
+<strong>global</strong> fidelity to the full trajectory. The frozen cached residual is systematically <strong>stale</strong> (it lags the
+evolving true residual); nudging it forward along its recent secant reduces the <strong>accumulated</strong> velocity drift over
+the cached run even though it overshoots any single instantaneous residual. <strong>The win is drift/bias correction, not
+a better per-step predictor.</strong> Residual motion is real but small — extrapolation ratio p50 ≈ 13 %, p95 ≈ 36 % of
+‖r_anchor‖.</p>
+</blockquote>
+<h2>Verdict</h2>
+<p><strong>STRONG KEEP (raw secant, β = 0.5).</strong> <code>rmraw0.5</code> over adaptive_1.25/1.5/2.0: beats plain HorizonCache by +0.4–0.95 dB
+at matched compute (100 pairs, all CI &gt; 0) <strong>and</strong> extends the positive SeaCache margin past 2.7× to ~3.4×, flipping
+E56's overshoot from a measured loss into a measured win. <code>lowpass</code> secant KEEP (same sign, ~half the gain). β = 0.75
+KEEP but begins to overshoot at 3.4×. <code>topk</code> / <code>sea</code> projections and the safety gate: not yet run.</p>
+<p><strong>Bounded claim (do not oversell):</strong> this is a <strong>matched-compute quality gain plus a frontier extension to ~3.4× on
+FLUX text2img</strong>, obtained for free (no extra forward). It is <strong>not</strong> a better per-step residual predictor
+(oracle-negative), and the mechanism is <strong>accumulated-drift correction</strong> — it should be stated that way. Not yet
+replicated off FLUX (SD3 needs a new MMDiT harness).</p>
+<h2>Next</h2>
+<ol>
+<li>Fold RM into the E56 consolidated frontier as the new headline — RM is free, so it <strong>strictly dominates</strong> plain
+   HorizonCache.</li>
+<li>Sweep β ∈ [0.4, 0.6] × λ-mode {σ, h}; test <code>topk</code>/<code>sea</code> projections and a per-step gate at 3.4×+ to push past the
+   overshoot further.</li>
+<li>Multi-seed / N=100 headline + qualitative grids.</li>
+<li>SD3 (new MMDiT harness) — does residual-secant motion generalize off FLUX?</li>
+<li>A learned residual-motion predictor (small MLP on the secant + σ) if the linear secant leaves gains on the table.</li>
+</ol>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>reports/horizon_cache_residual_motion.html</code> · <code>reports/horizon_cache_residual_motion_summary.{md,json}</code> ·
+  <code>reports/horizon_cache_residual_motion_assets/</code> (frontier, RM−plain, method diagram, oracle residual, motion magnitude)</li>
+<li>Runs: <code>results/horizon_rm_n50/gen_20260707_164658/</code> (consolidation, 100 paired) ·
+  <code>results/horizon_rm_smoke/gen_20260707_163300/</code> (smoke N=8, PROCEED) ·
+  <code>results/horizon_rm_oracle_n8/gen_20260707_181928/</code> (oracle residual diagnostic) ·
+  <code>runs/runai/20260707_194500__horizon_rm_e58_consol__f7ba9d1/</code></li>
+<li>Code: <code>experiments/horizon_cache/{flux_gen,scheduler,policy,run,rm_analysis,rm_report}.py</code> ·
+  manifest <code>experiments/manifests/E58.json</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_58.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

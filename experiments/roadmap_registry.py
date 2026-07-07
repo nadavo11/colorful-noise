@@ -1139,4 +1139,49 @@ EXPERIMENTS = [
             "frontier-improvement label could supervise a jump-shrink). SD3 (E56 nxt) is the higher-value open direction.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_57.md",
      "results": None, "image": None},
+
+    {"id": "E58", "title": "HorizonCache Residual Motion Cache -- move the cached block residual along its secant",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 -> consolidation "
+               "N=50 x2 seeds = 100 paired samples + N=8 oracle residual diagnostic, cluster H100 (Run:AI)",
+     "status": "active",
+     "motivation": "E56 headroom-adaptive stride is STRONG KEEP in ~1.7-2.7x but overshoots at ~3.4x; E57 proved a cached "
+                   "ENDPOINT correction is a near-no-op because re-querying the cheap head reuses the FROZEN block residual "
+                   "(v_pred~=v_i). So the next trick must move the block RESIDUAL itself, not just re-query the head. Residual "
+                   "Motion Cache treats the cached residual as slowly moving and extrapolates it along its recent fresh-residual "
+                   "secant: r_pred = r_anchor + beta*lambda(t)*P(r_anchor - r_prev); v = head(front(x_t,sigma_t) + r_pred). "
+                   "Pure tensor arithmetic -- NO extra block-stack forward, so achieved speedup == plain HorizonCache.",
+     "method": "New RM path in experiments/horizon_cache/ (flux_gen stores fresh-residual history r_prev/r_anchor + "
+               "sigma/h/step-age at both anchors; a cached/jump step uses r_pred instead of frozen r_anchor). Projections P: "
+               "raw (identity), lowpass (avg-pool over token grid), topk (energetic channels), sea (Wiener filter). lambda(t): "
+               "sigma-linear (default), step-age, or h-drift, clamped. beta shrink; optional extrapolation-ratio safety gate. "
+               "Non-RM path byte-identical to E56/E57 (rm_enabled defaults False); matched-achieved-speedup + percentile "
+               "bootstrap protocol unchanged. Variant grammar rm<proj><beta>_<base>. ORACLE diagnostic (--rm-oracle): also run "
+               "the TRUE residual r_true=B(h_t) at cached steps to score ||r_pred-r_true|| vs ||r_anchor-r_true||. "
+               "Analysis rm_analysis.py, report rm_report.py.",
+     "result": "CONSOLIDATION N=50 x2 seeds (100 paired), tau 0.3/0.4/0.5/0.65, raw/lowpass beta 0.5 + raw beta 0.75 over "
+               "adaptive_1.25/1.5/2.0. RM (raw, beta=0.5) beats PLAIN HorizonCache at MATCHED compute by +0.4 to +0.95 dB "
+               "across the ENTIRE 2.0-3.4x range -- EVERY 95% CI excludes 0 (e.g. rmraw0.5_adaptive_1.5: +0.86@2.01x, "
+               "+0.95@2.50x, +0.67@2.74x, +0.42@3.40x). At tau where no downstream refresh flips, the action sequence + achieved "
+               "speedup are BYTE-IDENTICAL to plain -- a pure residual-value ablation. vs SeaCache (matched achieved speedup): RM "
+               "roughly DOUBLES the E56 margin in the safe band (2.50x: plain +2.19 -> RM +3.14 dB; 2.74x: +1.26 -> +1.93) and "
+               "-- the headline -- FLIPS the ~3.4x OVERSHOOT: plain adaptive_* LOSES to SeaCache (-0.14/-0.16 dB, CI excl 0 "
+               "NEGATIVE) but RM WINS (+0.27/+0.29 dB, CI [+0.04,+0.53]). LPIPS improves everywhere too. beta=0.5 is the sweet "
+               "spot: beta=0.75 overshoots at 3.4x (+0.16, CI incl 0). raw > lowpass projection. HONEST NUANCE (oracle N=8): the "
+               "secant does NOT better-predict the instantaneous true residual -- frozen err 0.269 vs motion err 0.285, "
+               "-5.6% (i.e. slightly WORSE pointwise). So the gain is NOT a better per-step residual predictor; it is correction "
+               "of ACCUMULATED cache-staleness DRIFT over the cached trajectory -- the oracle is a local metric, PSNR is global. "
+               "Residual motion magnitude: extrapolation ratio p50~13%, p95~36% of ||r_anchor||.",
+     "verdict": "STRONG KEEP (raw secant, beta=0.5). rmraw0.5 over adaptive_1.25/1.5/2.0: STRONG KEEP -- beats plain "
+                "HorizonCache by +0.4-0.95 dB at matched compute (100 pairs, all CI>0) AND extends the positive SeaCache margin "
+                "past 2.7x to ~3.4x, flipping E56's overshoot from a measured loss into a measured win. lowpass secant KEEP "
+                "(same sign, ~half the gain). beta=0.75 KEEP but starts to overshoot at 3.4x. The claim stays bounded: this is a "
+                "matched-compute quality gain + a frontier extension to ~3.4x on FLUX text2img; it is NOT a per-step residual "
+                "predictor (oracle-negative), and the mechanism is drift correction, which should be stated as such.",
+     "nxt": "(1) Fold RM into the E56 consolidated frontier as the new headline (RM is free, so it strictly dominates plain "
+            "HorizonCache). (2) Sweep beta in [0.4,0.6] x lambda-mode {sigma,h} for a tuned operating curve, and test the topk/sea "
+            "projections + a per-step gate at 3.4x+ to push past the overshoot further. (3) Multi-seed / N=100 headline + "
+            "qualitative grids. (4) SD3 (needs a new MMDiT harness) to test whether residual-secant motion generalizes off FLUX. "
+            "(5) A learned residual-motion predictor (small MLP on the secant + sigma) if the linear secant leaves gains on the table.",
+     "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_58.md",
+     "results": None, "image": None},
 ]
