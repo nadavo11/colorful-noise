@@ -1489,28 +1489,31 @@ decoded-PSNR; asymmetric false-jump≫false-cache cost). Baselines add a TeaCach
 speedup** + per-image matched win-rate. FLUX runs 4-bit to fit a 24 GB A5000; patched a broken xformers
 `flash_attn_3` ABI.
 
-**Key result (consolidation, N=20×1 seed, 512px/28 steps).** The surviving primitive is the conservative
-**adaptive** jump — it **beats fixed `regrid_1.25`**. At matched achieved speedup `adaptive_1.25` sits
-**+1.0 to +2.4 dB above the SeaCache frontier across ~1.7–2.7× with 85–100% per-image win-rate** (headline
-+2.36 dB @2.46×, 100% win; SeaCache frontier 35.4/28.99/25.8/23.37 dB @1.48/2.11/2.48/3.0×). Mechanism: the
-jump lets HorizonCache keep refreshing **often** (low τ) yet still save compute — a gentler quality/speed
-tradeoff than SeaCache's rare-refresh/long-cache, where SeaCache's frontier drops steepest. **Narrow-band
-win**: collapses past ~3× (τ0.65: −0.2 dB, win ≤15%). Naive uniform/random/TeaCache-raw collapse. `jump_2.0`
-= KILL. **v1 label finding (the crux):** the safe-horizon label is two-dimensional (metric × horizon).
-latent-L2 (2%) → **0 safe jumps** (too strict); short-H=5 decoded-PSNR (floor 32) → 12 safe jumps but **11
-are jump_2.0** (which kills end-to-end quality — the short continuation is too *optimistic*, missing
-compounding, the deck's DP-surrogate lesson). So v1 stays PARK because the **supervision is mis-specified**,
-not because learning fails; the fix is a frontier-improvement / full-horizon label.
+**Key result (significance, N=24×2 seeds = 48 paired samples, 512px/28 steps; bootstrap 95% CIs).** The
+surviving primitive is the conservative **adaptive** jump — it **beats fixed `regrid_1.25`**. At matched
+achieved speedup the multi-seed result is **robust and every in-band CI excludes 0**: +1.61 dB@1.70×
+(CI[1.15,2.10], win 85%), +1.47@2.11× ([0.95,2.04], 83%), **+2.11@2.51× ([1.52,2.70], 92%)** — the
+strong-KEEP-band headline — +1.26@2.74× ([0.81,1.68], 92%); SeaCache frontier 35.6/30.4/28.5/25.9/23.1 dB
+@1.48/1.86/2.11/2.48/3.0×. Mechanism: the jump lets HorizonCache keep refreshing **often** (low τ) yet still
+save compute — a gentler quality/speed tradeoff than SeaCache's rare-refresh/long-cache, where its frontier
+drops steepest. **Narrow-band**: **overshoots past ~3×** (τ0.65: −0.19 dB @3.40×, CI[−0.25,−0.13] excl 0
+negative, win 19%). `jump_2.0` = KILL. **v1 label finding (the crux):** the safe-horizon label is
+two-dimensional (metric × horizon). latent-L2 (2%) → **0 safe jumps** (too strict); short-H=5 decoded-PSNR
+(floor 32) → 12 but **11 are jump_2.0** (kills end-to-end quality — too *optimistic*, missing compounding,
+the DP-surrogate lesson). Fix built + run: a **frontier-improvement** label (cache vs adaptive-jump,
+continue SeaCache to the END, decode vs full continuation, label jump-helpful iff final quality preserved).
 
-**Verdict.** **KEEP (v0, narrow-band; N=20, single seed, FLUX 512px).** Fair-by-identity SeaCache that
-measurably improves the FLUX frontier in ~1.7–2.7× (+1.0 to +2.4 dB at matched speedup, 85–100% win) and is
-never worse in-band; aggressive jumps (jf≥1.5, τ≥0.65) overshoot. Bounded claim: *edges the frontier in a
-conservative-jump regime*, not "beats SeaCache on FLUX". adaptive_1.25 KEEP > regrid_1.25 KEEP; regrid_1.5
-PARK; jump_2.0 KILL; v1 PARK (label mis-specified); editing branch-horizon PARK. Multi-seed + bootstrap →
-headline; SD3 should give a wider band.
+**Verdict.** **STRONG KEEP (v0 adaptive_1.25, narrow-band; N=24×2 seeds, FLUX 512px).** A conservative
+headroom-adaptive stride extension **shifts the FLUX SeaCache frontier upward in ~1.7–2.7×** (+1.3 to +2.1 dB
+at matched speedup, win 83–92%, every in-band bootstrap CI excludes 0) and is never worse in-band (fair by
+identity). Bounded claim: *a conservative headroom-adaptive stride extension shifts the FLUX SeaCache frontier
+upward in the ~1.7–2.7× band, but aggressive jumps still overshoot* — not "beats SeaCache on FLUX".
+adaptive_1.25 STRONG KEEP > regrid_1.25 KEEP-baseline; regrid_1.5 PARK; jump_2.0 KILL; v1 PARK (label
+mis-specified; frontier-improvement label built + run); editing branch-horizon PARK. Next → SD3 for a wider
+safe-stride band; scale N to 50–100.
 
 **Artifacts.** `reports/horizon_cache.html` (self-contained), `reports/horizon_cache_summary.{md,json}`,
-`reports/horizon_cache_assets/`; `results/horizon_cache/gen_20260707_013626/{metrics.csv,metrics.json,summary.json,traces/,samples/}`;
+`reports/horizon_cache_assets/`; `results/horizon_cache_sig/gen_20260707_095918/{metrics.csv,metrics.json,summary.json,traces/,samples/}`;
 action datasets `metrics/horizon_cache/action_dataset.*` (latent-L2, 0 jumps) + `metrics/horizon_cache_decoded/action_dataset.*`
 (decoded-PSNR, jumps appear) + `v1_diag.json`; code `experiments/horizon_cache/`; manifest
 `experiments/manifests/E56.json`; doc `docs/experiment-reports/EXPERIMENT_56.md`.

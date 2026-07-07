@@ -1,0 +1,10 @@
+{
+  "n_states": 40,
+  "n_jump_helpful": 28,
+  "frac_helpful": 0.7,
+  "csv": "../metrics/horizon_cache_frontier/frontier_dataset.csv",
+  "label": "frontier_improvement (full rollout to end)",
+  "psnr_eps": 0.25,
+  "jf_max": 1.25,
+  "tau_cache": 0.4
+}

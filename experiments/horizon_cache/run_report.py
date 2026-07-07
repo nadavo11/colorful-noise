@@ -32,6 +32,8 @@ def main():
     ap.add_argument("--gen-dir", required=True)
     ap.add_argument("--rollout-csv", default="")
     ap.add_argument("--v1-diag", default="")
+    ap.add_argument("--frontier-meta", default="")
+    ap.add_argument("--frontier-diag", default="")
     ap.add_argument("--reports-dir", default=str(REPO / "reports"))
     args = ap.parse_args()
 
@@ -42,10 +44,17 @@ def main():
         v1_diag = json.loads(Path(args.v1_diag).read_text())
     rollout = Path(args.rollout_csv) if args.rollout_csv and Path(args.rollout_csv).exists() else None
 
+    frontier = None
+    if args.frontier_meta and Path(args.frontier_meta).exists():
+        fm = json.loads(Path(args.frontier_meta).read_text())
+        fd = json.loads(Path(args.frontier_diag).read_text()) if args.frontier_diag and Path(args.frontier_diag).exists() else {}
+        frontier = {"n_states": fm.get("n_states"), "frac_helpful": fm.get("frac_helpful"),
+                    "v1_test_acc": fd.get("test_accuracy"), "v1_majority": fd.get("majority_baseline")}
+
     sj = build(Path(args.gen_dir), rollout, v1_diag,
                reports / "horizon_cache.html", reports / "horizon_cache_summary.md",
                reports / "horizon_cache_summary.json", assets,
-               capability.detect(), git_hash())
+               capability.detect(), git_hash(), frontier=frontier)
     print(json.dumps({"html": str(reports / "horizon_cache.html"),
                       "status": sj["status"], "best_gen": sj["best_methods"]["generation"],
                       "verdicts": sj["verdicts"]}, indent=2))

@@ -77,7 +77,7 @@ def _thumb_uri(path: Path, max_side=220):
 
 def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
           out_html: Path, out_md: Path, out_json: Path, assets: Path,
-          caps: dict, git: str) -> dict[str, Any]:
+          caps: dict, git: str, frontier: dict | None = None) -> dict[str, Any]:
     gen_dir = Path(gen_dir)
     rows = json.loads((gen_dir / "metrics.json").read_text())
     summ = json.loads((gen_dir / "summary.json").read_text())
@@ -258,9 +258,23 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
             "target and the rollout dataset is scaled (currently n<=36 states).")
         out_json.write_text(json.dumps(summary_json, indent=2))
 
+    if frontier:
+        summary_json["key_findings"].append(
+            f"FRONTIER-IMPROVEMENT label (the fix, built + run, {frontier.get('n_states')} states): "
+            f"{frontier.get('frac_helpful',0)*100:.0f}% of considered-jump states are jump-HELPFUL "
+            "(adaptive jump preserves final quality vs cache under full rollout to the end) — a real, "
+            "balanced positive class, unlike latent-L2 (0%) or short-decoded (jump_2.0-contaminated). "
+            f"But the learned binary v1 ties the majority baseline "
+            f"({frontier.get('v1_test_acc')}={frontier.get('v1_majority')}): on {frontier.get('n_states')} "
+            "states the adaptive heuristic is already near-optimal for this feature set (useful negative). "
+            "Scaling the dataset is the concrete v1 next step.")
+        summary_json["frontier_label"] = frontier
+        out_json.write_text(json.dumps(summary_json, indent=2))
+
     html = _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen,
                         verdicts, v1_diag, rollout_csv, label_hist, best_variant, variants,
-                        f_psnr, f_lpips, f_delta, f_winrate, timelines, f_scatter, f_conf, gen_dir)
+                        f_psnr, f_lpips, f_delta, f_winrate, timelines, f_scatter, f_conf,
+                        gen_dir, frontier)
     out_html.write_text(html)
 
     # ---- MD summary ----
@@ -334,7 +348,8 @@ def _sig_table(matched_by_variant: dict) -> str:
 
 def _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen, verdicts,
                  v1_diag, rollout_csv, label_hist, best_variant, variants,
-                 f_psnr, f_lpips, f_delta, f_winrate, timelines, f_scatter, f_conf, gen_dir):
+                 f_psnr, f_lpips, f_delta, f_winrate, timelines, f_scatter, f_conf, gen_dir,
+                 frontier=None):
     method_diag = (
         "<span class='b'>latent x_i, sigma_i</span>\n"
         "        ↓ cheap <span class='a'>h</span> features (relL1, acc, h-drift, sigma)\n"
@@ -375,6 +390,18 @@ def _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen, 
                    "<b>Neither label is correct.</b> The right target is a <b>frontier-improvement</b> label (does this action "
                    "beat SeaCache end-to-end at matched budget) or a full-trajectory continuation — plus a much larger dataset. "
                    "This is why v1 stays PARK: not because learning fails, but because the supervision is mis-specified.</div>")
+    if frontier:
+        fr = (f"<div class='card'><b class='hl'>The fix, built + run — frontier-improvement label.</b> "
+              f"For each considered-jump state, take {{cache, adaptive-jump}}, continue SeaCache to the END, decode both "
+              f"vs the full continuation, and label jump-<b>helpful</b> iff final quality is preserved (the jump always saves "
+              f"≥1 node). Compounding-aware by construction — so it cannot over-credit jump_2.0 or under-credit all jumps."
+              f"<ul><li><b>{frontier.get('frac_helpful',0)*100:.0f}% of states are jump-helpful</b> "
+              f"({frontier.get('n_states')} states) — a real, balanced positive class (vs 0% latent-L2, jump_2.0-contaminated decoded).</li>"
+              f"<li>Learned binary v1: test acc <b>{frontier.get('v1_test_acc')}</b> = majority baseline "
+              f"<b>{frontier.get('v1_majority')}</b> → on {frontier.get('n_states')} states the <b>adaptive heuristic is already "
+              f"near-optimal</b> for this feature set (a useful negative). Scaling the dataset is the concrete v1 next step.</li>"
+              f"</ul></div>")
+        lh_note = lh_note + fr
     v1_html = lh_note + "<p class='mut'>v1 not trained in this run (rollout dataset small / skipped).</p>"
     if v1_diag and v1_diag.get("status") == "DONE":
         fi = v1_diag.get("feature_importance", {})

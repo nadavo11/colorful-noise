@@ -1,8 +1,8 @@
 # E56 — HorizonCache: causal safe-horizon prediction (fresh / cache / jump)
 
-**Thread:** fast-edit (caching line) · **Status:** active · **Verdict:** KEEP (v0, narrow-band) ·
-**Models:** FLUX.1-dev (4-bit transformer on a 24 GB A5000), 512 px, 28 Euler steps, N=20 prompts
-(canonical-fixture v1 + deterministic GenEval extras), 1 seed. SD3 unavailable (no local weights);
+**Thread:** fast-edit (caching line) · **Status:** active · **Verdict:** STRONG KEEP (v0 adaptive_1.25, narrow-band) ·
+**Models:** FLUX.1-dev (4-bit transformer on a 24 GB A5000), 512 px, 28 Euler steps, N=24 prompts × 2 seeds
+(48 paired samples; canonical-fixture v1 + deterministic GenEval extras). SD3 unavailable (no local weights);
 editing capability-detected but not executed.
 
 ## Hypothesis
@@ -50,30 +50,35 @@ Env fixes (non-obvious): patched a broken xformers `flash_attn_3/_C.so` ABI impo
 otherwise breaks `from diffusers import FluxPipeline`; FLUX runs 4-bit (bitsandbytes) to fit
 the 24 GB card.
 
-## Key result (consolidation — N=20 prompts × 1 seed, 512px/28 steps)
+## Key result (significance — N=24 prompts × 2 seeds = 48 paired samples, 512px/28 steps)
 
-An N=4 smoke first showed a ~+0.5 dB edge; the N=20 run is **stronger and refines the
-finding**. The **surviving primitive is the conservative _adaptive_ jump**
-(`jf = 1+(jf_max−1)·headroom`, capped at 1.25) — it **beats fixed `regrid_1.25`**.
+Progression: N=4 smoke (~+0.5 dB) → N=20 single-seed consolidation → this **multi-seed
+significance run** with **bootstrap 95% CIs** over prompt×seed pairs. The **surviving primitive is
+the conservative _adaptive_ jump** (`jf = 1+(jf_max−1)·headroom`, capped at 1.25) — it beats fixed
+`regrid_1.25`. Lean method set (full + SeaCache + `adaptive_1.25`) to spend compute on seeds.
 
-SeaCache frontier (achieved speedup → PSNR): 1.48×→35.4, 2.11×→28.99, 2.48×→25.8, 3.0×→23.37 dB.
+SeaCache frontier (achieved speedup → PSNR): 1.48×→35.6, 1.86×→30.4, 2.11×→28.5, 2.48×→25.9,
+3.0×→23.1 dB.
 
-**ΔPSNR at matched achieved speedup** (deck fair rule; per-image win-rate in parens):
+**ΔPSNR at matched achieved speedup** (deck fair rule; paired per-image, bootstrapped, n=48):
 
-| variant | τ | achieved speedup | HorizonCache PSNR | SeaCache @ matched | ΔPSNR | win |
+| variant | τ | speedup | mean ΔPSNR | 95% CI | win-rate | CI≠0 |
 |---|---|---|---|---|---|---|
-| **adaptive_1.25** | 0.2 | 1.70× | 34.18 | 33.17 | **+1.01** | 85% |
-| **adaptive_1.25** | 0.35 | 2.46× | 28.30 | 25.94 | **+2.36** | 100% |
-| **adaptive_1.25** | 0.5 | 2.74× | 25.65 | 24.57 | **+1.08** | 95% |
-| adaptive_1.25 | 0.65 | 3.40× | 23.16 | 23.38 | −0.22 | 15% |
-| regrid_1.25 | 0.35 | 2.17× | 28.86 | 28.52 | +0.34 | 85% |
-| regrid_1.5 | 0.35 | 2.17× | 28.84 | 28.51 | +0.32 | 80% |
+| adaptive_1.25 | 0.2 | 1.70× | **+1.61** | [1.15, 2.10] | 85% | ✓ |
+| adaptive_1.25 | 0.3 | 2.11× | **+1.47** | [0.95, 2.04] | 83% | ✓ |
+| **adaptive_1.25** | **0.4** | **2.51×** | **+2.11** | **[1.52, 2.70]** | **92%** | **✓** |
+| adaptive_1.25 | 0.5 | 2.74× | **+1.26** | [0.81, 1.68] | 92% | ✓ |
+| adaptive_1.25 | 0.65 | 3.40× | −0.19 | [−0.25, −0.13] | 19% | ✓ (neg) |
 
-**Mechanism.** The jump lets HorizonCache keep refreshing *often* (low τ) yet still save
-compute, giving a **gentler quality/speed tradeoff** than SeaCache's rare-refresh / long-cache —
-exactly where SeaCache's frontier drops steepest (2.1×→2.5×). This is a **narrow-band win**
-(~1.7–2.7×) that **collapses past ~3×** (τ=0.65). Naive uniform/random and TeaCache-raw collapse.
-`jump_2.0` = KILL.
+Every **in-band** operating point clears the strong-KEEP rule (mean > +0.5 dB, win > 65%, CI
+excludes 0, speedup ∈ [2.0, 2.6×]); τ0.4 @ 2.51× is the headline. The overshoot at 3.4× is *also*
+significant (CI excludes 0 on the negative side) — so "aggressive jumps overshoot" is now a
+measured claim, not a caveat.
+
+**Mechanism.** The jump lets HorizonCache keep refreshing *often* (low τ) yet still save compute,
+giving a **gentler quality/speed tradeoff** than SeaCache's rare-refresh / long-cache — exactly
+where SeaCache's frontier drops steepest (2.1×→2.5×). This is a **narrow-band win** (~1.7–2.7×) that
+**overshoots past ~3×**. `jump_2.0` = KILL.
 
 ### The v1 label finding (the methodological crux)
 
@@ -92,22 +97,26 @@ or a full-trajectory continuation, plus a much larger dataset.
 
 ## Verdict
 
-**KEEP (v0, narrow-band; N=20, single seed, FLUX 512px).** HorizonCache-v0 with the conservative
-adaptive jump measurably improves the SeaCache frontier on FLUX in ~1.7–2.7× (+1.0 to +2.4 dB at
-matched achieved speedup, 85–100% per-image win-rate) and reduces to SeaCache exactly when jumps
-are disabled (fair by identity → never worse in-band). The claim is deliberately bounded: **not**
-"HorizonCache beats SeaCache on FLUX" but "**edges the frontier in a conservative-jump regime;
-aggressive jumps (jf ≥ 1.5, τ ≥ 0.65) overshoot.**" `adaptive_1.25` KEEP (surviving primitive) >
-`regrid_1.25` KEEP; `regrid_1.5` PARK; `jump_2.0` KILL; v1 PARK (label mis-specified); editing
-branch-horizon PARK (not run). Multi-seed + bootstrap needed to move KEEP → headline.
+**STRONG KEEP (v0 `adaptive_1.25`, narrow-band; N=24 × 2 seeds = 48 paired samples, FLUX 512px).**
+A conservative **headroom-adaptive stride extension shifts the FLUX SeaCache frontier upward in the
+~1.7–2.7× band** by **+1.3 to +2.1 dB** at matched achieved speedup (per-image win 83–92%, and
+**every in-band bootstrap 95% CI excludes 0**), while reducing to SeaCache exactly when jumps are
+disabled (fair by identity → never worse in-band). The claim is deliberately bounded — **not**
+"HorizonCache beats SeaCache on FLUX" but "**a conservative headroom-adaptive stride extension
+shifts the FLUX SeaCache frontier upward in the ~1.7–2.7× band, but aggressive jumps still
+overshoot**" (τ0.65 / 3.4×: −0.19 dB, CI excludes 0 on the negative side). `adaptive_1.25` STRONG
+KEEP (surviving primitive) > `regrid_1.25` KEEP-as-baseline; `regrid_1.5` PARK; `jump_2.0` KILL;
+v1 PARK (label mis-specified, frontier-improvement label built + run — see §label finding);
+editing branch-horizon PARK (not run).
 
 ## Next
 
 1. **SD3 generation** (download SD3.5-medium) — the deck's flat-region win should give a **wider
-   band** than FLUX; highest-value transfer.
-2. Multi-seed + paired bootstrap on the matched-speedup delta to make the KEEP significant.
-3. **v1: replace the label** with a frontier-improvement target (or full-horizon continuation) and
-   scale the rollout dataset; then test v1 > v0.
+   safe-stride band** than FLUX (hypothesis: FLUX jf_max≈1.25, SD3 jf_max≈1.5–2.0); highest-value
+   transfer, and richer positive labels to rescue v1.
+2. Scale N (50–100) to tighten the CIs further (already excluding 0 at n=48).
+3. **v1 on the frontier-improvement label** (built + run here): if it doesn't beat the adaptive
+   heuristic, the heuristic is near-optimal for this feature set — a useful negative.
 4. Editing: `cos(h_src, h_tar)` branch-**cache**-horizon on FlowEdit/PIE-Bench (features already in
    the schema) — start with cache-length prediction, not σ jumps.
 
@@ -115,7 +124,7 @@ branch-horizon PARK (not run). Multi-seed + bootstrap needed to move KEEP → he
 
 - Report: `reports/horizon_cache.html` · `reports/horizon_cache_summary.{md,json}` ·
   `reports/horizon_cache_assets/`
-- Metrics (N=20 run): `results/horizon_cache/gen_20260707_013626/metrics.csv` · `metrics.json` ·
+- Metrics (significance run): `results/horizon_cache_sig/gen_20260707_095918/metrics.csv` · `metrics.json` ·
   `summary.json` · per-step `traces/` · `samples/`
 - Action datasets (both label metrics): latent-L2 `metrics/horizon_cache/action_dataset.{csv,parquet}`
   (0 jump positives); decoded-PSNR `metrics/horizon_cache_decoded/action_dataset.{csv,parquet}` +

@@ -1,74 +1,57 @@
 {
   "eid": "E56",
   "logged": "2026-07-07",
-  "git_commit": "7232adf",
+  "git_commit": "6b16b7f",
   "source": "run",
   "script": "experiments/horizon_cache/run.py",
-  "results_dir": "results/horizon_cache/gen_20260707_013626",
+  "results_dir": "results/horizon_cache_sig/gen_20260707_095918",
   "config": {
     "model": "FLUX.1-dev 4bit",
     "width": 512,
     "height": 512,
     "steps": 28,
-    "n_prompts": 20,
-    "seeds": 1,
+    "significance_run": "N=24 prompts x 2 seeds = 48 pairs",
     "tau_grid": [
       0.2,
-      0.35,
+      0.3,
+      0.4,
       0.5,
       0.65
     ],
-    "variants": [
-      "regrid_1.25",
-      "regrid_1.5",
-      "adaptive_1.25"
-    ],
-    "teacache_taus": [
-      0.15,
-      0.3
-    ],
-    "jump_mode": "regrid",
-    "L": 57,
-    "fixture": "canonical v1 + geneval extras",
-    "v1_backend": "sklearn_histgb",
-    "rollout_H": 5,
-    "rollout_label_metrics": [
-      "latent_l2",
-      "decoded_psnr"
-    ]
+    "variant": "adaptive_1.25 (surviving primitive)",
+    "lean": true,
+    "bootstrap": "95% CI over prompt-seed pairs",
+    "frontier_label": "full-rollout jump-vs-cache to end"
   },
   "metrics": {
-    "best_variant": "adaptive_1.25",
-    "best_tau": 0.35,
-    "matched_delta_psnr_best": 2.3576,
-    "matched_win_rate_best": 1.0,
-    "matched_delta_psnr_1p70x": 1.01,
-    "matched_delta_psnr_2p74x": 1.08,
-    "matched_delta_psnr_3p40x": -0.22,
-    "regrid_1p25_matched_delta_2p17x": 0.34,
-    "seacache_frontier_psnr": [
-      35.4,
-      28.99,
-      25.8,
-      23.37
+    "verdict": "STRONG KEEP",
+    "best_op": "adaptive_1.25 t0.4 @2.51x",
+    "matched_delta_psnr_2p51x": 2.11,
+    "ci95_2p51x": [
+      1.52,
+      2.7
     ],
-    "seacache_frontier_speedup": [
-      1.48,
-      2.11,
-      2.48,
-      3.0
+    "win_2p51x": 0.92,
+    "matched_delta_1p70x": 1.61,
+    "matched_delta_2p11x": 1.47,
+    "matched_delta_2p74x": 1.26,
+    "overshoot_3p40x": -0.19,
+    "overshoot_ci": [
+      -0.25,
+      -0.13
     ],
-    "rollout_safe_jumps_latentL2": 0,
-    "rollout_safe_jumps_decodedPSNR": 12,
-    "rollout_decoded_jump2_labels": 11,
-    "n_prompts": 20
+    "n_pairs": 48,
+    "all_inband_ci_exclude_zero": true,
+    "frontier_frac_helpful": 0.7,
+    "frontier_n_states": 40,
+    "frontier_v1_test_acc": 0.7,
+    "frontier_v1_majority_baseline": 0.7
   },
   "artifacts": [
     "reports/horizon_cache.html",
     "reports/horizon_cache_summary.json",
-    "reports/horizon_cache_summary.md",
-    "metrics/horizon_cache/action_dataset.csv",
-    "metrics/horizon_cache_decoded/action_dataset.csv",
-    "results/horizon_cache/gen_20260707_013626/metrics.csv"
+    "results/horizon_cache_sig/gen_20260707_095918/metrics.csv",
+    "metrics/horizon_cache_frontier/frontier_dataset.csv",
+    "metrics/horizon_cache_decoded/action_dataset.csv"
   ]
 }

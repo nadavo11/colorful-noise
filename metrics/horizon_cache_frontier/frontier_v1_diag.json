@@ -1,0 +1,20 @@
+{
+  "status": "DONE",
+  "task": "frontier_binary_jump_helpful",
+  "n_total": 40,
+  "frac_helpful": 0.7,
+  "majority_baseline": 0.7,
+  "n_test": 10,
+  "test_accuracy": 0.7,
+  "bundle": "../results/horizon_cache/v1_frontier.joblib",
+  "feature_importance": {
+    "dv_norm_proxy": 0.0,
+    "h_norm_drift": 0.0,
+    "delta_sigma": 0.0,
+    "progress": 0.0,
+    "remaining_steps": 0.0,
+    "raw_rel_l1": 0.0,
+    "acc_rel_l1": 0.0,
+    "h_norm": 0.0
+  }
+}
