@@ -283,9 +283,18 @@ def build(gen: Path, reports_dir: Path, frontier_meta: dict | None, caps: dict, 
              f"(the conservative headroom-adaptive stride).</p>"
              f"<p class='hl'><b>Headline.</b> {headline_claim}</p>"
              f"<p><b>Bounded claim.</b> {bounded}</p>"
-             f"<p><b>What failed.</b> Aggressive jumps (adaptive_2.0 / high-τ) overshoot the safe band "
-             f"— a <i>measured</i> significant loss, not a caveat. SD3 replication is unavailable "
-             f"(no MMDiT generation harness in the module). Learned v1 remains PARK.</p></div>")
+             f"<p><b>Family finding (N={n_pairs}, honest nuance).</b> The scale-up sees the whole adaptive "
+             f"family: <b>jf_max = 1.25, 1.5 and 2.0 all clear the strong-KEEP rule in-band</b> (every "
+             f"in-band CI excludes 0). This is because the stride is <i>headroom-capped</i> — jf_max is a soft "
+             f"ceiling the gate rarely reaches when the cache is fresh — so a larger cap mostly does not change "
+             f"in-band behaviour. adaptive_1.25 stays the recommended <i>conservative</i> operating point "
+             f"(safest cap, best in the mid band, ties 1.5); it beats the fixed <code>regrid_1.25</code> at "
+             f"matched speed. The robust thing is the <i>mechanism</i>, not one magic cap.</p>"
+             f"<p><b>What failed.</b> The overshoot is a <b>high-τ / high-speed</b> effect common to every cap "
+             f"(τ0.65 ≈ 3.4×: −0.14 to −0.16 dB, CI excludes 0 on the negative side) — a <i>measured</i> loss, "
+             f"not a caveat. Note this is the headroom-capped <code>adaptive_2.0</code>; the <i>uncapped discrete</i> "
+             f"<code>jump_2.0</code> action (no headroom gate) was KILLed earlier and is not the same thing. "
+             f"SD3 replication is unavailable (no MMDiT generation harness in the module). Learned v1 remains PARK.</p></div>")
 
     # 2 background
     H.append("<h2>2 · Background (from the deck)</h2>")
@@ -349,6 +358,14 @@ def build(gen: Path, reports_dir: Path, frontier_meta: dict | None, caps: dict, 
     if lp_at and headline:
         H.append(f"<p class='sub'>At the headline point ({headline['speedup']:.2f}×), matched ΔLPIPS = "
                  f"{lp_at['mean_delta']:+.3f} (95% CI {_fmt_ci(lp_at['ci'])}).</p>")
+    # qualitative grid
+    qg = MF.qualitative_grids(gen, assets / "qualitative.png", n_prompts=4, target_speed=target_speed)
+    if qg is not None:
+        H.append(f"<div class='fig'><img src='{F.data_uri(Path(qg))}'><div class='cap'>Qualitative "
+                 f"(full · SeaCache@matched · adaptive→1.25@matched · aggressive · error). Honest read: at "
+                 f"near-matched quality (~35+ dB) the gain is <b>sub-visible</b> — mostly metric/frontier-level; "
+                 f"it becomes <b>visually obvious</b> only where SeaCache's stale cache breaks down "
+                 f"(low-PSNR prompts). The value is a frontier shift, not a per-image night-and-day change.</div></div>")
 
     # 6 mechanism
     H.append("<h2>6 · Mechanism — why adaptive_1.25 survives</h2>")
@@ -368,8 +385,12 @@ def build(gen: Path, reports_dir: Path, frontier_meta: dict | None, caps: dict, 
                  f"<div class='cap'>Aggressive-jump overshoot: large strides remove nodes where the field still "
                  f"curves; integration error compounds to the end.</div></div>")
     H.append("<div class='card'><ul>"
-             "<li><b>adaptive_2.0 / 3×+ band.</b> Significant loss vs matched SeaCache — the aggressive stride "
-             "overshoots (the deck's DP-surrogate compounding lesson, made visible).</li>"
+             "<li><b>High-τ / 3×+ band (all caps).</b> At τ0.65 (≈3.4×) every adaptive cap turns to a "
+             "significant loss vs matched SeaCache (−0.14 to −0.16 dB, CI excludes 0, win ≤24%) — pushing the "
+             "refresh threshold high <i>and</i> jumping removes nodes where the field still curves; error "
+             "compounds to the end (the deck's DP-surrogate lesson, made visible).</li>"
+             "<li><b>Uncapped discrete jump_2.0.</b> The unconditional jf=2.0 action (no headroom gate) remains "
+             "KILL — distinct from the headroom-capped <code>adaptive_2.0</code>, which is safe in-band.</li>"
              "<li><b>v1 supervision.</b> Full-rollout frontier-improvement labels give a real positive class "
              "(~70% jump-helpful) but the learned binary policy ties the heuristic on the small dataset — a "
              "useful negative; needs a much larger label set.</li>"
@@ -380,10 +401,10 @@ def build(gen: Path, reports_dir: Path, frontier_meta: dict | None, caps: dict, 
     H.append("<h2>8 · Verdict</h2><div class='card'><table>"
              "<tr><th>method</th><th>verdict</th><th>note</th></tr>")
     notes = {
-        "adaptive_1.25": "surviving primitive — narrow safe-band frontier shift",
-        "adaptive_1.5": "wider stride — earlier overshoot",
-        "adaptive_2.0": "aggressive ablation — overshoots the safe band",
-        "regrid_1.25": "fixed-factor baseline the adaptive stride beats",
+        "adaptive_1.25": "recommended conservative primitive — narrow safe-band frontier shift",
+        "adaptive_1.5": "headroom-capped — ties 1.25 in-band (soft cap rarely reached)",
+        "adaptive_2.0": "headroom-capped — in-band gain like 1.25/1.5; overshoots at 3.4× (≠ uncapped jump_2.0 KILL)",
+        "regrid_1.25": "fixed-factor baseline the adaptive stride beats at matched speed",
     }
     for v in ["adaptive_1.25", "adaptive_1.5", "adaptive_2.0", "regrid_1.25"]:
         if v in v_verdicts:
@@ -461,11 +482,15 @@ def build(gen: Path, reports_dir: Path, frontier_meta: dict | None, caps: dict, 
             headline_claim,
             "Node removal, not cache staleness: at matched ~2.5× HorizonCache keeps the same fresh count as "
             "SeaCache but removes whole nodes with small headroom-gated jumps.",
-            "The frontier shift is narrow-band (~1.7–2.7×) and reduces to SeaCache exactly when jumps are off.",
-            "regrid_1.25 (fixed factor) is beaten by the adaptive stride; adaptive_1.5/2.0 overshoot earlier.",
+            "The frontier shift is narrow-band (~1.5–2.7×) and reduces to SeaCache exactly when jumps are off.",
+            "Family robustness: headroom-capped adaptive_1.25/1.5/2.0 ALL clear the strong-KEEP rule in-band "
+            "(jf_max is a soft cap rarely reached); the mechanism is what matters, not one cap.",
+            "adaptive_1.25 is the recommended conservative pick and beats fixed regrid_1.25 at matched speed.",
         ],
         "failure_modes": [
-            "Aggressive jumps (adaptive_2.0 / high-τ, 3×+) overshoot — significant loss vs matched SeaCache.",
+            "High-τ overshoot (all caps): at τ0.65 ≈3.4× every adaptive cap is a significant loss vs matched "
+            "SeaCache (−0.14 to −0.16 dB, CI excludes 0) — the overshoot is a speed effect, not a jf_max effect.",
+            "Uncapped discrete jump_2.0 (no headroom gate) remains KILL — distinct from headroom-capped adaptive_2.0.",
             "Learned v1 ties the heuristic on the small frontier-label set (PARK, needs scale).",
             "SD3 unavailable: no MMDiT generation harness in the module (needs a new SD3 h-signal hook).",
         ],

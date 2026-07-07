@@ -363,6 +363,82 @@ def failure_visual(gen: Path, out: Path) -> Path:
     return _save(fig, out)
 
 
+# ------------------------------------------------------- qualitative grids (§5)
+def qualitative_grids(gen: Path, out: Path, n_prompts: int = 3, target_speed: float = 2.5) -> Path | None:
+    """Rows = representative prompts; cols = full · SeaCache@matched · adaptive_1.25@matched ·
+    aggressive · error-heatmap(adaptive_1.25). Uses whatever sample PNGs exist; captions carry
+    PSNR / LPIPS / ΔPSNR / action counts. Returns None if no samples on disk."""
+    sdir = gen / "samples"
+    if not sdir.exists() or not any(sdir.glob("*.png")):
+        return None
+    df = pd.read_csv(gen / "metrics.csv")
+    sp = _mean_speedup(df)
+    sea_m = _closest_method(sp, "seacache_t", target_speed)
+    a125 = _closest_method(sp, "horizon_adaptive_1.25_t", target_speed)
+    aggr = _closest_method(sp, "horizon_adaptive_2.0_t", 3.4) or _closest_method(sp, "horizon_adaptive_1.5_t", 3.0)
+    cols = [("full", "full"), (sea_m, f"SeaCache {sp.get(sea_m,0):.2f}×"),
+            (a125, f"adaptive→1.25 {sp.get(a125,0):.2f}×")]
+    if aggr:
+        cols.append((aggr, f"aggressive {sp.get(aggr,0):.2f}×"))
+    cols.append(("__err__", "|adaptive−full|"))
+
+    # representative prompt keys (seed 0) that have full + adaptive images
+    keys = []
+    for p in sorted(sdir.glob("*__full.png")):
+        k = p.name[: -len("__full.png")]
+        if a125 and (sdir / f"{k}__{a125}.png").exists():
+            keys.append(k)
+        if len(keys) >= n_prompts:
+            break
+    if not keys:
+        return None
+
+    import matplotlib.image as mpimg
+    fig, axes = plt.subplots(len(keys), len(cols), figsize=(2.5 * len(cols), 2.7 * len(keys)),
+                             squeeze=False)
+    fig.patch.set_facecolor(BG)
+
+    def _metric(key, method, col):
+        r = df[(df.key == key) & (df.method == method)]
+        return float(r[col].iloc[0]) if not r.empty and col in r else None
+
+    for i, key in enumerate(keys):
+        full_img = mpimg.imread(sdir / f"{key}__full.png") if (sdir / f"{key}__full.png").exists() else None
+        a_img = mpimg.imread(sdir / f"{key}__{a125}.png") if a125 and (sdir / f"{key}__{a125}.png").exists() else None
+        for j, (method, label) in enumerate(cols):
+            ax = axes[i][j]; ax.set_facecolor(BG); ax.set_xticks([]); ax.set_yticks([])
+            for s in ax.spines.values():
+                s.set_color(LINE)
+            if method == "__err__":
+                if full_img is not None and a_img is not None:
+                    err = np.abs(full_img[..., :3].astype(float) - a_img[..., :3].astype(float)).mean(-1)
+                    ax.imshow(err, cmap="magma")
+                cap = ""
+            else:
+                ip = sdir / f"{key}__{method}.png"
+                if ip.exists():
+                    ax.imshow(mpimg.imread(ip))
+                ps = _metric(key, method, "psnr"); lp = _metric(key, method, "lpips")
+                cap = ""
+                if ps is not None and method != "full":
+                    dp = None
+                    if sea_m:
+                        sps = _metric(key, sea_m, "psnr")
+                        dp = (ps - sps) if sps is not None else None
+                    cap = f"{ps:.1f}dB" + (f" Δ{dp:+.1f}" if dp is not None else "") + (f"\nLPIPS {lp:.3f}" if lp else "")
+            if i == 0:
+                ax.set_title(label, color=INK, fontsize=8.5)
+            if j == 0:
+                ax.set_ylabel(key.replace("geneval_", "").replace("_s0", "")[:16], color=MUT, fontsize=7.5)
+            if cap:
+                ax.text(0.5, -0.02, cap, transform=ax.transAxes, ha="center", va="top",
+                        color=MUT, fontsize=7)
+    fig.suptitle("Qualitative — full vs SeaCache vs adaptive→1.25 vs aggressive (matched speed) + error",
+                 color=INK, fontsize=10, y=1.005)
+    fig.tight_layout()
+    return _save(fig, out)
+
+
 # ----------------------------------------------------------------------- driver
 FIGS = {
     "mechanism_pair": mechanism_pair,

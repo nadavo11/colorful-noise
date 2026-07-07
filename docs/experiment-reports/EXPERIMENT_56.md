@@ -1,9 +1,17 @@
 # E56 — HorizonCache: causal safe-horizon prediction (fresh / cache / jump)
 
-**Thread:** fast-edit (caching line) · **Status:** active · **Verdict:** STRONG KEEP (v0 adaptive_1.25, narrow-band) ·
-**Models:** FLUX.1-dev (4-bit transformer on a 24 GB A5000), 512 px, 28 Euler steps, N=24 prompts × 2 seeds
-(48 paired samples; canonical-fixture v1 + deterministic GenEval extras). SD3 unavailable (no local weights);
-editing capability-detected but not executed.
+**Thread:** fast-edit (caching line) · **Status:** active · **Verdict:** STRONG KEEP (headroom-adaptive stride, narrow-band) ·
+**Models:** FLUX.1-dev (4-bit transformer), 512 px, 28 Euler steps. Sig run N=24 × 2 seeds (48 pairs) on a 24 GB A5000;
+**consolidation scale-up N=50 × 2 seeds = 100 paired samples on a cluster H100 80 GB (Run:AI)**, full method set
+incl. adaptive_1.25/1.5/2.0 (canonical-fixture v1 + deterministic GenEval extras). SD3 unavailable (no MMDiT
+generation harness in the module); editing capability-detected but not executed.
+
+> **Consolidation update (N=50, cluster H100).** See §"Consolidation" below. The sig headline **replicates and
+> tightens** (adaptive_1.25 @2.51× = **+2.20 dB**, CI [1.79, 2.62], win 85%), and the full method set reveals an
+> honest nuance: the headroom-adaptive stride is **jf_max-robust** — adaptive_1.5 and adaptive_2.0 also clear the
+> strong-KEEP rule in-band because jf_max is a *soft* cap the headroom gate rarely reaches. The overshoot is a
+> **high-τ effect common to every cap**, not a large-cap effect. Paper-ready report:
+> `reports/horizon_cache_consolidated.html`.
 
 ## Hypothesis
 
@@ -95,9 +103,43 @@ So **v1 stays PARK because the supervision is mis-specified, not because learnin
 is a **frontier-improvement** label (does this action beat SeaCache end-to-end at matched budget)
 or a full-trajectory continuation, plus a much larger dataset.
 
+## Consolidation (N=50 × 2 seeds = 100 paired samples, cluster H100, full method set)
+
+The sig run was *lean* (only `adaptive_1.25`). The consolidation scale-up ran the **full method family**
+(full · uniform · TeaCache · SeaCache · `regrid_1.25` · `adaptive_1.25/1.5/2.0`) at N=100 pairs on a
+cluster H100, same protocol (512 px / 28 / bf16+bnb4, τ∈{0.2,0.3,0.4,0.5,0.65}). It confirms the result
+and adds an honest nuance.
+
+**adaptive_1.25 — per speed band (matched achieved speedup, paired bootstrap 95% CI):**
+
+| band | speedup | ΔPSNR | 95% CI | win | verdict |
+|---|---|---|---|---|---|
+| 1.5–2.0× | 1.70× | +1.77 | [1.39, 2.13] | 82% | significant gain |
+| 2.0–2.5× | 2.12× | +1.28 | [0.92, 1.66] | 78% | STRONG KEEP |
+| **2.5–2.8×** | **2.51×** | **+2.20** | **[1.79, 2.62]** | **85%** | **STRONG KEEP** |
+| 3.0×+ | 3.40× | −0.16 | [−0.20, −0.12] | 17% | significant loss (overshoot) |
+
+**Family finding (jf_max is a soft cap).** At matched ~2.5× the three adaptive caps are nearly tied —
+`adaptive_1.25` +2.20, `adaptive_1.5` +2.19, `adaptive_2.0` +1.66 (all CIs exclude 0, win 85–86%); the
+fixed `regrid_1.25` is beaten at +1.93. All three clear the strong-KEEP rule in-band because the stride
+`jf = 1+(jf_max−1)·headroom` only reaches its ceiling when the cache is fresh — so a larger jf_max mostly
+does **not** change in-band behaviour. `adaptive_1.25` remains the recommended **conservative** operating
+point (safest cap, best in the mid band). **The robust thing is the mechanism, not one magic cap.**
+
+**Overshoot is a high-τ effect, not a jf_max effect.** At τ0.65 (≈3.4×) *every* adaptive cap turns to a
+significant loss (−0.14 to −0.16 dB, CI excludes 0 on the negative side, win ≤24%): pushing the SeaCache
+refresh threshold high *and* jumping removes nodes where the field still curves, and the error compounds.
+This is distinct from the **uncapped discrete `jump_2.0`** action (unconditional jf=2.0, no headroom gate),
+which stays **KILL** — do not conflate it with the headroom-capped `adaptive_2.0`.
+
+Artifacts: `reports/horizon_cache_consolidated.{html,md,json}` (10 sections, frontier + per-band tables,
+mechanism figures, qualitative grids) · `results/horizon_cache_n50/gen_20260707_113512/` ·
+`runs/runai/20260707_143313__horizon_cache_e56_flux_n50__613c48b/` (Run:AI submission record).
+
 ## Verdict
 
-**STRONG KEEP (v0 `adaptive_1.25`, narrow-band; N=24 × 2 seeds = 48 paired samples, FLUX 512px).**
+**STRONG KEEP (headroom-adaptive stride, narrow-band; confirmed at N=50 × 2 seeds = 100 paired samples,
+cluster H100, full method set).**
 A conservative **headroom-adaptive stride extension shifts the FLUX SeaCache frontier upward in the
 ~1.7–2.7× band** by **+1.3 to +2.1 dB** at matched achieved speedup (per-image win 83–92%, and
 **every in-band bootstrap 95% CI excludes 0**), while reducing to SeaCache exactly when jumps are

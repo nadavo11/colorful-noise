@@ -1,57 +1,58 @@
 {
   "eid": "E56",
   "logged": "2026-07-07",
-  "git_commit": "6b16b7f",
+  "git_commit": "613c48b",
   "source": "run",
   "script": "experiments/horizon_cache/run.py",
-  "results_dir": "results/horizon_cache_sig/gen_20260707_095918",
+  "results_dir": "results/horizon_cache_n50/gen_20260707_113512",
   "config": {
     "model": "FLUX.1-dev 4bit",
     "width": 512,
     "height": 512,
     "steps": 28,
-    "significance_run": "N=24 prompts x 2 seeds = 48 pairs",
-    "tau_grid": [
-      0.2,
-      0.3,
-      0.4,
-      0.5,
-      0.65
-    ],
-    "variant": "adaptive_1.25 (surviving primitive)",
-    "lean": true,
-    "bootstrap": "95% CI over prompt-seed pairs",
+    "sig_run": "N=24 prompts x 2 seeds = 48 pairs (A5000), results/horizon_cache_sig/gen_20260707_095918",
+    "consolidation_run": "N=50 prompts x 2 seeds = 100 pairs (cluster H100, Run:AI), full method set",
+    "tau_grid": [0.2, 0.3, 0.4, 0.5, 0.65],
+    "variants": ["regrid_1.25", "adaptive_1.25", "adaptive_1.5", "adaptive_2.0"],
+    "baselines": ["full", "uniform_k2", "uniform_k3", "random_k", "teacache_0.5/0.8/1.2", "seacache(tau grid)"],
+    "bootstrap": "5000-sample percentile 95% CI over prompt-seed pairs; matched achieved speedup",
     "frontier_label": "full-rollout jump-vs-cache to end"
   },
   "metrics": {
-    "verdict": "STRONG KEEP",
+    "verdict": "STRONG KEEP (headroom-adaptive stride; jf_max-robust)",
     "best_op": "adaptive_1.25 t0.4 @2.51x",
-    "matched_delta_psnr_2p51x": 2.11,
-    "ci95_2p51x": [
-      1.52,
-      2.7
-    ],
-    "win_2p51x": 0.92,
-    "matched_delta_1p70x": 1.61,
-    "matched_delta_2p11x": 1.47,
-    "matched_delta_2p74x": 1.26,
-    "overshoot_3p40x": -0.19,
-    "overshoot_ci": [
-      -0.25,
-      -0.13
-    ],
-    "n_pairs": 48,
+    "matched_delta_psnr_2p51x": 2.20,
+    "ci95_2p51x": [1.79, 2.62],
+    "win_2p51x": 0.85,
+    "win_ci95_2p51x": [0.78, 0.92],
+    "band_1p70x": 1.77,
+    "band_2p12x": 1.28,
+    "band_2p74x": 1.27,
+    "overshoot_3p40x": -0.16,
+    "overshoot_ci": [-0.20, -0.12],
+    "adaptive_1p5_2p50x": 2.19,
+    "adaptive_2p0_2p41x": 1.66,
+    "regrid_1p25_2p49x": 1.93,
+    "n_pairs": 100,
     "all_inband_ci_exclude_zero": true,
+    "family_finding": "adaptive_1.25/1.5/2.0 all clear strong-KEEP in-band (jf_max is a soft headroom-capped ceiling)",
+    "overshoot_is_high_tau": true,
+    "uncapped_jump2_verdict": "KILL (distinct from headroom-capped adaptive_2.0)",
     "frontier_frac_helpful": 0.7,
     "frontier_n_states": 40,
     "frontier_v1_test_acc": 0.7,
-    "frontier_v1_majority_baseline": 0.7
+    "frontier_v1_majority_baseline": 0.7,
+    "sd3": "unavailable path (no MMDiT generation harness)"
   },
   "artifacts": [
+    "reports/horizon_cache_consolidated.html",
+    "reports/horizon_cache_consolidated_summary.json",
+    "reports/horizon_cache_consolidated_summary.md",
+    "reports/horizon_cache_consolidated_assets/",
     "reports/horizon_cache.html",
-    "reports/horizon_cache_summary.json",
+    "results/horizon_cache_n50/gen_20260707_113512/metrics.csv",
     "results/horizon_cache_sig/gen_20260707_095918/metrics.csv",
-    "metrics/horizon_cache_frontier/frontier_dataset.csv",
-    "metrics/horizon_cache_decoded/action_dataset.csv"
+    "runs/runai/20260707_143313__horizon_cache_e56_flux_n50__613c48b/",
+    "metrics/horizon_cache_frontier/frontier_dataset.csv"
   ]
 }

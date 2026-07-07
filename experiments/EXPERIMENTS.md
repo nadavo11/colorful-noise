@@ -1503,17 +1503,29 @@ two-dimensional (metric × horizon). latent-L2 (2%) → **0 safe jumps** (too st
 the DP-surrogate lesson). Fix built + run: a **frontier-improvement** label (cache vs adaptive-jump,
 continue SeaCache to the END, decode vs full continuation, label jump-helpful iff final quality preserved).
 
-**Verdict.** **STRONG KEEP (v0 adaptive_1.25, narrow-band; N=24×2 seeds, FLUX 512px).** A conservative
-headroom-adaptive stride extension **shifts the FLUX SeaCache frontier upward in ~1.7–2.7×** (+1.3 to +2.1 dB
-at matched speedup, win 83–92%, every in-band bootstrap CI excludes 0) and is never worse in-band (fair by
-identity). Bounded claim: *a conservative headroom-adaptive stride extension shifts the FLUX SeaCache frontier
-upward in the ~1.7–2.7× band, but aggressive jumps still overshoot* — not "beats SeaCache on FLUX".
-adaptive_1.25 STRONG KEEP > regrid_1.25 KEEP-baseline; regrid_1.5 PARK; jump_2.0 KILL; v1 PARK (label
-mis-specified; frontier-improvement label built + run); editing branch-horizon PARK. Next → SD3 for a wider
-safe-stride band; scale N to 50–100.
+**Consolidation (N=50×2 seeds = 100 pairs, cluster H100, full method set).** Sig headline **replicates and
+tightens**: adaptive_1.25 per band = +1.77@1.70×, +1.28@2.12×, **+2.20@2.51× (CI[1.79,2.62], win 85%)**,
+−0.16@3.40× (overshoot). **Honest family finding:** the headroom-adaptive stride is **jf_max-robust** —
+`adaptive_1.5` (+2.19@2.50×) and `adaptive_2.0` (+1.66@2.41×) *also* clear the strong-KEEP rule in-band,
+because `jf_max` is a **soft cap** the headroom gate rarely reaches; `adaptive_1.25` is the recommended
+conservative pick and beats fixed `regrid_1.25` (+1.93@2.49×). The overshoot is a **high-τ effect common to
+every cap** (τ0.65≈3.4×), *not* a large-cap effect — distinct from the **uncapped discrete `jump_2.0`** action
+(KILL). SD3 = unavailable path (no MMDiT harness in the module).
 
-**Artifacts.** `reports/horizon_cache.html` (self-contained), `reports/horizon_cache_summary.{md,json}`,
-`reports/horizon_cache_assets/`; `results/horizon_cache_sig/gen_20260707_095918/{metrics.csv,metrics.json,summary.json,traces/,samples/}`;
-action datasets `metrics/horizon_cache/action_dataset.*` (latent-L2, 0 jumps) + `metrics/horizon_cache_decoded/action_dataset.*`
-(decoded-PSNR, jumps appear) + `v1_diag.json`; code `experiments/horizon_cache/`; manifest
-`experiments/manifests/E56.json`; doc `docs/experiment-reports/EXPERIMENT_56.md`.
+**Verdict.** **STRONG KEEP (headroom-adaptive stride, narrow-band; confirmed at N=50×2 seeds = 100 pairs,
+cluster H100, full method set).** A conservative headroom-adaptive stride extension **shifts the FLUX SeaCache
+frontier upward in ~1.7–2.7×** (+1.3 to +2.2 dB at matched speedup, win 78–91%, every in-band bootstrap CI
+excludes 0) and is never worse in-band (fair by identity). Bounded claim: *a conservative headroom-adaptive
+stride extension shifts the FLUX SeaCache frontier upward in the ~1.7–2.7× band, but aggressive jumps still
+overshoot* — not "beats SeaCache on FLUX". adaptive_1.25 STRONG KEEP (recommended) ≈ adaptive_1.5 STRONG KEEP
+≥ adaptive_2.0 STRONG-KEEP-in-band (all headroom-capped) > regrid_1.25 KEEP-baseline; uncapped `jump_2.0` KILL;
+v1 PARK (frontier-improvement label built + run, ties heuristic — needs scale); SD3 transfer PARK (unavailable
+path); editing branch-horizon PARK. Next → SD3 MMDiT harness; scale the v1 frontier dataset.
+
+**Artifacts.** Consolidation: `reports/horizon_cache_consolidated.{html,md,json}` (10 sections, frontier +
+per-band tables, mechanism figures, qualitative grids), `reports/horizon_cache_consolidated_assets/`,
+`results/horizon_cache_n50/gen_20260707_113512/`, `runs/runai/20260707_143313__horizon_cache_e56_flux_n50__613c48b/`.
+Sig: `reports/horizon_cache.html`, `reports/horizon_cache_summary.{md,json}`,
+`results/horizon_cache_sig/gen_20260707_095918/{metrics.csv,metrics.json,summary.json,traces/,samples/}`;
+action datasets `metrics/horizon_cache*/action_dataset.*` + `v1_diag.json`; code `experiments/horizon_cache/`;
+manifest `experiments/manifests/E56.json`; doc `docs/experiment-reports/EXPERIMENT_56.md`.

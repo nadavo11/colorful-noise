@@ -1024,9 +1024,11 @@ EXPERIMENTS = [
      "script": "experiments/flux_dp_jump_oracle.py", "doc": "docs/experiment-reports/EXPERIMENT_53.md",
      "results": None, "image": None},
     {"id": "E56", "title": "HorizonCache -- causal safe-horizon prediction (fresh/cache/jump) for flow-model caching",
-     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit transformer (24GB A5000), 512px, 28 Euler steps, N=24 "
-               "prompts x 2 seeds (canonical-fixture v1 + deterministic GenEval extras); SD3 unavailable (no local weights); "
-               "editing capability-detected but not run",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit transformer, 512px, 28 Euler steps. Sig run N=24 "
+               "prompts x 2 seeds on a 24GB A5000; CONSOLIDATION scale-up N=50 x 2 seeds = 100 paired samples on a "
+               "cluster H100 80GB (Run:AI), full method set incl. adaptive_1.25/1.5/2.0 (canonical-fixture v1 + "
+               "deterministic GenEval extras). SD3 unavailable (no MMDiT generation harness in the module -- needs a new "
+               "SD3 h-signal hook + Euler loop, not just a weight download); editing capability-detected but not run",
      "status": "active",
      "motivation": "SeaCache decides refresh-vs-cache from one cheap relative-L1 score off the modulated input h. We ask "
                    "whether the SAME signal supports ACTION SELECTION: predict how far the current computation stays "
@@ -1066,20 +1068,35 @@ EXPERIMENTS = [
                "DP-surrogate lesson). The FIX built + run: a FRONTIER-IMPROVEMENT label (take cache vs adaptive-jump, continue "
                "SeaCache to the END, decode vs the full continuation, label jump-helpful iff final quality preserved) -- "
                "compounding-aware by construction. SD3 (deck's larger jump win) NOT run (no local weights); editing "
-               "capability-detected, not executed.",
-     "verdict": "STRONG KEEP (v0 adaptive_1.25, narrow-band; N=24x2 seeds = 48 pairs, FLUX 512px). The conservative "
-                "headroom-adaptive stride SHIFTS the SeaCache frontier upward on FLUX in ~1.7-2.7x by +1.3 to +2.1 dB at matched "
-                "achieved speedup (per-image win 83-92%, every in-band bootstrap CI excludes 0), and reduces to SeaCache exactly "
-                "when jumps are disabled (fair by identity). Bounded claim (NOT 'beats SeaCache on FLUX'): 'a conservative "
-                "headroom-adaptive stride extension shifts the FLUX SeaCache frontier upward in the ~1.7-2.7x band, but aggressive "
-                "jumps still overshoot (tau0.65/3.4x: -0.19 dB, CI excl 0 negative)'. adaptive_1.25 STRONG KEEP (surviving "
-                "primitive) > regrid_1.25 KEEP-as-baseline; regrid_1.5 PARK; jump_2.0 KILL; v1 PARK until the frontier-improvement "
-                "label + larger dataset land; editing-branch-horizon PARK (not run). Next: SD3 for a wider band; scale N.",
-     "nxt": "(1) SD3 generation (download SD3.5-medium) -- deck's flat-region win should give a WIDER band than FLUX. (2) Multi-seed "
-            "+ paired bootstrap on the matched-speedup delta to make the KEEP a demonstrated (significant) win. (3) v1: replace the "
-            "label with a FRONTIER-IMPROVEMENT target (does the action beat SeaCache end-to-end at matched budget) or a full-horizon "
-            "continuation, scale the rollout dataset, then test v1>v0. (4) Editing: cos(h_src,h_tar) branch-CACHE-horizon on "
-            "FlowEdit/PIE-Bench (features already in the schema) -- start with cache-length prediction, not sigma jumps.",
+               "capability-detected, not executed. "
+               "CONSOLIDATION (N=50 x 2 seeds = 100 pairs, cluster H100, FULL method set): the sig headline REPLICATES and "
+               "TIGHTENS -- adaptive_1.25 tau0.4 @2.51x = +2.20 dB (CI[1.79,2.62], win85%); per-band adaptive_1.25 = "
+               "+1.77@1.70x, +1.28@2.12x, +2.20@2.51x (all STRONG KEEP / significant gain), -0.16@3.40x (significant loss, "
+               "overshoot). HONEST FAMILY FINDING newly visible at scale: the headroom-adaptive stride is jf_max-ROBUST -- "
+               "adaptive_1.5 (+2.19@2.50x) and adaptive_2.0 (+1.66@2.41x) ALSO clear the strong-KEEP rule in-band, because "
+               "jf_max is a SOFT cap the headroom gate rarely reaches when the cache is fresh; the mechanism, not one cap, "
+               "is the win. adaptive_1.25 stays the recommended CONSERVATIVE pick (best mid-band, beats fixed regrid_1.25 "
+               "+1.93@2.49x). The OVERSHOOT is a HIGH-TAU/high-speed effect common to every cap (tau0.65~3.4x: -0.14 to "
+               "-0.16 dB, CI excl 0 negative) -- NOT a jf_max effect; the earlier jump_2.0=KILL was the UNCAPPED discrete "
+               "action (no headroom gate), distinct from headroom-capped adaptive_2.0. Consolidated paper-ready report + "
+               "mechanism figures (matched-speed action-timeline pair, sigma-schedule, compute-accounting, headroom->stride, "
+               "failure) + qualitative grids built.",
+     "verdict": "STRONG KEEP (headroom-adaptive stride; confirmed at N=50x2 seeds = 100 pairs on H100, full method set). "
+                "The conservative headroom-adaptive stride SHIFTS the SeaCache frontier upward on FLUX in ~1.7-2.7x by +1.3 to "
+                "+2.2 dB at matched achieved speedup (per-image win 78-91%, every in-band bootstrap CI excludes 0), and reduces "
+                "to SeaCache exactly when jumps are disabled (fair by identity). Bounded claim (NOT 'beats SeaCache on FLUX'): "
+                "'a conservative headroom-adaptive stride extension shifts the FLUX SeaCache frontier upward in the ~1.7-2.7x "
+                "band, but aggressive jumps still overshoot (tau0.65/3.4x: -0.16 dB, CI excl 0 negative)'. At scale the win is "
+                "jf_max-ROBUST: adaptive_1.25 STRONG KEEP (recommended conservative pick, best mid-band) ~= adaptive_1.5 STRONG "
+                "KEEP >= adaptive_2.0 STRONG-KEEP-in-band (all headroom-capped; overshoot only at 3.4x) > regrid_1.25 KEEP "
+                "(fixed-factor baseline the adaptive stride beats). UNCAPPED discrete jump_2.0 = KILL (distinct from adaptive_2.0). "
+                "v1 PARK (frontier-improvement label built; ties heuristic on small set, needs scale); SD3 transfer PARK "
+                "(unavailable path -- no MMDiT harness); editing-branch-horizon PARK (not run).",
+     "nxt": "(1) SD3 generation needs a NEW MMDiT h-signal hook + Euler loop (SD3.5-medium) -- the module's harness is "
+            "FLUX-only; deck's flat-region win should give a WIDER band than FLUX. (2) v1: scale the FRONTIER-IMPROVEMENT rollout "
+            "dataset (>>40 states), then test v1 > the adaptive heuristic. (3) Editing: cos(h_src,h_tar) branch-CACHE-horizon on "
+            "FlowEdit/PIE-Bench (features already in the schema) -- start with cache-length prediction, not sigma jumps. "
+            "(4) Paper figure package: matched-speed mechanism pair + frontier + per-band table are ready.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_56.md",
      "results": None, "image": None},
 ]

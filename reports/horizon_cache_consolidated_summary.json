@@ -1,0 +1,131 @@
+{
+  "status": "DONE",
+  "git_commit": "fc37f45",
+  "runnable_paths": {
+    "sd3_generation": false,
+    "flux_generation": true,
+    "flowedit": true,
+    "flowalign": true
+  },
+  "main_verdict": "STRONG_KEEP",
+  "headline_claim": "FLUX N=100: adaptive_1.25 @ 2.51\u00d7 = +2.20 dB vs matched SeaCache (95% CI [+1.79, +2.62], win 85%).",
+  "bounded_claim": "A conservative headroom-adaptive stride extension shifts the FLUX SeaCache frontier upward in the ~1.7\u20132.7\u00d7 achieved-speedup band, while aggressive jumps still overshoot.",
+  "best_flux": {
+    "method": "adaptive_1.25",
+    "speedup": 2.505,
+    "psnr": 27.394,
+    "lpips": 0.0835,
+    "delta_psnr_vs_matched_seacache": 2.201,
+    "delta_psnr_ci95": [
+      1.789,
+      2.624
+    ],
+    "win_rate_vs_matched_seacache": 0.85,
+    "win_rate_ci95": [
+      0.78,
+      0.92
+    ]
+  },
+  "best_sd3": {
+    "available": false,
+    "method": "",
+    "speedup": 0.0,
+    "psnr": 0.0,
+    "lpips": 0.0,
+    "delta_psnr_vs_matched_seacache": 0.0,
+    "delta_psnr_ci95": [
+      0.0,
+      0.0
+    ],
+    "win_rate_vs_matched_seacache": 0.0,
+    "win_rate_ci95": [
+      0.0,
+      0.0
+    ]
+  },
+  "speed_band_results": [
+    {
+      "band": "1.5-2.0\u00d7",
+      "method": "adaptive_1.25",
+      "mean_delta_psnr_vs_seacache": 1.769,
+      "ci95": [
+        1.393,
+        2.135
+      ],
+      "win_rate": 0.82,
+      "verdict": "significant gain"
+    },
+    {
+      "band": "2.0-2.5\u00d7",
+      "method": "adaptive_1.25",
+      "mean_delta_psnr_vs_seacache": 1.282,
+      "ci95": [
+        0.917,
+        1.658
+      ],
+      "win_rate": 0.78,
+      "verdict": "STRONG KEEP"
+    },
+    {
+      "band": "2.5-2.8\u00d7",
+      "method": "adaptive_1.25",
+      "mean_delta_psnr_vs_seacache": 2.201,
+      "ci95": [
+        1.789,
+        2.624
+      ],
+      "win_rate": 0.85,
+      "verdict": "STRONG KEEP"
+    },
+    {
+      "band": "3.0\u00d7+",
+      "method": "adaptive_1.25",
+      "mean_delta_psnr_vs_seacache": -0.159,
+      "ci95": [
+        -0.203,
+        -0.118
+      ],
+      "win_rate": 0.17,
+      "verdict": "significant loss (overshoot)"
+    }
+  ],
+  "verdicts": {
+    "adaptive_1p25": "STRONG_KEEP",
+    "adaptive_1p5": "STRONG_KEEP",
+    "adaptive_2p0": "STRONG_KEEP",
+    "fixed_regrid_1p25": "STRONG_KEEP",
+    "learned_v1": "PARK"
+  },
+  "key_findings": [
+    "FLUX N=100: adaptive_1.25 @ 2.51\u00d7 = +2.20 dB vs matched SeaCache (95% CI [+1.79, +2.62], win 85%).",
+    "Node removal, not cache staleness: at matched ~2.5\u00d7 HorizonCache keeps the same fresh count as SeaCache but removes whole nodes with small headroom-gated jumps.",
+    "The frontier shift is narrow-band (~1.5\u20132.7\u00d7) and reduces to SeaCache exactly when jumps are off.",
+    "Family robustness: headroom-capped adaptive_1.25/1.5/2.0 ALL clear the strong-KEEP rule in-band (jf_max is a soft cap rarely reached); the mechanism is what matters, not one cap.",
+    "adaptive_1.25 is the recommended conservative pick and beats fixed regrid_1.25 at matched speed."
+  ],
+  "failure_modes": [
+    "High-\u03c4 overshoot (all caps): at \u03c40.65 \u22483.4\u00d7 every adaptive cap is a significant loss vs matched SeaCache (\u22120.14 to \u22120.16 dB, CI excludes 0) \u2014 the overshoot is a speed effect, not a jf_max effect.",
+    "Uncapped discrete jump_2.0 (no headroom gate) remains KILL \u2014 distinct from headroom-capped adaptive_2.0.",
+    "Learned v1 ties the heuristic on the small frontier-label set (PARK, needs scale).",
+    "SD3 unavailable: no MMDiT generation harness in the module (needs a new SD3 h-signal hook)."
+  ],
+  "artifacts": {
+    "html_report": "reports/horizon_cache_consolidated.html",
+    "summary_md": "reports/horizon_cache_consolidated_summary.md",
+    "summary_json": "reports/horizon_cache_consolidated_summary.json",
+    "flux_results_dir": "../results/horizon_cache_n50/gen_20260707_113512",
+    "sd3_results_dir": "",
+    "figures_dir": "../reports/horizon_cache_consolidated_assets",
+    "samples_dir": "../results/horizon_cache_n50/gen_20260707_113512/samples",
+    "metrics_csv": "../results/horizon_cache_n50/gen_20260707_113512/metrics.csv"
+  },
+  "n_pairs": 100,
+  "tau_grid": [
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.65
+  ],
+  "frontier_meta": {}
+}
