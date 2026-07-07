@@ -43,6 +43,10 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str) -> HorizonV0Config:
         return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.25)
     if variant == "adaptive_1.5":
         return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=1.5)
+    if variant == "adaptive_2.0":
+        # aggressive-jump ablation: same headroom-adaptive primitive, higher cap. Expected to
+        # overshoot the safe band (the failure half of the E56 story), included for the frontier.
+        return HorizonV0Config(tau_cache=tau, jump_mode=jump_mode, adaptive=True, jf_max=2.0)
     raise ValueError(f"unknown variant {variant}")
 
 
