@@ -1,0 +1,22 @@
+run_id: "20260707_170232__horizon_pc_e57_smoke__2f53bfb"
+job_name: "horizon-e57-pc-smoke-2f53bfb"
+status: "submitted"
+created_at: "2026-07-07T17:02:32+03:00"
+git_commit: "2f53bfb"
+git_ref: "origin/e57-horizon-pc"
+repo_root_cluster: "/storage/nada/colorful-noise-e57"
+image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"
+project: "avidan"
+node_pools: "bengal"
+gpu_memory: "48G"
+purpose: "E57 HorizonCache-PC smoke — does cached-endpoint correction improve the overshoot band?"
+mode: "smoke (N=8 x1 seed, lean)"
+variants: ["adaptive_1.25", "adaptive_1.5", "adaptive_2.0", "pc0.5_adaptive_1.5", "pc0.5_adaptive_2.0"]
+tau_grid: [0.4, 0.5, 0.65]
+out_dir_cluster: "/storage/nada/colorful-noise-e57/results/horizon_pc_smoke/gen_<ts>"
+fetch: "kubectl cp e57_smoke_light.tar.gz from holder pod (sshfs to /storage is down)"
+gate: "if PC clearly worse everywhere -> stop + failure report; if PC helps overshoot -> consolidation"
+paths:
+  run_dir: "runs/runai/20260707_170232__horizon_pc_e57_smoke__2f53bfb"
+  submit_command: "submit_command.sh"
+  resolved_command: "resolved_command.sh"

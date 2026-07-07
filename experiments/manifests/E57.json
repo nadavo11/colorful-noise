@@ -1,0 +1,43 @@
+{
+  "eid": "E57",
+  "logged": "2026-07-07",
+  "git_commit": "43e46c7",
+  "source": "run",
+  "script": "experiments/horizon_cache/run.py",
+  "results_dir": "results/horizon_pc_smoke/gen_20260707_140532",
+  "config": {
+    "model": "FLUX.1-dev 4bit",
+    "width": 512,
+    "height": 512,
+    "steps": 28,
+    "smoke": "N=8 x1 seed, lean",
+    "tau_grid": [0.4, 0.5, 0.65],
+    "variants": ["adaptive_1.5", "adaptive_2.0", "pc0.5_adaptive_1.5", "pc0.5_adaptive_2.0"],
+    "oracle_run": "results/horizon_pc_oracle/gen_20260707_141523 (adaptive_2.0 + pc0.5 + pcoracle0.5/1.0, tau 0.5/0.65)",
+    "method": "cached-endpoint predictor-corrector: x_corr = x_i + dsigma*[(1-a)v_i + a*v_pred], v_pred = cached forward at endpoint",
+    "compute_accounting": "PC endpoint = extra cached forward (~1/L); oracle endpoint = full forward; both included in speedup"
+  },
+  "metrics": {
+    "verdict": "DEAD-END / KILL (cached-endpoint PC on FLUX)",
+    "pc_minus_plain_range_dB": [-0.06, 0.0],
+    "pc_minus_plain_all_bands_le_zero": true,
+    "overshoot_band_pc": "3.35x/20.92dB",
+    "overshoot_band_plain": "3.40x/20.95dB",
+    "curvature_p50": 0.014,
+    "curvature_p95": 0.026,
+    "curvature_note": "v_pred ~= v_i (1-3%); cached endpoint carries almost no correction signal",
+    "oracle_fresh_helps_dB_tau0p5": 0.29,
+    "oracle_fresh_helps_dB_tau0p5_a1p0": 0.50,
+    "oracle_speedup_collapse": "2.74x -> 1.77x (full forward per jump)",
+    "cause": "staleness of the cached endpoint (block-stack curvature frozen by the cache)"
+  },
+  "artifacts": [
+    "reports/horizon_cache_pc.html",
+    "reports/horizon_cache_pc_summary.json",
+    "reports/horizon_cache_pc_summary.md",
+    "reports/horizon_cache_pc_assets/",
+    "results/horizon_pc_smoke/gen_20260707_140532/metrics.csv",
+    "results/horizon_pc_oracle/gen_20260707_141523/metrics.csv",
+    "runs/runai/20260707_170232__horizon_pc_e57_smoke__2f53bfb/"
+  ]
+}

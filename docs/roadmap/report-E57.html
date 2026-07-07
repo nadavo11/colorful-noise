@@ -1,0 +1,155 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E57 — HorizonCache-PC -- cached-endpoint predictor-corrector jumps (attack the E56 overshoot)</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_57.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E57 — HorizonCache-PC: cached-endpoint predictor-corrector jumps</h1>
+<p><strong>Thread:</strong> fast-edit (caching line) · <strong>Status:</strong> dead-end · <strong>Verdict:</strong> KILL (cached-endpoint PC on FLUX) ·
+<strong>Models:</strong> FLUX.1-dev (4-bit), 512 px, 28 Euler steps; smoke N=8 × 1 seed + fresh-endpoint oracle ablation,
+cluster H100 80 GB (Run:AI).</p>
+<h2>Hypothesis</h2>
+<p>E56 found the headroom-adaptive stride overshoots at ~3.4× because long-stride <strong>Euler truncation
+error</strong> dominates. Attack it with a cheap <strong>Heun/trapezoid</strong> correction that does <strong>not</strong> add a full
+transformer recompute:</p>
+<pre><code>x_pred = x_i + Δσ·v_i
+v_pred = cached_velocity(x_pred, σ_target; r_anchor)   # reuse the SAME cached residual, ≈1/L
+x_corr = x_i + Δσ·[(1-α)·v_i + α·v_pred]
+</code></pre>
+<p>Claim to test: a cached endpoint correction reduces truncation error while preserving most of the
+compute savings, and can push the safe band from ~2.7× toward 3.0–3.3×.</p>
+<h2>Method</h2>
+<p>New PC path in <code>experiments/horizon_cache/</code> (non-PC path byte-identical to E56, fair by construction):</p>
+<ul>
+<li><strong><code>v_pred</code></strong> is a <em>second cached forward</em> at the predicted endpoint reusing the same block-stack
+  residual <code>r_anchor</code> — one extra cached forward (≈1/L), <strong>accounted separately</strong> (<code>ComputeLedger.
+  num_pc_endpoint_cached_forwards</code>) so PC never claims free speedup.</li>
+<li><strong>α ∈ {0.25, 0.5, 0.75, 1.0}</strong> (0 = plain Euler, 0.5 = trapezoid, 1.0 = endpoint-only).</li>
+<li><strong>Curvature score</strong> <code>‖v_pred−v_i‖₁/‖v_i‖₁</code> with optional <strong>cancel</strong> / <strong>shrink</strong> gates.</li>
+<li><strong>Oracle ablation</strong> <code>pcoracle&lt;α&gt;_</code>: <code>v_pred</code> is a <strong>fresh full forward</strong> (does not overwrite the cache
+  anchor; accounted as a full forward) — isolates whether the cached endpoint's <em>staleness</em> is the cause.</li>
+<li>Same regrid scheduler, matched-achieved-speedup comparison, and percentile bootstrap as E56.</li>
+</ul>
+<h2>Result (smoke N=8 × 1 seed, τ ∈ {0.4, 0.5, 0.65})</h2>
+<p><strong>PC is a near-no-op.</strong> PC − plain (paired, same family/τ) is ≤ 0 in <strong>every</strong> band, and PC sits at
+slightly <em>lower</em> achieved speedup (the endpoint cost):</p>
+<table>
+<thead>
+<tr>
+<th>family</th>
+<th>τ</th>
+<th>PC speedup</th>
+<th>plain speedup</th>
+<th>PC − plain ΔPSNR</th>
+<th>95% CI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>adaptive_1.5</td>
+<td>0.4</td>
+<td>2.48×</td>
+<td>2.50×</td>
+<td>−0.00</td>
+<td>[−0.04, +0.06]</td>
+</tr>
+<tr>
+<td>adaptive_1.5</td>
+<td>0.5</td>
+<td>2.71×</td>
+<td>2.74×</td>
+<td>−0.05</td>
+<td>[−0.09, −0.01]</td>
+</tr>
+<tr>
+<td>adaptive_1.5</td>
+<td>0.65</td>
+<td>3.35×</td>
+<td>3.40×</td>
+<td>−0.02</td>
+<td>[−0.04, −0.01]</td>
+</tr>
+<tr>
+<td>adaptive_2.0</td>
+<td>0.4</td>
+<td>2.35×</td>
+<td>2.37×</td>
+<td>−0.06</td>
+<td>[−0.10, −0.02]</td>
+</tr>
+<tr>
+<td>adaptive_2.0</td>
+<td>0.5</td>
+<td>2.71×</td>
+<td>2.74×</td>
+<td>−0.06</td>
+<td>[−0.09, −0.02]</td>
+</tr>
+<tr>
+<td>adaptive_2.0</td>
+<td>0.65</td>
+<td>3.35×</td>
+<td>3.40×</td>
+<td>−0.02</td>
+<td>[−0.04, −0.01]</td>
+</tr>
+</tbody>
+</table>
+<p>In the overshoot band it does <strong>not</strong> help: 3.35× / 20.92 dB (PC) vs 3.40× / 20.95 dB (plain).</p>
+<p><strong>Why (curvature diagnostic).</strong> <code>‖v_pred−v_i‖₁/‖v_i‖₁</code> has <strong>p50 = 0.014, p95 = 0.026</strong> — the cached
+endpoint is only ~1–3 % from the <em>start</em> velocity, so the trapezoid correction barely moves the state.
+The correction PC needs lives in the <strong>block-stack-driven curvature</strong> of <code>v</code>, which the cache <strong>freezes
+by construction</strong>; reusing <code>r_anchor</code> at <code>x_pred</code> cannot recover it.</p>
+<p><strong>Mechanism proven by the oracle.</strong> A <em>fresh</em> endpoint velocity <strong>does</strong> improve quality where the cached
+one cannot — but at a full-forward cost per jump that collapses the speedup:</p>
+<table>
+<thead>
+<tr>
+<th>τ</th>
+<th>plain</th>
+<th>PC cached</th>
+<th>PC oracle (fresh) α0.5</th>
+<th>PC oracle α1.0</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.5</td>
+<td>2.74× / 24.17 dB</td>
+<td>2.71× / 24.11</td>
+<td><strong>1.77× / 24.46</strong> (+0.29)</td>
+<td>1.76× / 24.67 (+0.50)</td>
+</tr>
+<tr>
+<td>0.65</td>
+<td>3.40× / 20.95 dB</td>
+<td>3.35× / 20.92</td>
+<td>1.97× / 21.13 (+0.18)</td>
+<td>1.97× / 21.21 (+0.26)</td>
+</tr>
+</tbody>
+</table>
+<p>(LPIPS improves too, 0.135 → 0.114 at τ0.5.) So the failure is specifically the <strong>staleness</strong> of the
+cached endpoint, not the correction idea — and even a fresh endpoint isn't worth it: at ~1.8–2.0× it
+recovers only +0.2–0.5 dB, i.e. the compute it spends is better spent simply <strong>not jumping so hard</strong>
+(dropping to E56's safe band).</p>
+<h2>Verdict</h2>
+<p><strong>DEAD-END / KILL (cached-endpoint predictor-corrector on FLUX).</strong> <code>pc_alpha_0.5</code> (cached) KILL — no band
+beats plain HorizonCache and the endpoint call slightly lowers speedup; <code>pc_alpha</code> 0.25/0.75/1.0 KILL;
+curvature cancel/shrink KILL (signal real but ~1–3 %, too small to act on). Oracle fresh-endpoint PARK
+(diagnostic only — proves the mechanism, no speedup). The gate correctly stopped before the N=50–100
+consolidation. <strong>E56's headroom-adaptive stride remains the frontier.</strong></p>
+<p>Failure attribution (as required): <strong>the cached endpoint velocity is too stale</strong> (<code>v_pred ≈ v_i</code>);
+secondarily the endpoint cost slightly erases speedup; the curvature signal is real but uninformative
+(too small); aggressive jumps at 3×+ are effectively unsafe on FLUX <em>and cannot be cheaply corrected from
+cached state</em>.</p>
+<h2>Next</h2>
+<p>Do <strong>not</strong> pursue cached-endpoint PC further on FLUX. If revisiting 3×+: (1) a <strong>partial-stack / low-rank
+endpoint refresh</strong> (some blocks fresh) to get real curvature below full cost; (2) accept E56's ~1.7–2.7×
+safe band; (3) a learned per-jump safety gate supervised by the E56 frontier-improvement label. SD3
+(E56's open direction) is higher value.</p>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>reports/horizon_cache_pc.html</code> · <code>reports/horizon_cache_pc_summary.{md,json}</code> ·
+  <code>reports/horizon_cache_pc_assets/</code> (frontier, PC−plain, curvature diagnostic, mechanism diagram)</li>
+<li>Runs: <code>results/horizon_pc_smoke/gen_20260707_140532/</code> (PC vs plain) ·
+  <code>results/horizon_pc_oracle/gen_20260707_141523/</code> (fresh-endpoint oracle) ·
+  <code>runs/runai/20260707_170232__horizon_pc_e57_smoke__2f53bfb/</code> ·
+  <code>runs/runai/*__horizon_pc_e57_oracle__43e46c7/</code></li>
+<li>Code: <code>experiments/horizon_cache/{flux_gen,scheduler,policy,run,pc_analysis,pc_report}.py</code> ·
+  manifest <code>experiments/manifests/E57.json</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_57.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

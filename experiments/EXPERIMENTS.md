@@ -1529,3 +1529,31 @@ Sig: `reports/horizon_cache.html`, `reports/horizon_cache_summary.{md,json}`,
 `results/horizon_cache_sig/gen_20260707_095918/{metrics.csv,metrics.json,summary.json,traces/,samples/}`;
 action datasets `metrics/horizon_cache*/action_dataset.*` + `v1_diag.json`; code `experiments/horizon_cache/`;
 manifest `experiments/manifests/E56.json`; doc `docs/experiment-reports/EXPERIMENT_56.md`.
+
+## E57 — HorizonCache-PC: cached-endpoint predictor-corrector jumps (FLUX.1-dev)
+
+**Method.** Attack the E56 ~3.4× overshoot (long-stride Euler truncation error) with a cheap Heun/trapezoid
+correction that reuses the cached block-stack residual instead of a full recompute:
+`x_pred=x_i+Δσ·v_i`; `v_pred=cached_velocity(x_pred,σ_target;r_anchor)` (a 2nd cached forward ≈1/L, accounted
+separately); `x_corr=x_i+Δσ·[(1−α)v_i+α·v_pred]`, α∈{0.25,0.5,0.75,1.0}. Curvature `‖v_pred−v_i‖₁/‖v_i‖₁`
+with cancel/shrink gates. Non-PC path byte-identical to E56. **Oracle** `pcoracle<α>_`: `v_pred` is a fresh
+full forward (accounted as such) to isolate cache staleness.
+
+**Key result (smoke N=8×1, τ 0.4/0.5/0.65).** PC is a **near-no-op**: PC−plain (paired, same family/τ) is ≤0
+in every band (−0.00 to −0.06 dB, most CIs exclude 0 negative) at slightly lower speedup; it does **not**
+touch the overshoot (3.35×/20.92 dB PC vs 3.40×/20.95 dB plain). **Why:** curvature `‖v_pred−v_i‖₁/‖v_i‖₁`
+p50=0.014, p95=0.026 — the cached endpoint is ~1–3% from the start velocity (`v_pred≈v_i`), because the
+truncation-correcting curvature lives in the block stack the cache freezes. **Oracle proves it:** a *fresh*
+endpoint *does* help (τ0.5: 24.46/24.67 dB @α0.5/1.0 vs 24.17 plain; LPIPS 0.135→0.114) but collapses speedup
+2.74×→1.77× — so staleness (not the correction idea) is the cause, and even a fresh endpoint isn't worth its
+full-forward cost.
+
+**Verdict.** **DEAD-END / KILL** (cached-endpoint PC on FLUX). pc_alpha_0.5 (cached) KILL; α 0.25/0.75/1.0 KILL;
+curvature cancel/shrink KILL (signal too small); oracle fresh-endpoint PARK (diagnostic, no speedup). Gate
+correctly stopped before the N=50–100 consolidation. E56's headroom-adaptive stride remains the frontier.
+Next: partial-stack/low-rank endpoint refresh, or accept the ~1.7–2.7× safe band; SD3 is higher value.
+
+**Artifacts.** `reports/horizon_cache_pc.{html,md,json}`, `reports/horizon_cache_pc_assets/`;
+`results/horizon_pc_smoke/gen_20260707_140532/`, `results/horizon_pc_oracle/gen_20260707_141523/`;
+code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,pc_analysis,pc_report}.py`; manifest
+`experiments/manifests/E57.json`; doc `docs/experiment-reports/EXPERIMENT_57.md`.

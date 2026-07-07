@@ -1099,4 +1099,44 @@ EXPERIMENTS = [
             "(4) Paper figure package: matched-speed mechanism pair + frontier + per-band table are ready.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_56.md",
      "results": None, "image": None},
+
+    {"id": "E57", "title": "HorizonCache-PC -- cached-endpoint predictor-corrector jumps (attack the E56 overshoot)",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 x1 seed + fresh-endpoint "
+               "oracle ablation, cluster H100 (Run:AI)",
+     "status": "dead-end",
+     "motivation": "E56 adaptive headroom stride overshoots at ~3.4x because long-stride Euler truncation error dominates. "
+                   "Test a principled fix: reduce the truncation error of a long jump with a CHEAP cached endpoint correction "
+                   "(Heun/trapezoid) that reuses the cached block-stack residual instead of a full recompute. "
+                   "x_pred = x_i + dsigma*v_i; v_pred = cached_velocity(x_pred, sigma_target; r_anchor); "
+                   "x_corr = x_i + dsigma*[(1-a)*v_i + a*v_pred].",
+     "method": "New PC path in experiments/horizon_cache/ (flux_gen: v_pred is a SECOND cached forward at the predicted "
+               "endpoint reusing the SAME cached residual, ~1/L, accounted separately so PC never claims free speedup; "
+               "curvature score ||v_pred-v_i||_1/||v_i||_1; optional cancel/shrink gates). alpha in {0.25,0.5,0.75,1.0}. "
+               "Non-PC path byte-identical to E56 (fair). ComputeLedger adds num_pc_endpoint_cached_forwards; JumpEvent logs "
+               "alpha/curvature/correction/cancelled/shrunk. ORACLE ablation pcoracle<a>_: v_pred is a FRESH FULL forward "
+               "(does not overwrite the cache anchor; accounted as a full forward) to isolate whether the cached endpoint's "
+               "STALENESS is the cause. Same regrid scheduler + matched-achieved-speedup + bootstrap protocol as E56.",
+     "result": "SMOKE (N=8x1, tau 0.4/0.5/0.65, adaptive_1.5/2.0 + pc0.5 versions; SeaCache auto). PC is a NEAR-NO-OP: "
+               "PC-minus-plain (paired, same family/tau) is <=0 in EVERY band (-0.00 to -0.06 dB, most CIs exclude 0 on the "
+               "NEGATIVE side), and PC sits at slightly LOWER achieved speedup (endpoint cost). In the overshoot band it does "
+               "NOT help: 3.35x/20.92dB (PC) vs 3.40x/20.95dB (plain). DIAGNOSIS via the curvature score: ||v_pred-v_i||_1/"
+               "||v_i||_1 has p50=0.014, p95=0.026 -- the cached endpoint is only ~1-3% from the START velocity, so the "
+               "trapezoid correction is a no-op. MECHANISM PROVEN by the ORACLE: a FRESH endpoint velocity DOES improve quality "
+               "(tau0.5: 24.46/24.67 dB oracle a0.5/a1.0 vs 24.17 plain, +0.3/+0.5 dB, LPIPS 0.135->0.114; tau0.65: 21.13/21.21 "
+               "vs 20.95) -- but at a FULL-forward cost per jump that COLLAPSES speedup 2.74x->1.77x (and 3.40x->1.97x). So the "
+               "failure is specifically the STALENESS of the cached endpoint (the truncation-correcting curvature lives in the "
+               "block stack, which the cache freezes by construction), not the correction idea; and even a fresh endpoint isn't "
+               "worth it -- the compute it costs is better spent just not jumping so aggressively (E56's safe band).",
+     "verdict": "DEAD-END / KILL (cached-endpoint predictor-corrector on FLUX). pc_alpha_0.5 (cached) KILL: no band beats plain "
+                "HorizonCache and the endpoint call slightly lowers speedup; pc_alpha 0.25/0.75/1.0 KILL; curvature cancel/shrink "
+                "KILL (signal real but ~1-3%, too small to act on). Oracle fresh-endpoint PARK (diagnostic only -- proves the "
+                "mechanism but has no speedup). Honest cause: the cached endpoint velocity is TOO STALE (v_pred~=v_i); a real "
+                "2nd-order correction needs a fresh/cheaply-refreshed endpoint = a full forward, which erases the point. "
+                "Gate correctly stopped before the N=50-100 consolidation. E56's headroom-adaptive stride remains the frontier.",
+     "nxt": "Do NOT pursue cached-endpoint PC further on FLUX. If revisiting the 3x+ overshoot: (1) a PARTIAL-stack / low-rank "
+            "endpoint refresh (some blocks fresh) to get real curvature at <full cost; (2) accept E56's ~1.7-2.7x safe band and "
+            "stop chasing 3x+; (3) a learned per-jump 'is this stride safe' gate (the curvature signal is too weak, but the E56 "
+            "frontier-improvement label could supervise a jump-shrink). SD3 (E56 nxt) is the higher-value open direction.",
+     "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_57.md",
+     "results": None, "image": None},
 ]

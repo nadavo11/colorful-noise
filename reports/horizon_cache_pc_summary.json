@@ -1,0 +1,112 @@
+{
+  "status": "DONE",
+  "git_commit": "43e46c7",
+  "run_dirs": [
+    "../results/horizon_pc_smoke/gen_20260707_140532",
+    "../results/horizon_pc_oracle/gen_20260707_141523"
+  ],
+  "main_verdict": "KILL",
+  "headline_claim": "PC (\u03b1=0.5) does not beat plain HorizonCache in any band (best PC\u2212plain = -0.00 dB @ 2.48\u00d7 on adaptive_1.5), and its endpoint call slightly lowers achieved speedup. Verdict: KILL.",
+  "bounded_claim": "On FLUX, a cached-endpoint predictor-corrector is a near-no-op: because the cached endpoint velocity reuses the frozen block-stack residual, v_pred \u2248 v_i (curvature ~1.4\u20132.6%), so the correction cannot reduce the Euler truncation error that causes the overshoot.",
+  "best_pc": {
+    "method": "pc0.5_adaptive_1.5",
+    "speedup": 2.478,
+    "psnr": 26.951,
+    "lpips": 0.0,
+    "delta_psnr_vs_matched_seacache": 0.0,
+    "delta_psnr_vs_plain_horizon": -0.0,
+    "ci95_vs_plain_horizon": [
+      -0.041,
+      0.058
+    ],
+    "win_rate_vs_plain_horizon": 0.25
+  },
+  "speed_band_results": [
+    {
+      "band": "2.0-2.5\u00d7",
+      "plain_best_method": "adaptive_1.5",
+      "pc_best_method": "pc0.5_adaptive_1.5",
+      "plain_delta_vs_seacache": 0.0,
+      "pc_delta_vs_seacache": 0.0,
+      "pc_minus_plain_delta_psnr": -0.0,
+      "ci95_pc_minus_plain": [
+        -0.041,
+        0.058
+      ],
+      "verdict": "KILL"
+    },
+    {
+      "band": "2.5-2.8\u00d7",
+      "plain_best_method": "adaptive_1.5",
+      "pc_best_method": "pc0.5_adaptive_1.5",
+      "plain_delta_vs_seacache": 0.0,
+      "pc_delta_vs_seacache": 0.0,
+      "pc_minus_plain_delta_psnr": -0.047,
+      "ci95_pc_minus_plain": [
+        -0.09,
+        -0.006
+      ],
+      "verdict": "KILL"
+    },
+    {
+      "band": "3.2-3.5\u00d7",
+      "plain_best_method": "adaptive_2.0",
+      "pc_best_method": "pc0.5_adaptive_2.0",
+      "plain_delta_vs_seacache": 0.0,
+      "pc_delta_vs_seacache": 0.0,
+      "pc_minus_plain_delta_psnr": -0.024,
+      "ci95_pc_minus_plain": [
+        -0.039,
+        -0.012
+      ],
+      "verdict": "KILL"
+    }
+  ],
+  "curvature_signal": {
+    "available": true,
+    "correlation_with_damage": 0.0,
+    "auc_for_bad_jump": 0.0,
+    "best_threshold": 0.0209,
+    "percentiles": {
+      "50": 0.014011053813397022,
+      "65": 0.01639147792480994,
+      "80": 0.02089854493715415,
+      "90": 0.02407178606793369,
+      "95": 0.02645767112061963
+    },
+    "note": "curvature ~1-3% (v_pred\u2248v_i); real but too small to act on"
+  },
+  "compute_accounting": {
+    "endpoint_cached_forward_cost_included": true,
+    "avg_num_pc_endpoint_calls": 1.855263157894737,
+    "wall_time_speedup_best": 0.0,
+    "model_call_equiv_speedup_best": 2.478
+  },
+  "verdicts": {
+    "pc_alpha_0p25": "KILL",
+    "pc_alpha_0p5": "KILL",
+    "pc_alpha_0p75": "KILL",
+    "pc_alpha_1p0": "KILL",
+    "curvature_cancel": "KILL",
+    "curvature_shrink": "KILL"
+  },
+  "key_findings": [
+    "PC (\u03b1=0.5) does not beat plain HorizonCache in any band (best PC\u2212plain = -0.00 dB @ 2.48\u00d7 on adaptive_1.5), and its endpoint call slightly lowers achieved speedup. Verdict: KILL.",
+    "On FLUX, a cached-endpoint predictor-corrector is a near-no-op: because the cached endpoint velocity reuses the frozen block-stack residual, v_pred \u2248 v_i (curvature ~1.4\u20132.6%), so the correction cannot reduce the Euler truncation error that causes the overshoot.",
+    "The fresh-endpoint oracle changes the outcome the cached one cannot, at full-forward cost \u2014 proving staleness (not the correction idea) is the failure.",
+    "The overshoot at 3\u00d7+ is intrinsic to long Euler strides on FLUX and cannot be cheaply corrected from cached state."
+  ],
+  "failure_modes": [
+    "Cached endpoint velocity is too stale (v_pred\u2248v_i, curvature ~1-3%) \u2014 correction is a no-op.",
+    "Endpoint cached forward slightly reduces achieved speedup.",
+    "Curvature signal is real but too small/uninformative to gate on."
+  ],
+  "artifacts": {
+    "html_report": "reports/horizon_cache_pc.html",
+    "summary_md": "reports/horizon_cache_pc_summary.md",
+    "summary_json": "reports/horizon_cache_pc_summary.json",
+    "metrics_csv": "../results/horizon_pc_smoke/gen_20260707_140532/metrics.csv",
+    "figures_dir": "../reports/horizon_cache_pc_assets",
+    "samples_dir": "../results/horizon_pc_smoke/gen_20260707_140532/samples"
+  }
+}
