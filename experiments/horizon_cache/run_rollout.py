@@ -14,8 +14,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from horizon_cache import capability
-from horizon_cache.rollout import build_dataset
-from horizon_cache.train_v1 import train
+from horizon_cache.rollout import build_dataset, build_frontier_dataset
+from horizon_cache.train_v1 import train, train_frontier
 
 
 def main():
@@ -31,6 +31,10 @@ def main():
     ap.add_argument("--tol-l2", type=float, default=0.02)
     ap.add_argument("--damage-metric", choices=["latent_l2", "decoded_psnr"], default="latent_l2")
     ap.add_argument("--psnr-floor", type=float, default=30.0)
+    ap.add_argument("--frontier", action="store_true",
+                    help="build FRONTIER-IMPROVEMENT labels (full rollout: adaptive jump vs cache) + train binary v1")
+    ap.add_argument("--jf-max", type=float, default=1.25)
+    ap.add_argument("--psnr-eps", type=float, default=0.25)
     ap.add_argument("--stride", type=int, default=2)
     ap.add_argument("--max-seq-len", type=int, default=512)
     ap.add_argument("--out", default="metrics/horizon_cache")
@@ -52,6 +56,20 @@ def main():
     L = len(pipe.transformer.transformer_blocks) + len(pipe.transformer.single_transformer_blocks)
 
     out = Path(args.out)
+    if args.frontier:
+        csv_p = out / "frontier_dataset.csv"
+        pq_p = out / "frontier_dataset.parquet"
+        ds = build_frontier_dataset(pipe, prompts, seeds, args.steps, args.height, args.width,
+                                    args.guidance, "cuda", csv_p, pq_p, max_seq_len=args.max_seq_len,
+                                    tau_cache=args.tau_cache, jf_max=args.jf_max, L=L,
+                                    stride=args.stride, psnr_eps=args.psnr_eps)
+        print("[frontier]", json.dumps(ds, indent=2))
+        diag = train_frontier(csv_p, Path(args.bundle))
+        print("[train-frontier]", json.dumps(diag, indent=2))
+        (out / "frontier_meta.json").write_text(json.dumps(ds, indent=2))
+        (out / "frontier_v1_diag.json").write_text(json.dumps(diag, indent=2))
+        return
+
     csv_p = out / "action_dataset.csv"
     pq_p = out / "action_dataset.parquet"
     ds = build_dataset(pipe, prompts, seeds, args.steps, args.height, args.width,

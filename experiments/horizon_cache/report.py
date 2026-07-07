@@ -89,6 +89,7 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
     f_psnr = FIG.frontier_plot(rows, tau_grid, assets / "frontier_psnr.png", "psnr", "PSNR vs full (dB) ↑")
     f_lpips = FIG.frontier_plot(rows, tau_grid, assets / "frontier_lpips.png", "lpips", "LPIPS vs full ↓", higher=False)
     f_delta = FIG.delta_plot(summ.get("matched_speedup_deltas_by_variant", {}), assets / "delta_psnr.png")
+    f_winrate = FIG.winrate_plot(summ.get("matched_speedup_deltas_by_variant", {}), assets / "winrate.png")
 
     # action timelines for representative traces (a horizon method that took jumps)
     timelines = []
@@ -140,21 +141,30 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
     best_d.setdefault("matched_delta_psnr", 0.0)
     best_d.setdefault("horizon_speedup", 0.0)
 
-    # DECISION RULE (user-specified, Experiment A):
-    #   KEEP if a non-extrapolated matched ΔPSNR >= +0.3 dB survives at N>=20 AND matched
-    #         win-rate > 60%
-    #   PARK if the mean gain survives but the win-rate is weak, or N<20 (directional)
-    #   KILL if the gain disappears (best matched ΔPSNR <= 0)
+    # DECISION RULE (user-specified, significance run):
+    #   STRONG KEEP: a non-extrapolated operating point in the 2.0–2.6× band with
+    #                mean ΔPSNR > +0.5 dB, matched win-rate > 65%, and bootstrap CI excludes 0.
+    #   KEEP:        non-extrapolated mean ΔPSNR >= +0.3 dB with win-rate > 60% (N>=20).
+    #   PARK:        directional gain but weak win-rate / no CI / N<20.
+    #   KILL:        best non-extrapolated ΔPSNR <= 0.
+    def _in_band(o):
+        return 2.0 <= o.get("horizon_speedup", 0) <= 2.6
     def verdict_gen():
-        cand = [(o["matched_delta_psnr"], o.get("matched_win_rate") or 0.0)
-                for d in matched_by_variant.values() for o in d.values() if not o.get("extrapolated")]
-        best_dp = max([c[0] for c in cand], default=(bv["matched_delta_psnr"] if bv else 0.0))
+        cand = [o for d in matched_by_variant.values() for o in d.values() if not o.get("extrapolated")]
+        if not cand:
+            return "PARK"
+        best_dp = max((o["matched_delta_psnr"] for o in cand), default=0.0)
         if best_dp <= 0.0:
             return "KILL"
-        if n_imgs >= 20:
-            strong = [c for c in cand if c[0] >= 0.3 and c[1] > 0.60]
-            return "KEEP" if strong else "PARK"
-        return "PARK"  # N<20: directional at best
+        strong = [o for o in cand if _in_band(o)
+                  and (o.get("matched_delta_psnr_mean") or o["matched_delta_psnr"]) > 0.5
+                  and (o.get("matched_win_rate") or 0) > 0.65
+                  and o.get("ci_excludes_zero")]
+        if strong:
+            return "STRONG KEEP"
+        if n_imgs >= 20 and any(o["matched_delta_psnr"] >= 0.3 and (o.get("matched_win_rate") or 0) > 0.60 for o in cand):
+            return "KEEP"
+        return "PARK"
     v_gen = verdict_gen()
 
     verdicts = {
@@ -250,7 +260,7 @@ def build(gen_dir: Path, rollout_csv: Path | None, v1_diag: dict | None,
 
     html = _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen,
                         verdicts, v1_diag, rollout_csv, label_hist, best_variant, variants,
-                        f_psnr, f_lpips, f_delta, timelines, f_scatter, f_conf, gen_dir)
+                        f_psnr, f_lpips, f_delta, f_winrate, timelines, f_scatter, f_conf, gen_dir)
     out_html.write_text(html)
 
     # ---- MD summary ----
@@ -299,9 +309,32 @@ def _qual_grid(gen_dir: Path, tau_grid, best_variant="regrid_1.25") -> str:
     return "".join(out)
 
 
+def _sig_table(matched_by_variant: dict) -> str:
+    rows = ["<tr><th>variant</th><th>τ</th><th>speedup</th><th>mean ΔPSNR</th><th>95% CI</th>"
+            "<th>win-rate</th><th>n</th><th>CI≠0</th><th>band 2.0–2.6×</th></tr>"]
+    entries = []
+    for v, d in matched_by_variant.items():
+        for t, o in d.items():
+            entries.append((o.get("horizon_speedup", 0), v, t, o))
+    for _, v, t, o in sorted(entries):
+        inband = 2.0 <= o.get("horizon_speedup", 0) <= 2.6
+        excl = o.get("ci_excludes_zero")
+        mean = o.get("matched_delta_psnr_mean")
+        mean = mean if mean is not None else o.get("matched_delta_psnr")
+        ci = (f"[{o['ci95_lo']:+.2f}, {o['ci95_hi']:+.2f}]" if o.get("ci95_lo") is not None else "—")
+        wr = o.get("matched_win_rate")
+        ex = " (extrap)" if o.get("extrapolated") else ""
+        sweet = ' class="sweet"' if (inband and (mean or 0) > 0.5 and (wr or 0) > 0.65 and excl) else ""
+        rows.append(f"<tr{sweet}><td>{v}</td><td>{t[1:]}</td><td>{o.get('horizon_speedup',0):.2f}×{ex}</td>"
+                    f"<td>{(mean or 0):+.2f}</td><td>{ci}</td><td>{(wr*100 if wr is not None else 0):.0f}%</td>"
+                    f"<td>{o.get('n_pairs','—')}</td><td>{'yes' if excl else 'no'}</td>"
+                    f"<td>{'✓' if inband else ''}</td></tr>")
+    return "<table>" + "".join(rows) + "</table>"
+
+
 def _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen, verdicts,
                  v1_diag, rollout_csv, label_hist, best_variant, variants,
-                 f_psnr, f_lpips, f_delta, timelines, f_scatter, f_conf, gen_dir):
+                 f_psnr, f_lpips, f_delta, f_winrate, timelines, f_scatter, f_conf, gen_dir):
     method_diag = (
         "<span class='b'>latent x_i, sigma_i</span>\n"
         "        ↓ cheap <span class='a'>h</span> features (relL1, acc, h-drift, sigma)\n"
@@ -317,9 +350,9 @@ def _render_html(rows, summ, cfg, caps, git, tau_grid, best_tau, best_d, v_gen, 
         "regrid:  σ_i ─────→ σ_target,  then re-spaced tail σ_target..0  (net −1 node)\n"
         "         σ_target = σ_i + jf·(σ_{i+1} − σ_i)   [jf∈{1.25,1.5,2.0}]")
 
-    vcls = {"KEEP": "keep", "KILL": "kill", "PARK": "park"}
     def vbadge(v):
-        return f'<span class="verdict {vcls.get(v,"park")}">{v}</span>'
+        cls = "keep" if str(v).endswith("KEEP") else ("kill" if v == "KILL" else "park")
+        return f'<span class="verdict {cls}">{v}</span>'
 
     dsp = best_d.get("mean_delta_compute_speedup", 0.0)
     dp = best_d.get("matched_delta_psnr", 0.0)          # ΔPSNR at matched achieved speedup
@@ -472,8 +505,13 @@ speedup.</p>
 <h3>Fair frontier: quality vs achieved speedup</h3>
 {_img(f_psnr)}
 {_img(f_lpips)}
-<h3>Per-image ΔPSNR vs SeaCache (matched τ)</h3>
+<h3>Significance — ΔPSNR at matched achieved speedup, ±95% bootstrap CI</h3>
+<p class="mut">Paired per-image ΔPSNR (HorizonCache PSNR − SeaCache interpolated at that image's own
+achieved speedup), bootstrapped over {n_imgs} (prompt×seed) samples. Strong-KEEP = mean &gt; +0.5 dB,
+win-rate &gt; 65%, CI excludes 0, inside the 2.0–2.6× band (green rows).</p>
+{_sig_table(summ.get('matched_speedup_deltas_by_variant', {}))}
 {_img(f_delta)}
+{_img(f_winrate)}
 <h3>Action timelines (representative)</h3>
 {''.join(_img(t) for t in timelines)}""")
 

@@ -71,6 +71,134 @@ def _rollout_action(pipe, tr, latent0, prev_residual, sigmas, i, ctx, action, H,
 
 
 @torch.no_grad()
+def _continue_seacache(pipe, tr, latents, sigmas, i, ctx, tau, guidance_t, L=57):
+    """Continue to the END from node i under a SeaCache gate (accumulate filtered relL1,
+    refresh at tau, reuse residual). Returns (final_latent, n_full, n_cached, n_nodes)."""
+    from .flux_gen import _sea_filter_h
+    from flux_seacache_dp_shortcuts import rel_l1
+    device = latents.device
+    st = FluxCacheState()
+    n_full = n_cached = 0
+    first = True
+    while i < len(sigmas) - 1 and sigmas[i] > 1e-8:
+        sigma = sigmas[i]
+        ts = torch.full((latents.shape[0],), sigma, device=device, dtype=latents.dtype)
+        # SeaCache decision (first node forced fresh to seed the residual)
+        hs = tr.x_embedder(latents)
+        tsf = ts.to(hs.dtype) * 1000
+        gin = guidance_t.to(hs.dtype) * 1000 if guidance_t is not None else None
+        temb = tr.time_text_embed(tsf, ctx["ppe"]) if gin is None else tr.time_text_embed(tsf, gin, ctx["ppe"])
+        modulated, *_ = tr.transformer_blocks[0].norm1(hs, emb=temb)
+        h_filt = _sea_filter_h(modulated, ctx["image_ids"], sigma)
+        if first or st.prev_h_filt is None:
+            do_full = True
+        else:
+            st.acc += rel_l1(h_filt, st.prev_h_filt)
+            do_full = st.acc >= tau
+            if do_full:
+                st.acc = 0.0
+        v, _hf, ran = _flux_node(pipe, tr, latents, ts, guidance_t, ctx["ppe"], ctx["pe"],
+                                 ctx["text_ids"], ctx["image_ids"], sigma, do_full=do_full, state=st)
+        st.prev_h_filt = h_filt.detach()
+        n_full += int(ran); n_cached += int(not ran)
+        latents = latents + (sigmas[i + 1] - sigma) * v
+        i += 1
+        first = False
+    return latents, n_full, n_cached, (n_full + n_cached)
+
+
+@torch.no_grad()
+def build_frontier_dataset(pipe, prompts, seeds, steps, height, width, guidance, device,
+                           out_csv: Path, out_parquet: Path, max_seq_len: int = 512,
+                           tau_cache: float = 0.3, jf_max: float = 1.25, L: int = 57,
+                           stride: int = 1, psnr_eps: float = 0.25) -> dict[str, Any]:
+    """FRONTIER-IMPROVEMENT labels (the correct v1 target — full rollout, not a local proxy).
+
+    For each visited state, take {cache, adaptive-jump} then continue with SeaCache to the END;
+    decode both against the FULL continuation from the same state. The adaptive jump always saves
+    >=1 node, so it is 'frontier-helpful' iff it preserves final quality: label = 1 if
+    psnr_jump >= psnr_cache - psnr_eps. This is the DP lesson done right — the label reflects
+    end-to-end (compounded) quality, so it neither over-credits big jumps (short-horizon decoded)
+    nor under-credits all jumps (latent-L2)."""
+    from .baselines import SeaCachePolicy
+    from .flux_gen import sample_flux
+    from .metrics import psnr as _psnr
+    from .policy import HorizonV0Config, HorizonCacheV0, FEATURE_NAMES
+    from flux_seacache_dp_shortcuts import decode_flux_latents
+
+    adapt = HorizonCacheV0(HorizonV0Config(tau_cache=tau_cache, adaptive=True, jf_max=jf_max))
+    rows: list[dict[str, Any]] = []
+    for p in prompts:
+        for seed in seeds:
+            res = sample_flux(pipe, p["prompt"], seed, steps, height, width, guidance, device,
+                              SeaCachePolicy(tau_cache), max_seq_len, "seacache", L=L, record_states=True)
+            ctx = res["inputs"]; tr = pipe.transformer; sig = res["sigmas_final"]
+            for s_idx, snap in enumerate(res["snapshots"]):
+                if s_idx % stride != 0:
+                    continue
+                i = snap["node_i"]; feat = snap["feat"]
+                if i == 0 or i >= len(sig) - 3 or feat["remaining_steps"] < 3:
+                    continue
+                latent0 = snap["latent"].to(device)
+                prev_res = None if snap["prev_residual"] is None else snap["prev_residual"].to(device)
+                # only score states where the adaptive policy would actually consider a jump
+                act = adapt.act(feat, snap["step_index"], steps)
+                jf = act[1] if isinstance(act, tuple) else None
+                if jf is None:
+                    continue
+                # full reference continuation to END
+                ref = _continue_full(pipe, tr, latent0.clone(), sig, i, ctx, 10 ** 9, ctx["guidance_t"])
+                ref_img = decode_flux_latents(pipe, ref, height, width)
+
+                def branch(kind):
+                    st = FluxCacheState(); st.prev_residual = None if prev_res is None else prev_res.clone()
+                    ts = torch.full((latent0.shape[0],), sig[i], device=device, dtype=latent0.dtype)
+                    v, _h, _ = _flux_node(pipe, tr, latent0.clone(), ts, ctx["guidance_t"], ctx["ppe"],
+                                          ctx["pe"], ctx["text_ids"], ctx["image_ids"], sig[i],
+                                          do_full=False, state=st)
+                    if kind == "jump":
+                        target = max(0.0, sig[i] + jf * (sig[i + 1] - sig[i]))
+                        lat = latent0 + (target - sig[i]) * v
+                        loc = regrid_tail(list(sig), i, target); ni = i + 1
+                    else:  # cache
+                        lat = latent0 + (sig[i + 1] - sig[i]) * v
+                        loc = list(sig); ni = i + 1
+                    lat, nf, nc, nn = _continue_seacache(pipe, tr, lat, loc, ni, ctx, tau_cache, ctx["guidance_t"], L)
+                    img = decode_flux_latents(pipe, lat, height, width)
+                    cost = 1.0 + nf + nc / float(L)  # +1 for this node's cached forward
+                    return _psnr(ref_img, img), cost
+
+                psnr_jump, cost_jump = branch("jump")
+                psnr_cache, cost_cache = branch("cache")
+                helpful = int(psnr_jump >= psnr_cache - psnr_eps)
+                row = {"prompt_id": p["id"], "seed": seed, "step_index": snap["step_index"],
+                       "node_i": i, "jf": jf, "psnr_jump": round(psnr_jump, 3),
+                       "psnr_cache": round(psnr_cache, 3), "delta_psnr_jump_minus_cache": round(psnr_jump - psnr_cache, 3),
+                       "cost_jump": round(cost_jump, 3), "cost_cache": round(cost_cache, 3),
+                       "compute_saved": round(cost_cache - cost_jump, 3), "label_jump_helpful": helpful}
+                row.update({k: float(feat.get(k, 0.0)) for k in FEATURE_NAMES})
+                rows.append(row)
+            print(f"[frontier] {p['id']} s{seed}: {len([r for r in rows if r['prompt_id']==p['id'] and r['seed']==seed])} states",
+                  flush=True)
+
+    if rows:
+        import csv as _csv
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_csv, "w", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+        try:
+            import pandas as pd
+            pd.DataFrame(rows).to_parquet(out_parquet)
+        except Exception as e:
+            print(f"[frontier] parquet skipped ({e})", flush=True)
+    n_help = sum(r["label_jump_helpful"] for r in rows)
+    return {"n_states": len(rows), "n_jump_helpful": n_help,
+            "frac_helpful": round(n_help / max(1, len(rows)), 3),
+            "csv": str(out_csv), "label": "frontier_improvement (full rollout to end)",
+            "psnr_eps": psnr_eps, "jf_max": jf_max, "tau_cache": tau_cache}
+
+
+@torch.no_grad()
 def build_dataset(pipe, prompts, seeds, steps, height, width, guidance, device,
                   out_csv: Path, out_parquet: Path, H: int = 6, tol_l2: float = 0.02,
                   max_seq_len: int = 512, tau_cache: float = 0.3, L: int = 57,

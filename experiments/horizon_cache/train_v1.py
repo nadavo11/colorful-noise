@@ -99,6 +99,44 @@ def train(csv_path: Path, out_bundle: Path, mode: str = "classify") -> dict[str,
     return diag
 
 
+def train_frontier(csv_path: Path, out_bundle: Path) -> dict[str, Any]:
+    """Binary v1 on FRONTIER-IMPROVEMENT labels: predict jump-helpful (1) vs harmful (0)
+    from causal features only. This is the correct target (full-rollout, compounding-aware),
+    unlike latent-L2 (too strict) or short-horizon decoded-PSNR (too lenient)."""
+    import csv as _csv
+    rows = list(_csv.DictReader(open(csv_path)))
+    if len(rows) < 16:
+        return {"status": "SKIPPED", "reason": f"too few states ({len(rows)})", "n": len(rows)}
+    y = np.array([int(r["label_jump_helpful"]) for r in rows])
+    X = np.array([[float(r[k]) for k in FEATURE_NAMES] for r in rows], dtype=np.float64)
+    pos = int(y.sum()); base = max(pos, len(y) - pos) / len(y)  # majority-class baseline
+    if pos == 0 or pos == len(y):
+        return {"status": "DEGENERATE", "reason": f"single class (helpful={pos}/{len(y)})",
+                "n": len(rows), "frac_helpful": round(pos / len(y), 3)}
+    rng = np.random.RandomState(0); idx = rng.permutation(len(rows)); cut = int(0.75 * len(rows))
+    tr, te = idx[:cut], idx[cut:]
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    model = HistGradientBoostingClassifier(max_iter=200, learning_rate=0.08, max_depth=3)
+    model.fit(X[tr], y[tr])
+    pred = model.predict(X[te])
+    acc = float((pred == y[te]).mean())
+    import joblib
+    out_bundle.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"model": model, "classes": [0, 1], "mode": "frontier_binary",
+                 "features": FEATURE_NAMES}, out_bundle)
+    diag = {"status": "DONE", "task": "frontier_binary_jump_helpful", "n_total": len(rows),
+            "frac_helpful": round(pos / len(y), 3), "majority_baseline": round(base, 3),
+            "n_test": len(te), "test_accuracy": round(acc, 3), "bundle": str(out_bundle)}
+    try:
+        from sklearn.inspection import permutation_importance
+        pi = permutation_importance(model, X[te], y[te], n_repeats=5, random_state=0, scoring="accuracy")
+        diag["feature_importance"] = {FEATURE_NAMES[i]: round(float(pi.importances_mean[i]), 4)
+                                      for i in np.argsort(pi.importances_mean)[::-1][:8]}
+    except Exception as e:
+        diag["feature_importance_error"] = str(e)
+    return diag
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()

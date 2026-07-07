@@ -104,25 +104,51 @@ def frontier_plot(rows: list[dict], tau_grid, out: Path, ycol="psnr", ylabel="PS
 
 # ---------------------------------------------------------------- per-image delta
 def delta_plot(matched_by_variant: dict, out: Path):
-    """ΔPSNR at MATCHED achieved speedup (deck fair rule), one curve per variant."""
-    fig, ax = plt.subplots(figsize=(7.6, 4.2))
+    """ΔPSNR at MATCHED achieved speedup (deck fair rule) with bootstrap 95% CIs, per variant."""
+    fig, ax = plt.subplots(figsize=(7.8, 4.4))
     _style(ax)
+    ax.axvspan(2.0, 2.6, color=ACC2, alpha=0.07, label="strong-KEEP band")
     for v, d in matched_by_variant.items():
         col, mk, lab = VARIANT_STYLE.get(v, (INK, "-o", v))
-        pts = sorted([(o["horizon_speedup"], o["matched_delta_psnr"], o.get("extrapolated"))
-                      for o in d.values()])
+        pts = sorted([(o["horizon_speedup"], o.get("matched_delta_psnr_mean") or o["matched_delta_psnr"],
+                       o.get("ci95_lo"), o.get("ci95_hi"), o.get("extrapolated")) for o in d.values()])
         if not pts:
             continue
         xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-        ax.plot(xs, ys, mk, color=col, label=lab, linewidth=1.9, markersize=6)
-        for x, y, ex in pts:
+        yerr_lo = [p[1] - p[2] if p[2] is not None else 0 for p in pts]
+        yerr_hi = [p[3] - p[1] if p[3] is not None else 0 for p in pts]
+        ax.errorbar(xs, ys, yerr=[yerr_lo, yerr_hi], fmt=mk, color=col, label=lab,
+                    linewidth=1.9, markersize=6, capsize=4, ecolor=col, elinewidth=1.2)
+        for x, y, lo, hi, ex in pts:
             if ex:
-                ax.scatter([x], [y], facecolors="none", edgecolors=col, s=90, zorder=6)
-    ax.axhline(0, color=MUT, linewidth=1.2, linestyle="--")
-    ax.axvspan(1.5, 2.1, color=ACC2, alpha=0.06)
+                ax.scatter([x], [y], facecolors="none", edgecolors=col, s=110, zorder=6)
+    ax.axhline(0, color=BAD, linewidth=1.2, linestyle="--")
+    ax.axhline(0.5, color=MUT, linewidth=0.9, linestyle=":")
     ax.set_xlabel("HorizonCache achieved speedup →")
     ax.set_ylabel("Δ PSNR vs SeaCache @ matched speedup (dB)")
-    ax.set_title("Fair frontier gap (hollow = extrapolated beyond SeaCache range)")
+    ax.set_title("Fair frontier gap ±95% bootstrap CI (hollow = extrapolated)")
+    ax.legend(fontsize=8, facecolor=PANEL, edgecolor=LINE, labelcolor=INK, loc="best")
+    return _save(fig, out)
+
+
+def winrate_plot(matched_by_variant: dict, out: Path):
+    """Per-image matched win-rate vs achieved speedup, per variant."""
+    fig, ax = plt.subplots(figsize=(7.8, 3.6))
+    _style(ax)
+    ax.axvspan(2.0, 2.6, color=ACC2, alpha=0.07)
+    ax.axhline(0.65, color=MUT, linewidth=0.9, linestyle=":", label="0.65 KEEP bar")
+    ax.axhline(0.5, color=BAD, linewidth=1.0, linestyle="--")
+    for v, d in matched_by_variant.items():
+        col, mk, lab = VARIANT_STYLE.get(v, (INK, "-o", v))
+        pts = sorted([(o["horizon_speedup"], o.get("matched_win_rate")) for o in d.values()
+                      if o.get("matched_win_rate") is not None])
+        if not pts:
+            continue
+        ax.plot([p[0] for p in pts], [p[1] for p in pts], mk, color=col, label=lab, linewidth=1.9, markersize=6)
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("HorizonCache achieved speedup →")
+    ax.set_ylabel("per-image win-rate vs SeaCache")
+    ax.set_title("Matched-speedup win-rate")
     ax.legend(fontsize=8, facecolor=PANEL, edgecolor=LINE, labelcolor=INK, loc="best")
     return _save(fig, out)
 

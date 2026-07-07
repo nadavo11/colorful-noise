@@ -76,18 +76,19 @@ def build_methods(args, num_steps: int, seed: int) -> dict[str, Any]:
     """Return {method_name: policy}. SeaCache + HorizonCache-v0 swept over a shared grid."""
     methods: dict[str, Any] = {}
     methods["full"] = FullPolicy()
-    # uniform / random matched to a caching budget (~ every-2 for a ~1.7x floor)
-    methods["uniform_k2"] = UniformEveryK(2)
-    methods["uniform_k3"] = UniformEveryK(3)
-    methods["random_k"] = RandomK(k_fresh=max(2, num_steps // 2), num_steps=num_steps, seed=seed)
+    # lean mode (significance run): only full + SeaCache + the surviving variant(s) — the
+    # already-established floors (uniform/random/teacache) are skipped to save compute.
+    if not getattr(args, "lean", False):
+        methods["uniform_k2"] = UniformEveryK(2)
+        methods["uniform_k3"] = UniformEveryK(3)
+        methods["random_k"] = RandomK(k_fresh=max(2, num_steps // 2), num_steps=num_steps, seed=seed)
+        for tau in args.teacache_taus:
+            methods[f"teacache_t{tau:g}"] = TeaCachePolicy(tau)
     # shared threshold grid: SeaCache (the primary comparison) + each HorizonCache variant.
     for tau in args.tau_grid:
         methods[f"seacache_t{tau:g}"] = SeaCachePolicy(tau)
         for variant in args.variants:
             methods[f"horizon_{variant}_t{tau:g}"] = HorizonCacheV0(_variant_cfg(variant, tau, args.jump_mode))
-    # TeaCache-family baseline swept over its own (raw-relL1) thresholds
-    for tau in args.teacache_taus:
-        methods[f"teacache_t{tau:g}"] = TeaCachePolicy(tau)
     # optional learned policy
     if args.v1_bundle and Path(args.v1_bundle).exists():
         import joblib
@@ -187,6 +188,16 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             w.writerow([r.get(k) for k in base_keys] + [r["actions"].get(a, 0) for a in ACTIONS])
 
 
+def _bootstrap_ci(vals, n_boot: int = 5000, alpha: float = 0.05, seed: int = 0):
+    """Percentile bootstrap 95% CI for the mean of paired per-image matched deltas."""
+    a = np.asarray(vals, dtype=float)
+    if len(a) < 2:
+        return None
+    rng = np.random.RandomState(seed)
+    means = a[rng.randint(0, len(a), size=(n_boot, len(a)))].mean(axis=1)
+    return (float(np.percentile(means, 100 * alpha / 2)), float(np.percentile(means, 100 * (1 - alpha / 2))))
+
+
 def summarize_generation(rows: list[dict[str, Any]], tau_grid) -> dict[str, Any]:
     """Per-method aggregates + matched-budget per-image deltas vs SeaCache."""
     import collections
@@ -237,22 +248,26 @@ def summarize_generation(rows: list[dict[str, Any]], tau_grid) -> dict[str, Any]
             if hk in method_agg and len(sea_pts) >= 2:
                 hs = method_agg[hk]["compute_speedup"]; hp = method_agg[hk]["psnr"]
                 sea_at = float(np.interp(hs, sx, sy))
-                # per-image matched win-rate: each image's HorizonCache PSNR vs SeaCache
-                # interpolated at that image's own achieved speedup
+                # per-image matched ΔPSNR: each image's HorizonCache PSNR minus SeaCache
+                # interpolated at that image's OWN achieved speedup (paired, per prompt×seed)
                 hor = by_method.get(hk, [])
                 per_img = []
                 for r in hor:
-                    same = [s for s in by_method.get(f"seacache_t{tau:g}", []) if s["key"] == r["key"]]
-                    # interpolate this image's SeaCache frontier across taus
                     simg = sorted([(s["compute_speedup"], s["psnr"]) for t2 in tau_grid
                                    for s in by_method.get(f"seacache_t{t2:g}", []) if s["key"] == r["key"]])
                     if len(simg) >= 2:
                         per_img.append(r["psnr"] - float(np.interp(r["compute_speedup"], [p[0] for p in simg], [p[1] for p in simg])))
+                ci = _bootstrap_ci(per_img) if per_img else None
                 matched[v][f"t{tau:g}"] = {
                     "horizon_speedup": round(hs, 4), "horizon_psnr": round(hp, 4),
                     "seacache_psnr_at_matched_speedup": round(sea_at, 4),
                     "matched_delta_psnr": round(hp - sea_at, 4),
                     "matched_win_rate": round(sum(1 for d in per_img if d > 0) / len(per_img), 4) if per_img else None,
+                    "n_pairs": len(per_img),
+                    "matched_delta_psnr_mean": round(float(np.mean(per_img)), 4) if per_img else None,
+                    "ci95_lo": (round(ci[0], 4) if ci else None),
+                    "ci95_hi": (round(ci[1], 4) if ci else None),
+                    "ci_excludes_zero": (bool(ci[0] > 0 or ci[1] < 0) if ci else None),
                     "extrapolated": bool(hs > max(sx) or hs < min(sx)) if sx else True,
                 }
     # legacy keys (report/back-compat): pick the best variant as the headline
@@ -302,6 +317,8 @@ def build_argparser() -> argparse.ArgumentParser:
                     default=["regrid_1.25", "regrid_1.5", "adaptive_1.25"],
                     help="HorizonCache-v0 variants to sweep (Experiment A stress test)")
     ap.add_argument("--teacache-taus", type=float, nargs="+", default=[0.5, 0.8, 1.2])
+    ap.add_argument("--lean", action="store_true",
+                    help="significance run: only full + SeaCache + variant(s), skip uniform/random/teacache")
     ap.add_argument("--jump-mode", choices=["regrid", "drop"], default="regrid")
     ap.add_argument("--allow-jump2", action="store_true")
     ap.add_argument("--v1-bundle", default="")
