@@ -42,24 +42,32 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
       pc     = HorizonCache-PC cached-endpoint predictor-corrector, alpha in [0,1]  (E57)
       rm-token (proj in {raw,lowpass,topk,sea}; λ-mode / λ-max / gate ρ / top-k frac / pool /
       P2 projection come from rm_defaults, run-level):
-        rm<proj><beta>                        E58 first-order secant (β1 the shrink factor)
+        rm<proj><beta>[mid]                   E58 first-order secant (β1 the shrink factor);
+                                              'mid' evaluates λ at the stride midpoint (E60)
         rm2<proj><b1>b<b2>[g<γ>][r<ρmax>]     E59 second-order uniform hold; optional gate:
                                               SO on only if cosΔ>γ and ρ2<ρmax
         rmq<proj><βquad>                      E59 damped nonuniform Lagrange quadratic
+        rmcl<prior>[w<w>][m<μ>][x<βmax>][mid] E60 closed-loop: online innovation-fit β̂
+                                              (forgetting w, prior strength μ, clamp β_max;
+                                              defaults 0.85/1.0/1.0; raw projection)
       gate   = optional curvature accept/reject on the jump
     Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · rmraw0.5_adaptive_1.5 ·
-              rm2raw0.5b0.1_adaptive_1.25 · rm2raw0.5b0.1g0.25r0.5_adaptive_1.25 ·
-              rmqraw0.5_adaptive_1.25
+              rm2raw0.5b0.1_adaptive_1.25 · rmqraw0.5_adaptive_1.25 ·
+              rmcl0.5_adaptive_1.25 · rmcl0.5mid_adaptive_1.5 · rmraw0.5mid_adaptive_1.25 ·
+              rmcl0.5w1.0m0.5x1.0_adaptive_1.25
     """
     import re as _re
     v = variant
     rm = dict(rm_enabled=False)
     if v.startswith("rm"):
         so_mode = "none"
+        beta_mode = "fixed"
         if v.startswith("rm2"):
             so_mode, rest = "uniform", v[3:]
         elif v.startswith("rmq"):
             so_mode, rest = "quad", v[3:]
+        elif v.startswith("rmcl"):
+            beta_mode, rest = "cl", v[4:]
         else:
             rest = v[2:]
         proj = "raw"
@@ -71,7 +79,22 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
         num_str, _, base = rest.partition("_")
         beta, beta2, beta_quad = 0.5, 0.0, 0.5
         gamma, rho_max = None, None
-        if so_mode == "uniform":
+        cl_prior, cl_forget, cl_mu, cl_beta_max = 0.5, 0.85, 1.0, 1.0
+        lambda_eval = "point"
+        if num_str.endswith("mid"):
+            lambda_eval = "mid"
+            num_str = num_str[:-3]
+        if beta_mode == "cl":
+            m = _re.match(r"^([0-9.]+)(?:w([0-9.]+))?(?:m([0-9.]+))?(?:x([0-9.]+))?$", num_str)
+            if m:
+                cl_prior = float(m.group(1))
+                if m.group(2):
+                    cl_forget = float(m.group(2))
+                if m.group(3):
+                    cl_mu = float(m.group(3))
+                if m.group(4):
+                    cl_beta_max = float(m.group(4))
+        elif so_mode == "uniform":
             m = _re.match(r"^([0-9.]+)b([0-9.]+)(?:g([0-9.]+))?(?:r([0-9.]+))?$", num_str)
             if m:
                 beta, beta2 = float(m.group(1)), float(m.group(2))
@@ -97,7 +120,9 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                   rm_oracle_diag=d.get("rm_oracle_diag", False),
                   rm_so_mode=so_mode, rm_beta2=beta2, rm_beta_quad=beta_quad,
                   rm_projection2=d.get("rm_projection2", "raw"),
-                  rm_so_gate_gamma=gamma, rm_so_gate_rho_max=rho_max)
+                  rm_so_gate_gamma=gamma, rm_so_gate_rho_max=rho_max,
+                  rm_beta_mode=beta_mode, rm_cl_prior=cl_prior, rm_cl_forget=cl_forget,
+                  rm_cl_mu=cl_mu, rm_cl_beta_max=cl_beta_max, rm_lambda_eval=lambda_eval)
         v = base
     pc_enabled = False
     pc_alpha = 0.5
@@ -269,6 +294,17 @@ def run_generation(args) -> dict[str, Any]:
                        "method": name, **m, **led.as_dict(),
                        "n_jumps": len(res["jumps"]),
                        "actions": {a: sum(1 for t in res["traces"] if t["action"] == a) for a in ACTIONS}}
+                # E60 closed-loop per-run aggregates (metrics.json only; CSV keeps row-0 keys)
+                cl_obs = [t for t in res["traces"] if "cl_beta_hat" in t]
+                if cl_obs:
+                    row["cl_n_obs"] = len(cl_obs)
+                    row["cl_beta_hat_final"] = cl_obs[-1]["cl_beta_hat"]
+                    row["cl_beta_hat_mean"] = sum(t["cl_beta_hat"] for t in cl_obs) / len(cl_obs)
+                    row["cl_innov_rel_mean"] = sum(t["cl_innov_rel"] for t in cl_obs) / len(cl_obs)
+                    row["cl_frozen_rel_mean"] = sum(t["cl_frozen_rel"] for t in cl_obs) / len(cl_obs)
+                used = [t["rm_beta"] for t in res["traces"] if t.get("rm_beta_mode") == "cl"]
+                if used:
+                    row["rm_beta_used_mean"] = sum(used) / len(used)
                 rows.append(row)
                 # persist trace for timeline/scatter figures
                 (run_dir / "traces" / f"{key}__{name}.json").write_text(json.dumps(

@@ -77,6 +77,13 @@ class FluxCacheState:
         self.r_prev2: torch.Tensor | None = None
         self.sigma_prev2: float | None = None
         self.so_diag: dict | None = None
+        # --- E60 closed-loop residual motion: exponentially-forgetting LS accumulators for the
+        # online secant gain β̂, updated at every fresh anchor (scalars; zero extra forwards).
+        self.cl_num: float = 0.0     # Σ w^age · λ_j⟨Δr_j, y_j⟩/‖Δr_j‖²   (normalized obs)
+        self.cl_den: float = 0.0     # Σ w^age · λ_j²
+        self.cl_n_obs: int = 0
+        self.cl_beta_hat: float | None = None   # UNclamped posterior mean (clamped at use site)
+        self.cl_diag: dict | None = None         # last-refresh innovation diagnostics
 
 
 # ------------------------- E58 residual-motion primitives -------------------------
@@ -153,8 +160,47 @@ def _anchor_triple_diag(r_a: torch.Tensor, r_am1: torch.Tensor, r_am2: torch.Ten
     }
 
 
+def _cl_beta_used(state: "FluxCacheState", cfg) -> float:
+    """The gain a closed-loop cached step would use right now: clamped posterior β̂ (prior when
+    no innovation has been observed yet — the μ-regularized estimate starts at β_prior)."""
+    prior = float(getattr(cfg, "rm_cl_prior", 0.5))
+    bh = state.cl_beta_hat if state.cl_beta_hat is not None else prior
+    return float(min(max(bh, 0.0), float(getattr(cfg, "rm_cl_beta_max", 1.0))))
+
+
+def _cl_update(state: "FluxCacheState", new_res: torch.Tensor, h_filt: torch.Tensor,
+               sigma: float, cfg) -> None:
+    """E60: one innovation observation at a fresh anchor, BEFORE the history shift.
+    Observation model  y_k = r_k − r_{k−1} ≈ β·λ_k·Δr  with Δr = r_{k−1} − r_{k−2};
+    λ_k is the same clamped progress coefficient the predictor would have used at σ_k.
+    Each observation is normalized by ‖Δr‖² (so μ is dimensionless, weight ∝ λ²):
+      num += λ⟨Δr,y⟩/‖Δr‖²,  den += λ²,  β̂ = (μ·β_prior + num)/(μ + den)."""
+    beta_used = _cl_beta_used(state, cfg)      # innovation of the predictor actually in force
+    lam_k = _rm_lambda(state, h_filt, sigma, cfg)[0]
+    dr = (state.prev_residual - state.r_prev).float()
+    y = (new_res.float() - state.prev_residual.float())
+    dr2 = float((dr * dr).sum().item()) + 1e-12
+    beta_obs = float((dr.flatten() @ y.flatten()).item()) / dr2   # per-anchor LS β
+    w = float(getattr(cfg, "rm_cl_forget", 0.85))
+    state.cl_num = w * state.cl_num + lam_k * beta_obs
+    state.cl_den = w * state.cl_den + lam_k * lam_k
+    state.cl_n_obs += 1
+    mu = float(getattr(cfg, "rm_cl_mu", 1.0))
+    prior = float(getattr(cfg, "rm_cl_prior", 0.5))
+    state.cl_beta_hat = (mu * prior + state.cl_num) / (mu + state.cl_den)
+    e = y - (beta_used * lam_k) * dr
+    rk_l1 = float(new_res.abs().float().sum().item()) + 1e-8
+    state.cl_diag = {
+        "cl_beta_obs": beta_obs, "cl_beta_hat": float(state.cl_beta_hat),
+        "cl_beta_used_pre": beta_used, "cl_lambda_obs": float(lam_k),
+        "cl_n_obs": state.cl_n_obs,
+        "cl_innov_rel": float(e.abs().sum().item()) / rk_l1,
+        "cl_frozen_rel": float(y.abs().sum().item()) / rk_l1,   # innovation of β=0 (ZOH)
+    }
+
+
 def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float,
-                     image_ids: torch.Tensor, cfg):
+                     image_ids: torch.Tensor, cfg, sigma_target: float | None = None):
     """Predict the moved residual and return (r_pred, diag).
 
     First order (E58):        r_pred = r_anchor + β1·λ·P1(Δr_a)
@@ -166,8 +212,17 @@ def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float
     r_anchor = state.prev_residual
     dr = r_anchor - state.r_prev
     P = _project_residual(dr, image_ids, sigma, cfg)
-    lam, lam_s, lam_a, lam_h = _rm_lambda(state, h_filt, sigma, cfg)
-    beta = float(getattr(cfg, "rm_beta", 0.5))
+    lam_pt, lam_s, lam_a, lam_h = _rm_lambda(state, h_filt, sigma, cfg)
+    # E60 midpoint-λ: evaluate the progress coefficient at the stride midpoint so the cached
+    # step's velocity is a midpoint-rule quadrature of the moving residual path r(σ).
+    lambda_eval = getattr(cfg, "rm_lambda_eval", "point")
+    if lambda_eval == "mid" and sigma_target is not None:
+        lam = _rm_lambda(state, h_filt, 0.5 * (sigma + float(sigma_target)), cfg)[0]
+    else:
+        lam = lam_pt
+    # E60 closed-loop gain: β̂ from the online innovation fit instead of the fixed rm_beta
+    beta_mode = getattr(cfg, "rm_beta_mode", "fixed")
+    beta = _cl_beta_used(state, cfg) if beta_mode == "cl" else float(getattr(cfg, "rm_beta", 0.5))
     denom = float(r_anchor.abs().float().sum().item()) + 1e-8
     secant_norm = float(P.abs().float().sum().item()) / denom
     motion = beta * lam * P
@@ -222,6 +277,13 @@ def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float
         "rm_lambda_sigma": lam_s, "rm_lambda_age": lam_a, "rm_lambda_h": lam_h,
         "rm_residual_secant_norm": secant_norm, "rm_residual_extrapolation_ratio": extrap_ratio,
     }
+    if beta_mode == "cl" or lambda_eval != "point":   # E60 fields
+        diag.update({
+            "rm_beta_mode": beta_mode, "rm_lambda_eval": lambda_eval,
+            "rm_lambda_point": lam_pt,
+            "rm_cl_beta_hat": (None if state.cl_beta_hat is None else float(state.cl_beta_hat)),
+            "rm_cl_n_obs": state.cl_n_obs,
+        })
     if so_mode != "none":
         diag.update({
             "rm_so_mode": so_mode, "rm_beta2": beta2, "rm_so_used": so_used,
@@ -252,13 +314,17 @@ def _rm_event_kv(rm_diag, feat, cfg) -> dict[str, Any]:
         kv.update({k: rm_diag.get(k) for k in
                    ("rm_so_mode", "rm_beta2", "rm_so_used", "rm_so_gated_off", "rm_so_coeff",
                     "rm_so_term_ratio", "so_rho2", "so_cos_delta", "so_rho_anchor")})
+    if "rm_beta_mode" in rm_diag:   # E60 closed-loop fields
+        kv.update({k: rm_diag.get(k) for k in
+                   ("rm_beta_mode", "rm_lambda_eval", "rm_lambda_point",
+                    "rm_cl_beta_hat", "rm_cl_n_obs")})
     return kv
 
 
 @torch.no_grad()
 def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_ids,
                sigma: float, do_full: bool, state: FluxCacheState,
-               rm_cfg=None, ledger=None):
+               rm_cfg=None, ledger=None, sigma_target: float | None = None):
     """Run one FLUX forward. Returns (velocity, filtered_h, ran_full, rm_diag).
 
     rm_cfg (E58): when set with rm_enabled, a cached forward uses a predicted (moved) block
@@ -293,7 +359,8 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
     rm_diag = None
     if (not do_full) and state.prev_residual is not None:
         if rm_on and state.r_prev is not None:
-            r_pred, rm_diag = _residual_motion(state, h_filt, sigma, image_ids, rm_cfg)
+            r_pred, rm_diag = _residual_motion(state, h_filt, sigma, image_ids, rm_cfg,
+                                               sigma_target=sigma_target)
             if ledger is not None:
                 ledger.record_resmotion(cancelled=rm_diag["rm_was_cancelled"],
                                         so_used=rm_diag.get("rm_so_used", False),
@@ -315,6 +382,11 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
         cur = _full_stack(hs)
         new_res = (cur - ori).detach()
         if rm_on and state.prev_residual is not None:
+            # E60 closed-loop: absorb this anchor's innovation into β̂ BEFORE the history shift
+            # (needs the outgoing pair r_{k-1}, r_{k-2} plus the new residual r_k)
+            if (getattr(rm_cfg, "rm_beta_mode", "fixed") == "cl"
+                    and state.r_prev is not None):
+                _cl_update(state, new_res, h_filt, sigma, rm_cfg)
             # shift fresh-residual history for the secant (penultimate ← previous anchor);
             # E59 second-order additionally keeps the third anchor r_{a-2}
             if getattr(rm_cfg, "rm_so_mode", "none") != "none":
@@ -456,9 +528,21 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
         # --- execute the chosen forward exactly once ---
         cfg = getattr(policy, "cfg", None)
         do_full = (action == "fresh")
+        # E60 midpoint-λ needs the step's intended endpoint BEFORE the forward; mirror the
+        # scheduler's target computation below (a PC 'shrink' would move it afterwards, but
+        # PC and RM are never combined in any variant).
+        prov_target = sigma_next
+        if action.startswith("jump"):
+            jf_prov = adaptive_jf if adaptive_jf is not None else JUMP_FACTORS[action]
+            if (adaptive_jf is None and cfg is not None
+                    and getattr(cfg, "jump_mode", "regrid") == "drop"):
+                prov_target = sigmas[min(i + 2, len(sigmas) - 1)]
+            else:
+                prov_target = max(0.0, sigma + jf_prov * (sigma_next - sigma))
         v, _hf, ran_full, rm_diag = _flux_node(pipe, tr, latents, timestep, guidance_t, ppe, pe,
                                                text_ids, image_ids, sigma, do_full, state,
-                                               rm_cfg=cfg, ledger=ledger)
+                                               rm_cfg=cfg, ledger=ledger,
+                                               sigma_target=prov_target)
 
         # --- scheduler update ---
         skipped = 0
@@ -584,6 +668,10 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
               and state.so_diag is not None):
             # E59: anchor-triple curvature diagnostics logged at the fresh anchor that formed them
             trace.update(state.so_diag)
+        if (ran_full and cfg is not None and getattr(cfg, "rm_beta_mode", "fixed") == "cl"
+                and state.cl_diag is not None):
+            # E60: β̂/innovation observation logged at the fresh anchor that produced it
+            trace.update(state.cl_diag)
         traces.append(trace)
         step_index += 1
 

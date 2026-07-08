@@ -216,6 +216,12 @@ class JumpEvent:
     so_rho2: float | None = None
     so_cos_delta: float | None = None
     so_rho_anchor: float | None = None
+    # --- E60 closed-loop residual motion diagnostics; None when disabled ---
+    rm_beta_mode: str | None = None
+    rm_lambda_eval: str | None = None
+    rm_lambda_point: float | None = None
+    rm_cl_beta_hat: float | None = None
+    rm_cl_n_obs: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

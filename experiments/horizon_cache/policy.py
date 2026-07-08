@@ -108,6 +108,20 @@ class HorizonV0Config:
     rm_projection2: str = "raw"      # P2 applied to Δ²r (same options as rm_projection)
     rm_so_gate_gamma: float | None = None    # enable SO only if cos(Δr_a, Δr_{a-1}) > γ
     rm_so_gate_rho_max: float | None = None  # ... and ρ2 = ‖Δ²r‖₁/‖Δr_a‖₁ < ρ_max
+    # --- E60 Closed-Loop Residual Motion ---
+    # Estimate the secant gain β ONLINE per trajectory from the refresh innovation: at every
+    # fresh anchor r_k the previous anchor pair implies a forecast r̂_k = r_{k-1} + β·λ_k·Δr;
+    # exponentially-forgetting regularized LS over anchors (each obs normalized by ‖Δr‖²):
+    #   β̂ = (μ·β_prior + Σ w^age λ_j⟨Δr_j,y_j⟩/‖Δr_j‖²) / (μ + Σ w^age λ_j²),  clamp [0, β_max]
+    # β̂→0 where the secant is stale recovers plain HorizonCache by construction. NO extra forward.
+    rm_beta_mode: str = "fixed"      # "fixed" (E58, uses rm_beta) | "cl" (E60 online β̂)
+    rm_cl_prior: float = 0.5         # β_prior (the E58 population value)
+    rm_cl_mu: float = 1.0            # prior strength μ (units of λ² per normalized observation)
+    rm_cl_forget: float = 0.85       # exponential forgetting w on past anchor observations
+    rm_cl_beta_max: float = 1.0      # clamp β̂ ∈ [0, β_max]
+    # λ evaluation point for the motion term: "point" = left endpoint σ_i (E58);
+    # "mid" = stride midpoint (σ_i+σ_target)/2 — midpoint-rule quadrature of the moving residual.
+    rm_lambda_eval: str = "point"    # "point" | "mid"
 
     def headroom(self, acc: float) -> float:
         return max(0.0, 1.0 - acc / max(1e-9, self.tau_cache))
