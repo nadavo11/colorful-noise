@@ -1189,4 +1189,51 @@ EXPERIMENTS = [
             "(5) A learned residual-motion predictor (small MLP on the secant + sigma) if the linear secant leaves gains on the table.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_58.md",
      "results": None, "image": None},
+
+    {"id": "E59", "title": "Second-order residual hold + extreme-speed SeaCache comparison",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 -> consolidation "
+               "N=100 x2 seeds = 200 paired (tau 0.3..1.4, ~11k sampler runs) + N=4 oracle stage, cluster H100 (Run:AI)",
+     "status": "done",
+     "motivation": "Two questions after E58. (1) Does Residual Motion benefit from a SECOND-ORDER hold -- a curvature term on "
+                   "the residual secant from three fresh anchors (uniform Newton-backward r_a + b1*lam*P1(dr) + "
+                   "b2*lam(lam+1)/2*P2(d2r), or an exact nonuniform Lagrange quadratic in sigma)? (2) How far up the speed axis "
+                   "(2x..5x+) do SeaCache / plain HorizonCache / first-order RM stay competitive -- where does every method "
+                   "break? Same terms as E56/E58: no extra forwards, matched achieved speedup, paired bootstrap.",
+     "method": "b2=0 recovers E58 BIT-IDENTICALLY (unit-tested: test_e59_math.py also proves quadratic exactness of both SO "
+               "forms + gate behavior). Variant grammar rm2<proj><b1>b<b2>[g<gamma>][r<rhomax>]_<base> (uniform), "
+               "rmq<proj><bq>_<base> (Lagrange quad). Anchor-triple curvature diagnostics logged at every refresh: "
+               "rho2=|d2r|/|dr| (curvature/velocity), cos_delta=cos(dr_a, dr_{a-1}) (directional stability); optional gate "
+               "enables the curvature term only if cos_delta>gamma and rho2<rho_max. Extended tau grid to 1.4 so the SeaCache "
+               "frontier is measured (not extrapolated) to its top; E59 speed bands 1.8-2.2 .. 4.8-5.2, >5.2. Analysis "
+               "so_analysis.py, report so_report.py.",
+     "result": "SECOND ORDER: KILL, with the assumption measured false -- over 11,178 fresh-anchor triples rho2 p50=1.37 "
+               "(the second difference is NEVER smaller than the first: residual curvature is noise at anchor spacing) and "
+               "cos_delta p50=0.10 (consecutive secants nearly orthogonal). At N=200 paired, SO-FO is -0.08* to -0.19* in most "
+               "bands (best +0.04*, trivial), LPIPS worse at high tau, and the ORACLE shows the curvature term strictly worsens "
+               "pointwise residual error (FO -13.4%/-26.0% at tau 0.65/1.0; SO -21.1%/-36.3%). The Lagrange quad collapses at "
+               "speed (-5.9* @5.2x, smoke); the cos/rho gate NEVER fires (correctly -- nothing passes it). "
+               "EXTREME SPEED: the HorizonCache family is above SeaCache in EVERY measured band 1.8x-5.3x (all CI excl 0): "
+               "plain/FO vs sea = +1.37/+2.41 (1.8-2.2x), +2.00/+2.90 (2.3-2.7x), +0.77/+0.86 (2.8-3.2x), +1.86/+2.29 "
+               "(3.3-3.7x), +0.34/+0.26 (3.8-4.2x), +1.55/+1.31 (4.3-4.7x), +0.95/+0.64 (4.8-5.2x, conservative), -0.20*/+0.53 "
+               "(>5.2x, conservative). STRUCTURAL FINDING: SeaCache's own frontier tops out at 4.39x on the swept grid -- its "
+               "tau->speedup mapping is integer-quantized (tau 1.0->1.2 moves speed +0.02x) -- while jumps remove nodes and "
+               "reach 5.30x; bands >4.4x are conservative comparisons vs sea's fastest attained point. HONEST RM CUTOFF: "
+               "paired FO-plain reproduces E58 exactly through 3.4x (+0.96*..+0.43*) then INVERTS: -0.13 @3.87x (ns), -0.26* "
+               "@4.47x, -0.42* @5.30x, -0.97* @tau1.4 -- the secant nudge significantly HURTS beyond ~4.3x (anchors too "
+               "sparse). BONUS: E58's 3.4x margin (+0.26) was clamped at its sea-grid edge (sea t0.65 = 3.00x; replicated "
+               "+0.23); with the frontier measured, the honest 3.4x margin is +2.29 [1.93, 2.68] -- E58 understated ~9x.",
+     "verdict": "Second-order residual hold KILL (uniform -0.08*..-0.19* vs FO, quad KILL, gated no-op; rho2>1 everywhere and "
+                "cos_delta~0.1 mean there is no curvature signal to exploit; first-order already captures the useful drift). "
+                "First-order RM at extreme speed STRONG KEEP, BAND-LIMITED: use RM at <=3.5x, plain HorizonCache beyond "
+                "(RM-plain reverses at >=4.3x). Family-level: HorizonCache beats SeaCache in every measured band to 5.3x and "
+                "extends the reachable frontier past SeaCache's 4.39x quantization ceiling.",
+     "nxt": "E60 -- Closed-Loop Residual Motion (docs/methods/closed_loop_residual_motion.md): E59 killed higher-order terms; "
+            "the remaining lever is the FIXED GAIN. The sampler measures the true residual at every refresh, so the innovation "
+            "e_k = r_k - r_hat(sigma_k) is a free causal per-trajectory signal nothing uses. Estimate beta online "
+            "(exponentially-forgetting RLS over anchors = 1-parameter Kalman filter on residual drift) and evaluate lambda at "
+            "the stride midpoint (midpoint quadrature of the moving residual). beta_hat -> 0 where the secant is stale (>=4.3x) "
+            "recovers plain BY CONSTRUCTION -- the band-limited rule E59 measured, without hand-tuning. Zero extra forwards; "
+            "falsifiable (beta_hat ~0.5 in 2-2.7x, ->0 above 4x). Then SD3 (MMDiT harness) remains the transfer question.",
+     "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_59.md",
+     "results": None, "image": None},
 ]

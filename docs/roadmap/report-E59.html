@@ -1,0 +1,158 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E59 — Second-order residual hold + extreme-speed SeaCache comparison</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_59.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E59 — Second-Order Residual Hold + Extreme-Speed SeaCache Comparison</h1>
+<p><strong>Thread:</strong> fast-edit (caching line) · <strong>Status:</strong> done · <strong>Verdicts:</strong> second-order residual hold <strong>KILL</strong> ·
+first-order RM at extreme speed <strong>STRONG KEEP (band-limited: RM ≤ ~3.4×, plain beyond)</strong> ·
+<strong>Models:</strong> FLUX.1-dev (4-bit), 512 px, 28 Euler steps; smoke N=8 → <strong>consolidation N=100 × 2 seeds = 200
+paired</strong> (τ ∈ {0.3…1.4}, ~11 k sampler runs) + N=4 oracle stage, cluster H100 (Run:AI). Canonical-fixture v1 +
+deterministic GenEval extras. Protocol identical to E56/E58 (matched achieved speedup, paired percentile bootstrap).</p>
+<blockquote>
+<p><strong>Headline 1 (second order).</strong> Adding a curvature term to the Residual Motion secant — uniform Newton-backward
+<code>r_a + β₁λP₁(Δr) + β₂·λ(λ+1)/2·P₂(Δ²r)</code> or an exact nonuniform Lagrange quadratic — <strong>does not work, and the
+diagnostic says why</strong>: over 11,178 fresh-anchor triples, <strong>ρ₂ = ‖Δ²r‖/‖Δr‖ has p50 = 1.37</strong> (the second
+difference is <em>never</em> smaller than the first — curvature is noise at anchor spacing) and <strong>cosΔ p50 = 0.10</strong>
+(consecutive secants nearly orthogonal). At N=200: SO−FO is −0.08<em> to −0.19</em> in most bands (best point +0.04<em>,
+trivial), quad collapses at speed (−5.9</em> @5.2×, smoke), and a cosΔ/ρ₂ gate <em>never opens</em> — correctly. <strong>KILL.</strong></p>
+<p><strong>Headline 2 (extreme speed).</strong> With the SeaCache τ grid extended to 1.4, the HorizonCache family stays <strong>above
+SeaCache in every measured band from 1.8× to 5.3×</strong> (all 95 % CIs exclude 0) — and the comparison reveals a
+structural asymmetry: <strong>SeaCache's own frontier tops out at 4.39×</strong> on the swept grid (its τ→speedup mapping is
+integer-quantized: τ 1.0→1.2 moves speed by +0.02×) while the jump mechanism reaches <strong>5.30×</strong> at the same τ.
+Bands beyond 4.4× are therefore conservative comparisons against SeaCache's fastest attained point.</p>
+<p><strong>Headline 3 (the honest RM cutoff).</strong> The paired FO−plain ablation reproduces E58 exactly through 3.4×
+(+0.96<em>, +0.88</em>, +0.54<em>, +0.19</em>, +0.43<em>) and then </em><em>inverts</em><em>: −0.13 @3.87× (ns), </em><em>−0.26</em> @4.47×, −0.42<em> @5.30×,
+−0.97</em> @τ=1.4<strong>. The residual-motion nudge helps up to ~3.4×, is neutral at ~3.9×, and </strong>significantly hurts
+beyond ~4.3×** — with hyper-sparse anchors the secant itself is stale. Recommended operating rule: RM on ≤3.5×,
+plain HorizonCache beyond.</p>
+</blockquote>
+<h2>Bonus finding: E58's 3.4× margin was understated ~9×</h2>
+<p>E58 reported RM +0.26 dB vs SeaCache at 3.40×. That comparison was <strong>clamped at the edge of E58's SeaCache grid</strong>
+(sea τ=0.65 achieves 3.00×; the per-image interpolation clamps beyond the last point — replicated here: +0.23).
+With the frontier actually measured to 4.39×, SeaCache's true curve falls off a cliff between 3.0× and 3.4×
+(23.06 → 21.12 dB), so the honest margin at 3.40× is <strong>+2.29 dB [CI +1.93, +2.68]</strong>. E58's conservative-by-design
+edge handling hid most of its own win.</p>
+<h2>Method</h2>
+<p>Implemented in <code>experiments/horizon_cache/</code> on top of E58 (β₂=0 is <strong>bit-identical</strong> to E58 — unit-tested in
+<code>test_e59_math.py</code>, which also proves quadratic exactness of both SO forms and gate behavior):</p>
+<ul>
+<li><strong>Uniform second-order hold</strong> (<code>rm2&lt;proj&gt;&lt;β1&gt;b&lt;β2&gt;[g&lt;γ&gt;][r&lt;ρmax&gt;]_&lt;base&gt;</code>): Newton backward difference on the
+  three most recent fresh residual anchors; exact for quadratic residual motion at uniform anchor spacing.</li>
+<li><strong>Nonuniform quadratic</strong> (<code>rmq&lt;proj&gt;&lt;βq&gt;_&lt;base&gt;</code>): damped Lagrange quadratic through (σ_k, r_k), exact for
+  arbitrary anchor spacing.</li>
+<li><strong>Gate</strong>: enable curvature only if cosΔ &gt; γ and ρ₂ &lt; ρ_max (anchor-triple statistics, computed at refresh).</li>
+<li><strong>Diagnostics</strong> logged per refresh (ρ₂, cosΔ, ρ_anchor) and per application (β₁, β₂, λ, λ(λ+1)/2, term ratios).</li>
+<li>Still <strong>no extra forward</strong>; ledger counts SO applications separately. Analysis <code>so_analysis.py</code>, report
+  <code>so_report.py</code>; E59 speed bands 1.8–2.2 … 4.8–5.2, &gt;5.2.</li>
+</ul>
+<h2>Results (N=200 paired unless noted)</h2>
+<p><strong>Δ PSNR vs SeaCache at matched achieved speedup, best per family (all CI exclude 0):</strong></p>
+<table>
+<thead>
+<tr>
+<th>band</th>
+<th>plain</th>
+<th>first-order RM</th>
+<th>second-order RM</th>
+<th>SO−FO (paired)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.8–2.2×</td>
+<td>+1.37</td>
+<td><strong>+2.41</strong></td>
+<td>+2.33</td>
+<td>−0.08*</td>
+</tr>
+<tr>
+<td>2.3–2.7×</td>
+<td>+2.00</td>
+<td><strong>+2.90</strong></td>
+<td>+2.86</td>
+<td>−0.01</td>
+</tr>
+<tr>
+<td>2.8–3.2×</td>
+<td>+0.77</td>
+<td><strong>+0.86</strong></td>
+<td>+0.73</td>
+<td>−0.13*</td>
+</tr>
+<tr>
+<td>3.3–3.7×</td>
+<td>+1.86</td>
+<td><strong>+2.29</strong></td>
+<td>+2.23</td>
+<td>−0.03</td>
+</tr>
+<tr>
+<td>3.8–4.2×</td>
+<td><strong>+0.34</strong></td>
+<td>+0.26</td>
+<td>+0.29</td>
+<td>+0.04*</td>
+</tr>
+<tr>
+<td>4.3–4.7×</td>
+<td><strong>+1.55</strong></td>
+<td>+1.31</td>
+<td>+1.14</td>
+<td>−0.14*</td>
+</tr>
+<tr>
+<td>4.8–5.2× †</td>
+<td><strong>+0.95</strong></td>
+<td>+0.64</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>&gt;5.2× †</td>
+<td>−0.20*</td>
+<td><strong>+0.53</strong></td>
+<td>+0.40</td>
+<td>−0.14*</td>
+</tr>
+</tbody>
+</table>
+<p>† beyond the swept SeaCache frontier (sea max 4.39×); conservative comparison vs its fastest attained point.
+LPIPS: FO better than SeaCache at every τ (CI+ everywhere except the saturated τ=1.4 point). The zigzag between
+bands is SeaCache's own cliff-and-plateau curve, not method noise.</p>
+<p><strong>Oracle (N=4, pointwise residual error, negative = motion worse than frozen):</strong> FO −13.4 % @τ0.65, −26.0 % @τ1.0;
+<strong>SO −21.1 % / −36.3 %</strong> — the curvature term strictly worsens pointwise prediction. Consistent with E58's
+mechanism: the PSNR gain is accumulated-drift correction, not per-step prediction, and there is no second-order
+signal to exploit.</p>
+<p><strong>Second-order assumption diagnostic:</strong> ρ₂ p50 = 1.37 (p5 = 1.06 in smoke — never below 1), cosΔ p50 = 0.10;
+corr(ρ₂, SO−FO gain) = −0.03, corr(cosΔ, gain) = +0.07 — the diagnostic has no predictive power because there is
+nothing to predict. The γ=0.25/ρ_max=0.5 gate never fired once in the smoke (SO−FO ≡ 0.000).</p>
+<h2>Verdicts</h2>
+<ul>
+<li><strong>Second-order RM (uniform Δ²): KILL.</strong> Loses to FO significantly in-band (−0.08<em>, −0.13</em>), at extreme speed
+  (−0.14<em>, −0.19</em>), worsens LPIPS at high τ, worsens the pointwise oracle, and its enabling assumption is
+  measured false. Cause (in the E59 failure-mode taxonomy): <em>curvature term is noise</em> (ρ₂ &gt; 1 everywhere),
+  <em>cosΔ shows unstable residual direction</em>, and <em>first-order already captures the useful drift</em>.</li>
+<li><strong>Quad (Lagrange): KILL</strong> (smoke; −5.9* @5.2× — undamped quadratic through noisy anchors over-extrapolates).</li>
+<li><strong>Gated SO: KILL as a method, correct as a diagnostic</strong> — the gate never authorizes the term.</li>
+<li><strong>First-order RM at extreme speed: STRONG KEEP, band-limited.</strong> vs SeaCache the family is CI-positive in every
+  measured band to 5.3×; but RM's own paired benefit ends at ~3.4× and <em>reverses</em> past ~4.3×, where plain
+  HorizonCache is the right member of the family. β must fall to ~0 at extreme speed → E60 proposal.</li>
+</ul>
+<h2>Next (E60 proposal): Closed-Loop Residual Motion</h2>
+<p>E59's diagnosis: the failure at speed is not a missing higher-order term (killed here) but the <strong>fixed gain</strong>.
+The sampler measures the true residual at every refresh, so the innovation e_k = r_k − r̂(σ_k) is a free, causal,
+per-trajectory signal nothing uses. Estimate β online (exponentially-forgetting RLS over anchors — a 1-parameter
+Kalman filter on residual drift), evaluate λ at the stride midpoint (midpoint-rule quadrature of the moving
+residual). Where drift is coherent β̂ rises; where the secant is stale (≥4.3×) β̂→0 and the method recovers plain
+HorizonCache <strong>by construction</strong> — exactly the band-limited rule E59 measured, without hand-tuning. Zero extra
+forwards. Falsifiable: β̂ should center near 0.5 in 2–2.7× and fall toward 0 above 4×. Full note:
+<code>docs/methods/closed_loop_residual_motion.md</code>.</p>
+<h2>Artifacts</h2>
+<ul>
+<li>Report: <code>reports/horizon_cache_second_order_extreme.html</code> ·
+  <code>reports/horizon_cache_second_order_extreme_summary.{md,json}</code> ·
+  assets <code>reports/horizon_cache_second_order_extreme_assets/</code></li>
+<li>Runs: consolidation <code>results/horizon_so_consol/gen_20260708_143608</code> (N=200 paired, 11 k runs) ·
+  smoke <code>results/horizon_so_smoke/gen_20260708_141648</code> (N=8, 568 runs, all images saved) ·
+  oracle <code>results/horizon_so_oracle/gen_20260708_182803</code> ·
+  cluster <code>runs/runai/20260708_170921__horizon_so_e59_smoke__0be0abc/</code>,
+  <code>runs/runai/20260708_173401__horizon_so_e59_consol__b9a72b5/</code></li>
+<li>Code: <code>experiments/horizon_cache/{flux_gen,scheduler,policy,run,so_analysis,so_report,test_e59_math}.py</code> ·
+  manifest <code>experiments/manifests/E59.json</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_59.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

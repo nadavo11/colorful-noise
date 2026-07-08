@@ -1,0 +1,130 @@
+{
+  "eid": "E59",
+  "logged": "2026-07-08",
+  "git_commit": "916c6c9",
+  "source": "run",
+  "script": "experiments/horizon_cache/run.py",
+  "results_dir": "results/horizon_so_consol/gen_20260708_143608",
+  "config": {
+    "model": "FLUX.1-dev 4-bit bf16, 512px, 28 Euler steps",
+    "fixture": "canonical_prompts v1 + geneval extras",
+    "consolidation": {
+      "n": 100,
+      "seeds_per_prompt": 2,
+      "paired": 200,
+      "tau_grid": [
+        0.3,
+        0.4,
+        0.5,
+        0.575,
+        0.65,
+        0.8,
+        1.0,
+        1.2,
+        1.4
+      ],
+      "variants": [
+        "adaptive_1.25",
+        "adaptive_1.5",
+        "rmraw0.5_adaptive_1.25",
+        "rmraw0.5_adaptive_1.5",
+        "rm2raw0.5b0.1_adaptive_1.25"
+      ]
+    },
+    "smoke": {
+      "n": 8,
+      "tau_grid": [
+        0.3,
+        0.5,
+        0.575,
+        0.65,
+        0.8,
+        1.0,
+        1.2
+      ],
+      "so_variants": [
+        "rm2raw0.5b0.05",
+        "rm2raw0.5b0.1",
+        "rm2raw0.5b0.25",
+        "rm2raw0.5b0.1g0.25r0.5",
+        "rmqraw0.5"
+      ]
+    },
+    "oracle": {
+      "n": 4,
+      "tau_grid": [
+        0.65,
+        1.0
+      ]
+    },
+    "rm_lambda_mode": "sigma",
+    "rm_lambda_max": 1.5,
+    "jump_mode": "regrid",
+    "cluster": "Run:AI H100, jobs horizon-e59-so-smoke-0be0abc + horizon-e59-so-consol-b9a72b5"
+  },
+  "metrics": {
+    "verdicts": {
+      "second_order_rm": "KILL",
+      "quad_rm": "KILL(smoke)",
+      "gated_so": "no-op (gate never fires)",
+      "first_order_rm_extreme": "STRONG_KEEP band-limited (<=3.5x)"
+    },
+    "so_minus_fo_n200": {
+      "t0.3": -0.084,
+      "t0.575": -0.127,
+      "t0.8": 0.041,
+      "t1.0": -0.143,
+      "t1.2": -0.135,
+      "t1.4": -0.19
+    },
+    "vs_seacache_by_band_fo": {
+      "1.8-2.2x": 2.407,
+      "2.3-2.7x": 2.9,
+      "2.8-3.2x": 0.864,
+      "3.3-3.7x": 2.291,
+      "3.8-4.2x": 0.264,
+      "4.3-4.7x": 1.313,
+      "4.8-5.2x": 0.643,
+      ">5.2x": 0.533
+    },
+    "fo_minus_plain_inversion": {
+      "t0.65_3.40x": 0.425,
+      "t0.8_3.87x": -0.127,
+      "t1.0_4.47x": -0.262,
+      "t1.4_5.30x": -0.972
+    },
+    "diagnostics": {
+      "rho2_p50": 1.37,
+      "cos_delta_p50": 0.1,
+      "n_anchor_triples": 11178
+    },
+    "oracle_rel_reduction": {
+      "fo_t0.65": -0.134,
+      "fo_t1.0": -0.26,
+      "so_t0.65": -0.211,
+      "so_t1.0": -0.363
+    },
+    "seacache_max_speedup_swept": 4.385,
+    "horizon_max_speedup": 5.3,
+    "e58_3.4x_margin_revision": {
+      "e58_clamped": 0.26,
+      "measured": 2.29,
+      "ci": [
+        1.93,
+        2.68
+      ]
+    }
+  },
+  "artifacts": [
+    "reports/horizon_cache_second_order_extreme.html",
+    "reports/horizon_cache_second_order_extreme_summary.md",
+    "reports/horizon_cache_second_order_extreme_summary.json",
+    "reports/horizon_cache_second_order_extreme_assets/",
+    "results/horizon_so_consol/gen_20260708_143608",
+    "results/horizon_so_smoke/gen_20260708_141648",
+    "results/horizon_so_oracle/gen_20260708_182803",
+    "runs/runai/20260708_170921__horizon_so_e59_smoke__0be0abc",
+    "runs/runai/20260708_173401__horizon_so_e59_consol__b9a72b5",
+    "docs/methods/closed_loop_residual_motion.md"
+  ]
+}

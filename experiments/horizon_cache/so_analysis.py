@@ -136,6 +136,33 @@ def so_diagnostics(gen: Path, tau_grid):
             "scatter": {"rho2": xs_rho, "cos_delta": xs_cos, "so_minus_fo_psnr": ys}}
 
 
+def oracle_by_family(gen: Path):
+    """Oracle residual errors split FO vs SO and by τ (reads --rm-oracle traces)."""
+    tdir = gen / "traces"
+    if not tdir.exists():
+        return {"available": False}
+    res = collections.defaultdict(lambda: [[], []])
+    for tp in sorted(tdir.glob("*.json")):
+        name = tp.name
+        v = name.split("__")[-1]
+        fam = "so" if v.startswith("horizon_rm2") or v.startswith("horizon_rmq") else "fo"
+        tau = name[name.rfind("_t") + 2:].replace(".json", "")
+        for t in json.loads(tp.read_text()).get("traces", []):
+            fe, me = t.get("rm_oracle_frozen_err"), t.get("rm_oracle_motion_err")
+            if fe is not None and me is not None:
+                res[(fam, tau)][0].append(fe)
+                res[(fam, tau)][1].append(me)
+    if not res:
+        return {"available": False}
+    rows = []
+    for (fam, tau), (f, m) in sorted(res.items()):
+        fz, mo = float(np.mean(f)), float(np.mean(m))
+        rows.append({"family": fam, "tau": tau, "n": len(f), "frozen_err": round(fz, 4),
+                     "motion_err": round(mo, 4),
+                     "relative_reduction": round((fz - mo) / (fz + 1e-9), 4)})
+    return {"available": True, "rows": rows}
+
+
 # --------------------------------------------------------------- summary
 def summarize(gen: Path, tau_grid):
     df = pd.read_csv(gen / "metrics.csv")
@@ -159,6 +186,11 @@ def summarize(gen: Path, tau_grid):
                             "psnr": float(sub.psnr.mean()),
                             "lpips": float(sub.lpips.mean()) if "lpips" in df.columns else None})
     out["seacache_points"] = sea_pts
+    # SeaCache's reach: max achieved speedup on its own grid. Bands beyond this are
+    # NOT REACHABLE by SeaCache (integer refresh-count floor); per-image interpolation
+    # clamps to the last sea point there, so method deltas are CONSERVATIVE (the method
+    # is strictly faster than the sea point it is compared against).
+    out["seacache_max_speedup"] = max((p["speedup"] for p in sea_pts), default=None)
 
     # per-method per-τ aggregate points (for the frontier figure + band assignment)
     for v in variants:
@@ -222,6 +254,8 @@ def summarize(gen: Path, tau_grid):
                                   "ci": [round(best_sf["ci"][0], 3), round(best_sf["ci"][1], 3)],
                                   "excl0": best_sf["excl0"], "win": round(best_sf["win"], 3)}
         if len(row) > 1:
+            row["seacache_reachable"] = (out["seacache_max_speedup"] is not None
+                                         and lo <= out["seacache_max_speedup"] + 0.05)
             band_rows.append(row)
     out["bands"] = band_rows
 

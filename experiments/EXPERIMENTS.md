@@ -1594,3 +1594,33 @@ topk/sea + a 3.4×+ gate, SD3 replication.
 `results/horizon_rm_oracle_n8/gen_20260707_181928/`, `results/horizon_rm_qual/gen_20260708_055203/`;
 code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,rm_analysis,rm_report}.py`; manifest
 `experiments/manifests/E58.json`; doc `docs/experiment-reports/EXPERIMENT_58.md`.
+
+## E59 — Second-Order Residual Hold + extreme-speed SeaCache comparison (FLUX.1-dev)
+
+**Method.** Two questions on top of E58, same terms (no extra forwards, matched achieved speedup, paired
+bootstrap). (1) Second-order residual hold: a curvature term on the residual secant from three fresh anchors —
+uniform Newton-backward `r_a + β₁λP₁(Δr) + β₂·λ(λ+1)/2·P₂(Δ²r)` (β₂=0 bit-identical to E58, unit-tested) and an
+exact nonuniform Lagrange quadratic in σ; anchor-triple diagnostics (ρ₂=‖Δ²r‖/‖Δr‖, cosΔ) + optional gate.
+(2) Extreme speed: τ grid extended to 1.4 so the SeaCache frontier is *measured* to its top; speed bands
+1.8–2.2×…>5.2×. Smoke N=8 → consolidation N=100×2 = 200 paired (~11 k runs) + N=4 oracle, cluster H100.
+
+**Key result.** **Second order KILL, with the assumption measured false**: ρ₂ p50=1.37 (curvature is noise at
+anchor spacing), cosΔ p50=0.10; SO−FO = −0.08*…−0.19* at N=200 (best +0.04*, trivial); the oracle shows the
+curvature term strictly *worsens* pointwise residual error (SO −21/−36 % vs FO −13/−26 %); Lagrange quad collapses
+(−5.9* @5.2×); the cosΔ/ρ₂ gate never fires (correctly). **Extreme speed**: the HorizonCache family beats SeaCache
+in *every* measured band 1.8–5.3× (all CI+, e.g. FO +2.90 @2.5×, +2.29 @3.4×, +1.31 @4.5×); SeaCache's own
+frontier is integer-quantized and tops out at 4.39× while jumps reach 5.30×. **Honest RM cutoff**: paired FO−plain
+reproduces E58 through 3.4× then inverts — −0.26* @4.47×, −0.97* @τ1.4 → use RM ≤3.5×, plain beyond. **Bonus**:
+E58's +0.26 @3.4× was clamped at its sea-grid edge; measured honestly the margin is +2.29 [1.93, 2.68].
+
+**Verdict.** Second-order residual hold **KILL** (no curvature signal to exploit; first order already captures the
+useful drift). First-order RM at extreme speed **STRONG KEEP, band-limited** (RM ≤3.5×, plain beyond ~4.3×).
+Next: E60 Closed-Loop Residual Motion — online RLS/Kalman gain β̂ from the free refresh innovation + midpoint-λ
+quadrature (`docs/methods/closed_loop_residual_motion.md`); β̂→0 at stale-secant speeds recovers plain by
+construction.
+
+**Artifacts.** `reports/horizon_cache_second_order_extreme.{html,_summary.md,_summary.json}`,
+`reports/horizon_cache_second_order_extreme_assets/`; `results/horizon_so_consol/gen_20260708_143608/`,
+`results/horizon_so_smoke/gen_20260708_141648/`, `results/horizon_so_oracle/gen_20260708_182803/`;
+code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,so_analysis,so_report,test_e59_math}.py`;
+manifest `experiments/manifests/E59.json`; doc `docs/experiment-reports/EXPERIMENT_59.md`.

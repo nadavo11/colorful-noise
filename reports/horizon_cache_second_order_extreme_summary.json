@@ -1,0 +1,243 @@
+{
+  "status": "DONE",
+  "git_commit": "916c6c9",
+  "run_dirs": [
+    "../results/horizon_so_consol/gen_20260708_143608",
+    "../results/horizon_so_smoke/gen_20260708_141648",
+    "../results/horizon_so_oracle/gen_20260708_182803"
+  ],
+  "main_verdict": "first_order_rm_extreme=STRONG_KEEP; second_order_rm=KILL",
+  "headline_claim": "First-order RM (rmraw0.5_adaptive_1.5) vs SeaCache at matched speed: best +2.90 dB @ 2.50\u00d7 (CI [+2.57,+3.23]); highest CI-positive band >5.2x. Second-order \u2212 first-order: best +0.04 dB @ 3.88\u00d7 (rm2raw0.5b0.1_adaptive_1.25, CI [+0.01,+0.08]) \u2192 KILL.",
+  "bounded_claim": "On FLUX 512px/28 the extreme-speed comparison covers ~2\u00d7\u20134.4\u00d7. Plain HorizonCache stays above SeaCache through 4.8-5.2x, first-order RM through >5.2x, second-order RM through >5.2x. Second-order term: \u03c12 p50=1.37 (curvature \u2248 velocity \u2014 second differences are mostly noise); cos\u0394 p50=0.10 (weakly stable); corr(\u03c12, SO\u2212FO gain)=-0.03, corr(cos\u0394, gain)=+0.07 \u2014 the diagnostic does NOT predict when SO helps.",
+  "best_first_order_rm": {
+    "method": "rmraw0.5_adaptive_1.5",
+    "speedup": 2.502,
+    "psnr": 28.613,
+    "lpips": 0.0638,
+    "delta_psnr_vs_seacache": 2.9,
+    "ci95_vs_seacache": [
+      2.57,
+      3.234
+    ],
+    "win_rate_vs_seacache": 0.9
+  },
+  "best_second_order_rm": {
+    "method": "rm2raw0.5b0.1_adaptive_1.25",
+    "beta1": 0.5,
+    "beta2": 0.1,
+    "speedup": 3.883,
+    "psnr": 20.903,
+    "lpips": 0.2099,
+    "delta_psnr_vs_first_order_rm": 0.041,
+    "ci95_vs_first_order_rm": [
+      0.011,
+      0.077
+    ],
+    "delta_psnr_vs_seacache": 0.294,
+    "ci95_vs_seacache": [
+      0.076,
+      0.501
+    ]
+  },
+  "highest_positive_vs_seacache_band": {
+    "seacache": "reference",
+    "plain_horizon": "4.8-5.2x",
+    "first_order_rm": ">5.2x",
+    "second_order_rm": ">5.2x"
+  },
+  "second_order_diagnostic": {
+    "rho2_p50": 1.366394755674858,
+    "rho2_p95": 2.0674333320766665,
+    "cos_delta_p50": 0.09914910254779274,
+    "cos_delta_p05": -0.21681952656132777,
+    "rho2_correlation_with_gain": -0.033109294222503395,
+    "cos_delta_correlation_with_gain": 0.06849707585433568,
+    "n_anchor_triples": 11178,
+    "n_so_applications": 22649,
+    "n_so_gated_off": 0,
+    "interpretation": "\u03c12 p50=1.37 (curvature \u2248 velocity \u2014 second differences are mostly noise); cos\u0394 p50=0.10 (weakly stable); corr(\u03c12, SO\u2212FO gain)=-0.03, corr(cos\u0394, gain)=+0.07 \u2014 the diagnostic does NOT predict when SO helps"
+  },
+  "oracle_residual_by_family": {
+    "available": true,
+    "rows": [
+      {
+        "family": "fo",
+        "tau": "0.65",
+        "n": 52,
+        "frozen_err": 0.324,
+        "motion_err": 0.3673,
+        "relative_reduction": -0.1337
+      },
+      {
+        "family": "fo",
+        "tau": "1",
+        "n": 59,
+        "frozen_err": 0.4993,
+        "motion_err": 0.6291,
+        "relative_reduction": -0.26
+      },
+      {
+        "family": "so",
+        "tau": "0.65",
+        "n": 52,
+        "frozen_err": 0.3263,
+        "motion_err": 0.3951,
+        "relative_reduction": -0.2109
+      },
+      {
+        "family": "so",
+        "tau": "1",
+        "n": 59,
+        "frozen_err": 0.5007,
+        "motion_err": 0.6823,
+        "relative_reduction": -0.3627
+      }
+    ]
+  },
+  "seacache_max_speedup": 4.384599999999999,
+  "speed_band_results": [
+    {
+      "band": "1.8-2.2x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.25",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.25",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": 1.372,
+      "first_order_rm_minus_seacache_delta_psnr": 2.407,
+      "second_order_rm_minus_seacache_delta_psnr": 2.328,
+      "second_order_minus_first_order_delta_psnr": -0.084,
+      "ci95_second_order_minus_first_order": [
+        -0.149,
+        -0.022
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": "2.3-2.7x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.25",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.5",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": 1.999,
+      "first_order_rm_minus_seacache_delta_psnr": 2.9,
+      "second_order_rm_minus_seacache_delta_psnr": 2.863,
+      "second_order_minus_first_order_delta_psnr": -0.013,
+      "ci95_second_order_minus_first_order": [
+        -0.09,
+        0.061
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": "2.8-3.2x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.25",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.25",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": 0.768,
+      "first_order_rm_minus_seacache_delta_psnr": 0.864,
+      "second_order_rm_minus_seacache_delta_psnr": 0.733,
+      "second_order_minus_first_order_delta_psnr": -0.127,
+      "ci95_second_order_minus_first_order": [
+        -0.21,
+        -0.055
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": "3.3-3.7x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.5",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.5",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": 1.861,
+      "first_order_rm_minus_seacache_delta_psnr": 2.291,
+      "second_order_rm_minus_seacache_delta_psnr": 2.231,
+      "second_order_minus_first_order_delta_psnr": -0.035,
+      "ci95_second_order_minus_first_order": [
+        -0.098,
+        0.025
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": "3.8-4.2x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.5",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.5",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": 0.344,
+      "first_order_rm_minus_seacache_delta_psnr": 0.264,
+      "second_order_rm_minus_seacache_delta_psnr": 0.294,
+      "second_order_minus_first_order_delta_psnr": 0.041,
+      "ci95_second_order_minus_first_order": [
+        0.011,
+        0.077
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": "4.3-4.7x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.25",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.5",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": 1.549,
+      "first_order_rm_minus_seacache_delta_psnr": 1.313,
+      "second_order_rm_minus_seacache_delta_psnr": 1.144,
+      "second_order_minus_first_order_delta_psnr": -0.143,
+      "ci95_second_order_minus_first_order": [
+        -0.174,
+        -0.112
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": "4.8-5.2x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.25",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.5",
+      "second_order_rm_best": "",
+      "plain_minus_seacache_delta_psnr": 0.949,
+      "first_order_rm_minus_seacache_delta_psnr": 0.643,
+      "second_order_rm_minus_seacache_delta_psnr": null,
+      "second_order_minus_first_order_delta_psnr": null,
+      "ci95_second_order_minus_first_order": null,
+      "verdict": "FO above SeaCache (CI+)"
+    },
+    {
+      "band": ">5.2x",
+      "seacache_best": "seacache (reference)",
+      "plain_horizon_best": "adaptive_1.5",
+      "first_order_rm_best": "rmraw0.5_adaptive_1.25",
+      "second_order_rm_best": "rm2raw0.5b0.1_adaptive_1.25",
+      "plain_minus_seacache_delta_psnr": -0.2,
+      "first_order_rm_minus_seacache_delta_psnr": 0.533,
+      "second_order_rm_minus_seacache_delta_psnr": 0.398,
+      "second_order_minus_first_order_delta_psnr": -0.135,
+      "ci95_second_order_minus_first_order": [
+        -0.162,
+        -0.108
+      ],
+      "verdict": "FO above SeaCache (CI+)"
+    }
+  ],
+  "verdicts": {
+    "first_order_rm_extreme": "STRONG_KEEP",
+    "second_order_rm": "KILL",
+    "second_order_gated": "not_run"
+  },
+  "key_findings": [
+    "First-order RM (rmraw0.5_adaptive_1.5) vs SeaCache at matched speed: best +2.90 dB @ 2.50\u00d7 (CI [+2.57,+3.23]); highest CI-positive band >5.2x. Second-order \u2212 first-order: best +0.04 dB @ 3.88\u00d7 (rm2raw0.5b0.1_adaptive_1.25, CI [+0.01,+0.08]) \u2192 KILL.",
+    "On FLUX 512px/28 the extreme-speed comparison covers ~2\u00d7\u20134.4\u00d7. Plain HorizonCache stays above SeaCache through 4.8-5.2x, first-order RM through >5.2x, second-order RM through >5.2x. Second-order term: \u03c12 p50=1.37 (curvature \u2248 velocity \u2014 second differences are mostly noise); cos\u0394 p50=0.10 (weakly stable); corr(\u03c12, SO\u2212FO gain)=-0.03, corr(cos\u0394, gain)=+0.07 \u2014 the diagnostic does NOT predict when SO helps."
+  ],
+  "failure_modes": [],
+  "artifacts": {
+    "html_report": "reports/horizon_cache_second_order_extreme.html",
+    "summary_md": "reports/horizon_cache_second_order_extreme_summary.md",
+    "summary_json": "reports/horizon_cache_second_order_extreme_summary.json",
+    "metrics_csv": "../results/horizon_so_consol/gen_20260708_143608/metrics.csv",
+    "figures_dir": "../reports/horizon_cache_second_order_extreme_assets",
+    "samples_dir": "../results/horizon_so_smoke/gen_20260708_141648/samples"
+  }
+}

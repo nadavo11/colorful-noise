@@ -253,9 +253,13 @@ def _fmt_ci(ci):
     return f"[{ci[0]:+.2f},{ci[1]:+.2f}]" if ci and ci[0] is not None else "—"
 
 
-def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, run_dirs=None):
+def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, run_dirs=None,
+          oracle_dir=None):
     df = pd.read_csv(gen / "metrics.csv")
     summ = SA.summarize(gen, tau_grid)
+    if oracle_dir and (Path(oracle_dir) / "traces").exists():
+        summ["oracle"] = RA.oracle_residual(Path(oracle_dir))
+        summ["oracle_by_family"] = SA.oracle_by_family(Path(oracle_dir))
     assets = reports_dir / "horizon_cache_second_order_extreme_assets"
     assets.mkdir(parents=True, exist_ok=True)
     figs = {}
@@ -326,9 +330,15 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
                    order.index(highest["second_order_rm"]) > order.index(highest["first_order_rm"])))
     lpips_reg = any(r["mean_delta"] < -0.002 and r["excl0"]
                     for rows in summ.get("so_minus_fo_lpips", {}).values() for r in rows)
+    # KILL dominates PARK when SO significantly LOSES to FO somewhere and never
+    # significantly wins anywhere (decision rule: "loses to first-order RM").
+    so_loses = any(r["mean_delta"] < -0.05 and r["excl0"] for r in so_rows)
+    so_wins = any(r["mean_delta"] > 0.1 and r["excl0"] for r in so_rows)
     so_verdict = ("not_run" if not so_rows else
                   ("STRONG_KEEP" if ((so_strong or so_extends) and not lpips_reg) else
-                   ("KEEP" if so_keep and not lpips_reg else ("PARK" if so_park else "KILL"))))
+                   ("KEEP" if so_keep and not lpips_reg else
+                    ("KILL" if (so_loses and not so_wins) else
+                     ("PARK" if so_park else "KILL")))))
     fo_verdict = ("STRONG_KEEP" if highest.get("first_order_rm") not in (None, order[0]) else
                   ("KEEP" if highest.get("first_order_rm") else "PARK"))
     gated = [v for v, f2 in summ["families"].items() if f2 == "so" and SA.classify(v)["gamma"] is not None]
@@ -412,8 +422,17 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
         cells.append("—" if not sf else
                      f"<span class='{'pos' if sf['delta_psnr'] > 0 else 'neg'}'>{sf['delta_psnr']:+.2f}</span>"
                      f"{'*' if sf['excl0'] else ''}")
-        H.append(f"<tr><td>{r['band']}</td>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
-    H.append("</table><p class='sub'>* = 95% CI excludes 0. Highest CI-positive band vs SeaCache: "
+        band_lab = r["band"] + ("" if r.get("seacache_reachable", True) else " †")
+        H.append(f"<tr><td>{band_lab}</td>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+    sea_max = summ.get("seacache_max_speedup")
+    H.append("</table><p class='sub'>* = 95% CI excludes 0. "
+             + (f"† = <b>beyond the swept SeaCache frontier</b>: within the swept τ grid SeaCache tops "
+                f"out at {sea_max:.2f}× — its τ→speedup mapping is strongly quantized at the top end "
+                f"(integer refresh counts), while jumps remove nodes and reach ~5.3× at the same τ. In "
+                f"† bands the method is compared against SeaCache's fastest attained point while being "
+                f"strictly faster, so the deltas are conservative; a fair same-speed SeaCache point does "
+                f"not exist on this grid. " if sea_max else "")
+             + "Highest CI-positive band vs SeaCache: "
              + ", ".join(f"{k}: <b>{v or 'none'}</b>" for k, v in highest.items()) + "</p>")
     H.append("<h2>4 · Second-order vs first-order</h2>")
     if "so_minus_fo" in figs:
@@ -424,8 +443,22 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
         H.append(f"<div class='fig'><img src='{du(figs['diagnostics'])}'><div class='cap'>ρ2 and cosΔ "
                  "distributions (per-image means over fresh-anchor triples) and their relation to the "
                  "SO−FO gain.</div></div>")
+    obf = summ.get("oracle_by_family", {})
+    orc_html = ""
+    if obf.get("available"):
+        orc_html = ("<p><b>Oracle residual (pointwise, extreme τ).</b></p><table>"
+                    "<tr><th>predictor</th><th>τ</th><th>frozen err</th><th>motion err</th>"
+                    "<th>rel. reduction</th></tr>")
+        for r in obf["rows"]:
+            orc_html += (f"<tr><td>{'second-order (β₂=0.1)' if r['family'] == 'so' else 'first-order'}</td>"
+                         f"<td>{r['tau']}</td><td>{r['frozen_err']:.3f}</td><td>{r['motion_err']:.3f}</td>"
+                         f"<td class='neg'>{r['relative_reduction']*100:+.1f}%</td></tr>")
+        orc_html += ("</table><p class='sub'>Consistent with E58: motion does NOT reduce the pointwise "
+                     "residual error (the PSNR gain is accumulated-drift correction), and the curvature "
+                     "term makes the pointwise error strictly worse — the second difference is noise.</p>")
     H.append(f"<div class='card'><p>{interpretation or 'No diagnostics collected.'}</p>"
-             + (f"<p>Oracle residual (if run): frozen {orc.get('frozen_residual_error', 0):.3f} vs motion "
+             + orc_html
+             + (f"<p>Aggregate oracle: frozen {orc.get('frozen_residual_error', 0):.3f} vs motion "
                 f"{orc.get('residual_motion_error', 0):.3f}.</p>" if orc.get("available") else "") + "</div>")
     if grids:
         H.append("<h2>6 · Qualitative grids & failure gallery</h2>"
@@ -539,6 +572,8 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
             "n_so_applications": diag["n_so_applications"],
             "n_so_gated_off": diag["n_so_gated_off"],
             "interpretation": interpretation},
+        "oracle_residual_by_family": summ.get("oracle_by_family", {"available": False}),
+        "seacache_max_speedup": summ.get("seacache_max_speedup"),
         "speed_band_results": band_json(),
         "verdicts": {"first_order_rm_extreme": fo_verdict, "second_order_rm": so_verdict,
                      "second_order_gated": gated_verdict},
@@ -583,6 +618,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gen-dir", required=True)
     ap.add_argument("--samples-dir", default="")
+    ap.add_argument("--oracle-dir", default="")
     ap.add_argument("--run-dirs", nargs="*", default=None)
     ap.add_argument("--tau-grid", type=float, nargs="+",
                     default=[0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2])
@@ -590,7 +626,8 @@ def main():
     a = ap.parse_args()
     reports = Path(a.reports_dir); reports.mkdir(parents=True, exist_ok=True)
     sj = build(Path(a.gen_dir), a.tau_grid, reports, git_hash(),
-               samples_dir=a.samples_dir or None, run_dirs=a.run_dirs)
+               samples_dir=a.samples_dir or None, run_dirs=a.run_dirs,
+               oracle_dir=a.oracle_dir or None)
     print(json.dumps({"status": sj["status"], "main_verdict": sj["main_verdict"],
                       "highest_positive_vs_seacache_band": sj["highest_positive_vs_seacache_band"],
                       "best_first_order_rm": sj["best_first_order_rm"],
