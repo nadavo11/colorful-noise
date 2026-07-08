@@ -161,11 +161,17 @@ def _anchor_triple_diag(r_a: torch.Tensor, r_am1: torch.Tensor, r_am2: torch.Ten
 
 
 def _cl_beta_used(state: "FluxCacheState", cfg) -> float:
-    """The gain a closed-loop cached step would use right now: clamped posterior β̂ (prior when
-    no innovation has been observed yet — the μ-regularized estimate starts at β_prior)."""
+    """The gain a closed-loop cached step would use right now (prior before any innovation —
+    the μ-regularized estimate starts at β_prior). Three uses of the same posterior β̂:
+      gate>0 : SWITCH — fixed rm_beta while β̂ ≥ gate, 0 (plain HorizonCache) below
+      scale  : β_used = clamp(scale·β̂, 0, β_max)  (scale=1 → raw MMSE gain)"""
     prior = float(getattr(cfg, "rm_cl_prior", 0.5))
     bh = state.cl_beta_hat if state.cl_beta_hat is not None else prior
-    return float(min(max(bh, 0.0), float(getattr(cfg, "rm_cl_beta_max", 1.0))))
+    gate = float(getattr(cfg, "rm_cl_gate", 0.0) or 0.0)
+    if gate > 0:
+        return float(getattr(cfg, "rm_beta", 0.5)) if bh >= gate else 0.0
+    scale = float(getattr(cfg, "rm_cl_scale", 1.0))
+    return float(min(max(scale * bh, 0.0), float(getattr(cfg, "rm_cl_beta_max", 1.0))))
 
 
 def _cl_update(state: "FluxCacheState", new_res: torch.Tensor, h_filt: torch.Tensor,

@@ -47,9 +47,12 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
         rm2<proj><b1>b<b2>[g<γ>][r<ρmax>]     E59 second-order uniform hold; optional gate:
                                               SO on only if cosΔ>γ and ρ2<ρmax
         rmq<proj><βquad>                      E59 damped nonuniform Lagrange quadratic
-        rmcl<prior>[w<w>][m<μ>][x<βmax>][mid] E60 closed-loop: online innovation-fit β̂
+        rmcl<prior>[w<w>][m<μ>][x<βmax>][g<gate>][k<κ>][mid]
+                                              E60 closed-loop: online innovation-fit β̂
                                               (forgetting w, prior strength μ, clamp β_max;
-                                              defaults 0.85/1.0/1.0; raw projection)
+                                              defaults 0.85/1.0/1.0; raw projection).
+                                              g: SWITCH mode — β=0.5 while β̂≥gate else 0;
+                                              k: β_used = κ·β̂ (LS→PSNR gain recalibration)
       gate   = optional curvature accept/reject on the jump
     Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · rmraw0.5_adaptive_1.5 ·
               rm2raw0.5b0.1_adaptive_1.25 · rmqraw0.5_adaptive_1.25 ·
@@ -80,12 +83,14 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
         beta, beta2, beta_quad = 0.5, 0.0, 0.5
         gamma, rho_max = None, None
         cl_prior, cl_forget, cl_mu, cl_beta_max = 0.5, 0.85, 1.0, 1.0
+        cl_gate, cl_scale = 0.0, 1.0
         lambda_eval = "point"
         if num_str.endswith("mid"):
             lambda_eval = "mid"
             num_str = num_str[:-3]
         if beta_mode == "cl":
-            m = _re.match(r"^([0-9.]+)(?:w([0-9.]+))?(?:m([0-9.]+))?(?:x([0-9.]+))?$", num_str)
+            m = _re.match(r"^([0-9.]+)(?:w([0-9.]+))?(?:m([0-9.]+))?(?:x([0-9.]+))?"
+                          r"(?:g([0-9.]+))?(?:k([0-9.]+))?$", num_str)
             if m:
                 cl_prior = float(m.group(1))
                 if m.group(2):
@@ -94,6 +99,10 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                     cl_mu = float(m.group(3))
                 if m.group(4):
                     cl_beta_max = float(m.group(4))
+                if m.group(5):
+                    cl_gate = float(m.group(5))
+                if m.group(6):
+                    cl_scale = float(m.group(6))
         elif so_mode == "uniform":
             m = _re.match(r"^([0-9.]+)b([0-9.]+)(?:g([0-9.]+))?(?:r([0-9.]+))?$", num_str)
             if m:
@@ -122,7 +131,8 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                   rm_projection2=d.get("rm_projection2", "raw"),
                   rm_so_gate_gamma=gamma, rm_so_gate_rho_max=rho_max,
                   rm_beta_mode=beta_mode, rm_cl_prior=cl_prior, rm_cl_forget=cl_forget,
-                  rm_cl_mu=cl_mu, rm_cl_beta_max=cl_beta_max, rm_lambda_eval=lambda_eval)
+                  rm_cl_mu=cl_mu, rm_cl_beta_max=cl_beta_max, rm_lambda_eval=lambda_eval,
+                  rm_cl_gate=cl_gate, rm_cl_scale=cl_scale)
         v = base
     pc_enabled = False
     pc_alpha = 0.5

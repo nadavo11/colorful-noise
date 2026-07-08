@@ -129,6 +129,23 @@ p_nt, d_nt = _residual_motion(make_state(r1, r0, 0.8, 0.6), h_filt, si_, image_i
 assert abs(d_nt["rm_lambda"] - lam_pt_expect) < 1e-5
 print(f"6. midpoint-λ: OK (λ_mid={d_mid['rm_lambda']:.3f}, λ_point={d_mid['rm_lambda_point']:.3f})")
 
+# ---------- 6b. gate + scale recalibrations of the same posterior ----------
+cfg_gate = HorizonV0Config(rm_enabled=True, rm_beta=0.5, rm_beta_mode="cl", rm_cl_prior=0.5,
+                           rm_cl_mu=0.25, rm_cl_forget=0.85, rm_cl_gate=0.1)
+st_on = run_anchor_stream([0.7] * 4, cfg_gate)      # coherent drift: β̂ well above the gate
+assert _cl_beta_used(st_on, cfg_gate) == 0.5, "gate mode must apply the FIXED rm_beta when on"
+st_off = run_anchor_stream([0.0] * 6, cfg_gate, noise=1.0)   # stale: β̂ sinks below the gate
+assert st_off.cl_beta_hat < 0.1 and _cl_beta_used(st_off, cfg_gate) == 0.0, \
+    f"gate mode must switch to plain (β̂={st_off.cl_beta_hat:.3f})"
+assert _cl_beta_used(FluxCacheState(), cfg_gate) == 0.5, "no evidence → prior ≥ gate → on"
+cfg_k = HorizonV0Config(rm_enabled=True, rm_beta_mode="cl", rm_cl_prior=0.2,
+                        rm_cl_mu=1e-6, rm_cl_forget=1.0, rm_cl_scale=2.5, rm_cl_beta_max=1.0)
+st_k = run_anchor_stream([0.3] * 6, cfg_k)
+assert abs(_cl_beta_used(st_k, cfg_k) - 0.75) < 1e-3, "scale mode must use κ·β̂"
+assert abs(_cl_beta_used(FluxCacheState(), cfg_k) - 0.5) < 1e-9, \
+    "scale mode initial gain must be κ·prior"
+print("6b. gate (switch to plain on stale secant) + κ-scale recalibration: OK")
+
 # ---------- 7. grammar ----------
 c = _variant_cfg("rmcl0.5_adaptive_1.25", 0.3, "regrid", None)
 assert (c.rm_enabled, c.rm_beta_mode, c.rm_cl_prior, c.rm_cl_forget, c.rm_cl_mu,
@@ -140,6 +157,13 @@ c = _variant_cfg("rmcl0.5w1.0m0.5x0.75_adaptive_1.25", 0.3, "regrid", None)
 assert (c.rm_cl_prior, c.rm_cl_forget, c.rm_cl_mu, c.rm_cl_beta_max) == (0.5, 1.0, 0.5, 0.75)
 c = _variant_cfg("rmcl0.5w1.0m0.5x0.75mid_adaptive_1.25", 0.3, "regrid", None)
 assert (c.rm_cl_forget, c.rm_cl_beta_max, c.rm_lambda_eval) == (1.0, 0.75, "mid")
+c = _variant_cfg("rmcl0.5m0.25g0.1_adaptive_1.25", 0.3, "regrid", None)
+assert (c.rm_beta_mode, c.rm_cl_mu, c.rm_cl_gate, c.rm_cl_scale, c.rm_beta) == \
+       ("cl", 0.25, 0.1, 1.0, 0.5)
+c = _variant_cfg("rmcl0.2m0.25k2.5_adaptive_1.25", 0.3, "regrid", None)
+assert (c.rm_cl_prior, c.rm_cl_mu, c.rm_cl_gate, c.rm_cl_scale) == (0.2, 0.25, 0.0, 2.5)
+c = _variant_cfg("rmcl0.2m0.25k2.5mid_adaptive_1.25", 0.3, "regrid", None)
+assert (c.rm_cl_scale, c.rm_lambda_eval) == (2.5, "mid")
 c = _variant_cfg("rmraw0.5mid_adaptive_1.25", 0.3, "regrid", None)
 assert (c.rm_beta_mode, c.rm_beta, c.rm_lambda_eval) == ("fixed", 0.5, "mid")
 c = _variant_cfg("rmraw0.5_adaptive_1.5", 0.3, "regrid", None)      # E58 name unchanged

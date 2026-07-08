@@ -119,6 +119,11 @@ class HorizonV0Config:
     rm_cl_mu: float = 1.0            # prior strength μ (units of λ² per normalized observation)
     rm_cl_forget: float = 0.85       # exponential forgetting w on past anchor observations
     rm_cl_beta_max: float = 1.0      # clamp β̂ ∈ [0, β_max]
+    # Smoke finding: the LS-optimal β̂ (~0.2 in-band) under-corrects vs the PSNR-optimal fixed
+    # β=0.5 — the pointwise objective is not the PSNR objective (E58's oracle dissonance made
+    # quantitative). Two zero-cost recalibrations of the same detector:
+    rm_cl_gate: float = 0.0          # >0: β̂ is a SWITCH — use rm_beta if β̂ ≥ gate else 0
+    rm_cl_scale: float = 1.0         # β_used = clamp(scale·β̂, 0, β_max) (κ·β̂ rescaling)
     # λ evaluation point for the motion term: "point" = left endpoint σ_i (E58);
     # "mid" = stride midpoint (σ_i+σ_target)/2 — midpoint-rule quadrature of the moving residual.
     rm_lambda_eval: str = "point"    # "point" | "mid"

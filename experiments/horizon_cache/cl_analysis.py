@@ -25,7 +25,8 @@ from .so_analysis import BANDS, band_of
 
 boot_ci = RA.boot_ci
 
-_CL_RE = re.compile(r"^rmcl([0-9.]+)(?:w([0-9.]+))?(?:m([0-9.]+))?(?:x([0-9.]+))?(mid)?_(.+)$")
+_CL_RE = re.compile(r"^rmcl([0-9.]+)(?:w([0-9.]+))?(?:m([0-9.]+))?(?:x([0-9.]+))?"
+                    r"(?:g([0-9.]+))?(?:k([0-9.]+))?(mid)?_(.+)$")
 _FO_MID_RE = re.compile(r"^rm(raw|lowpass|topk|sea)([0-9.]+)mid_(.+)$")
 
 
@@ -41,14 +42,19 @@ def classify(variant: str) -> dict:
     pairs = dict of named paired ablations this variant anchors (variant name -> label)."""
     m = _CL_RE.match(variant)
     if m:
-        prior, w, mu, bx, mid, base = m.groups()
+        prior, w, mu, bx, gate, scale, mid, base = m.groups()
         fam = "cl_mid" if mid else "cl"
         d = dict(family=fam, base=base, prior=float(prior),
                  forget=float(w) if w else 0.85, mu=float(mu) if mu else 1.0,
-                 beta_max=float(bx) if bx else 1.0)
+                 beta_max=float(bx) if bx else 1.0,
+                 gate=float(gate) if gate else 0.0, scale=float(scale) if scale else 1.0)
         core = f"rmcl{prior}" + (f"w{w}" if w else "") + (f"m{mu}" if mu else "") + \
-               (f"x{bx}" if bx else "")
-        d["pairs"] = {f"rmraw{prior}{'mid' if mid else ''}_{base}": "cl_minus_fixed",
+               (f"x{bx}" if bx else "") + (f"g{gate}" if gate else "") + \
+               (f"k{scale}" if scale else "")
+        # the fixed-β twin: gate mode applies rm_beta=0.5; scale mode's effective initial
+        # gain is prior·κ; plain cl uses the prior itself
+        eff = 0.5 if gate else (d["prior"] * d["scale"])
+        d["pairs"] = {f"rmraw{eff:g}{'mid' if mid else ''}_{base}": "cl_minus_fixed",
                       base: "cl_minus_plain"}
         if mid:
             d["pairs"][f"{core}_{base}"] = "mid_minus_point"
