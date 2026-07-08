@@ -19,6 +19,7 @@
     "rm_lambda_max": 1.5,
     "smoke_run": "results/horizon_rm_smoke/gen_20260707_163300 (N=8, PROCEED gate passed)",
     "oracle_run": "results/horizon_rm_oracle_n8/gen_20260707_181928 (N=8, --rm-oracle true-residual scoring)",
+    "qualitative_run": "results/horizon_rm_qual/gen_20260708_055203 (N=6 x1 seed, --save-all-images, tau 0.4/0.5/0.65; full+SeaCache+plain+RM per-method PNGs for the sample-comparison grids)",
     "method": "r_pred = r_anchor + beta*lambda(t)*P(r_anchor - r_prev); v = head(front(x_t,sigma_t) + r_pred); no extra block-stack forward",
     "compute_accounting": "RM is free tensor arithmetic; achieved speedup == plain HorizonCache. Oracle runs add a full forward per cached step (diagnostic only, not charged)."
   },

@@ -1,12 +1,12 @@
 {
   "status": "DONE",
-  "git_commit": "f7ba9d1",
+  "git_commit": "8b3a5b0",
   "run_dirs": [
     "results/horizon_rm_n50/gen_20260707_164658",
     "results/horizon_rm_oracle_n8/gen_20260707_181928"
   ],
   "main_verdict": "STRONG_KEEP",
-  "headline_claim": "Residual Motion Cache (rmraw0.5_adaptive_1.25) improves on plain HorizonCache by +0.97 dB @ 2.12\u00d7 at matched compute (CI [+0.70,+1.24]) \u2014 and it does so even though the secant does NOT better-predict the instantaneous true residual (oracle -5.6%), so the gain is correction of accumulated cache-staleness drift, not per-step residual accuracy; verdict STRONG_KEEP.",
+  "headline_claim": "Residual Motion Cache (rmraw0.5_adaptive_1.25) improves on plain HorizonCache by +0.97 dB @ 2.12\u00d7 at matched compute (CI [+0.69,+1.24]) \u2014 and it does so even though the secant does NOT better-predict the instantaneous true residual (oracle -5.6%), so the gain is correction of accumulated cache-staleness drift, not per-step residual accuracy; verdict STRONG_KEEP.",
   "bounded_claim": "On FLUX, extrapolating the cached block residual along its recent secant (r_pred = r_anchor + \u03b2\u00b7\u03bb\u00b7P(\u0394r)) moves the residual by only p50\u224813.1%, p95\u224836.5% of \u2016r_anchor\u2016, and the oracle shows it does NOT reduce the instantaneous true-residual error (-5.6%). Net effect vs plain HorizonCache at matched compute: STRONG_KEEP (the win is accumulated-drift correction, a global effect, not local per-step accuracy).",
   "best_residual_motion": {
     "method": "rmraw0.5_adaptive_1.25",
@@ -19,7 +19,7 @@
     "delta_psnr_vs_matched_seacache": 0.0,
     "delta_psnr_vs_plain_horizon": 0.972,
     "ci95_vs_plain_horizon": [
-      0.7,
+      0.693,
       1.237
     ],
     "win_rate_vs_plain_horizon": 0.8
@@ -33,8 +33,8 @@
       "residual_motion_delta_vs_seacache": 1.58,
       "residual_motion_minus_plain_delta_psnr": 0.85,
       "ci95_residual_motion_minus_plain": [
-        0.563,
-        1.126
+        0.565,
+        1.117
       ],
       "verdict": "KEEP"
     },
@@ -46,7 +46,7 @@
       "residual_motion_delta_vs_seacache": 2.371,
       "residual_motion_minus_plain_delta_psnr": 0.972,
       "ci95_residual_motion_minus_plain": [
-        0.7,
+        0.693,
         1.237
       ],
       "verdict": "KEEP"
@@ -59,7 +59,7 @@
       "residual_motion_delta_vs_seacache": 3.143,
       "residual_motion_minus_plain_delta_psnr": 0.951,
       "ci95_residual_motion_minus_plain": [
-        0.697,
+        0.704,
         1.209
       ],
       "verdict": "KEEP"
@@ -72,8 +72,8 @@
       "residual_motion_delta_vs_seacache": 0.267,
       "residual_motion_minus_plain_delta_psnr": 0.426,
       "ci95_residual_motion_minus_plain": [
-        0.184,
-        0.673
+        0.177,
+        0.665
       ],
       "verdict": "STRONG_KEEP"
     }
@@ -100,7 +100,7 @@
     "residual_motion_gate": "not_run"
   },
   "key_findings": [
-    "Residual Motion Cache (rmraw0.5_adaptive_1.25) improves on plain HorizonCache by +0.97 dB @ 2.12\u00d7 at matched compute (CI [+0.70,+1.24]) \u2014 and it does so even though the secant does NOT better-predict the instantaneous true residual (oracle -5.6%), so the gain is correction of accumulated cache-staleness drift, not per-step residual accuracy; verdict STRONG_KEEP.",
+    "Residual Motion Cache (rmraw0.5_adaptive_1.25) improves on plain HorizonCache by +0.97 dB @ 2.12\u00d7 at matched compute (CI [+0.69,+1.24]) \u2014 and it does so even though the secant does NOT better-predict the instantaneous true residual (oracle -5.6%), so the gain is correction of accumulated cache-staleness drift, not per-step residual accuracy; verdict STRONG_KEEP.",
     "On FLUX, extrapolating the cached block residual along its recent secant (r_pred = r_anchor + \u03b2\u00b7\u03bb\u00b7P(\u0394r)) moves the residual by only p50\u224813.1%, p95\u224836.5% of \u2016r_anchor\u2016, and the oracle shows it does NOT reduce the instantaneous true-residual error (-5.6%). Net effect vs plain HorizonCache at matched compute: STRONG_KEEP (the win is accumulated-drift correction, a global effect, not local per-step accuracy).",
     "Oracle: frozen residual error 0.269 vs motion 0.285 (-5.6% relative reduction).",
     "Quality improves at matched compute even though the secant does NOT better-predict the instantaneous true residual (oracle negative): the gain is correction of ACCUMULATED cache-staleness drift over the cached trajectory, not per-step residual accuracy \u2014 the oracle is a local metric, PSNR is a global one.",

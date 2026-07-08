@@ -190,6 +190,78 @@ def method_diagram(out: Path):
     return F._save(fig, out)
 
 
+def _load_png(p: Path):
+    from PIL import Image
+    return np.asarray(Image.open(p).convert("RGB"), dtype=np.float32) / 255.0
+
+
+def qualitative_grid(samples: Path, df, band_label, tau, rm_method, plain_method, sea_method,
+                     keys, out: Path):
+    """Rows = prompts; columns = full | SeaCache | plain HorizonCache | ResidualMotion | |RM−full|.
+    Each cell captioned with achieved speedup + PSNR; the heatmap shows where RM differs from full."""
+    def meta(method, key):
+        sub = df[(df.method == method) & (df.key == key)]
+        if sub.empty:
+            return None
+        r = sub.iloc[0]
+        return dict(sp=float(r["compute_speedup"]), psnr=float(r["psnr"]),
+                    lpips=float(r["lpips"]) if "lpips" in df.columns else None)
+
+    def img(method, key):
+        p = samples / f"{key}__{method}.png"
+        return _load_png(p) if p.exists() else None
+
+    rows = []
+    for key in keys:
+        full = img("full", key)
+        rmimg = img(rm_method, key)
+        if full is None or rmimg is None:
+            continue
+        rows.append(key)
+        if len(rows) >= 4:
+            break
+    if not rows:
+        return None
+    cols = [("full", "full"), (sea_method, "SeaCache"), (plain_method, "plain HorizonCache"),
+            (rm_method, "ResidualMotion (raw β0.5)"), ("__heat__", "|RM − full|")]
+    nr, nc = len(rows), len(cols)
+    fig, axes = plt.subplots(nr, nc, figsize=(2.35 * nc, 2.55 * nr))
+    if nr == 1:
+        axes = axes.reshape(1, -1)
+    for i, key in enumerate(rows):
+        full = img("full", key)
+        for j, (method, lab) in enumerate(cols):
+            ax = axes[i, j]
+            ax.set_xticks([]); ax.set_yticks([])
+            for s in ax.spines.values():
+                s.set_color(F.LINE)
+            if method == "__heat__":
+                rmimg = img(rm_method, key)
+                heat = np.abs(rmimg - full).mean(axis=2) if rmimg is not None else None
+                if heat is not None:
+                    ax.imshow(heat, cmap="magma", vmin=0, vmax=max(0.08, float(np.percentile(heat, 99))))
+                cap = "abs error vs full"
+            else:
+                im = img(method, key)
+                if im is not None:
+                    ax.imshow(im)
+                m = meta(method, key)
+                if method == "full":
+                    cap = "reference"
+                else:
+                    cap = (f"{m['sp']:.2f}× · {m['psnr']:.1f} dB" if m else "—")
+            ax.set_xlabel(cap, color=F.INK, fontsize=7.5)
+            if i == 0:
+                ax.set_title(lab, color=F.INK, fontsize=8.5)
+        prompt, _, seed = key.rpartition("_s")
+        axes[i, 0].set_ylabel(f"{prompt}\nseed {seed}", color=F.MUT, fontsize=7, rotation=0,
+                              ha="right", va="center", labelpad=24)
+    fig.suptitle(f"Generated samples — {band_label} (τ={tau:g}): SeaCache vs plain HorizonCache vs "
+                 f"ResidualMotion, all vs the full-model reference", color=F.INK, fontsize=10)
+    fig.tight_layout(rect=(0.02, 0, 1, 0.97))
+    return F._save(fig, out)
+
+
 # ----------------------------------------------------------------- verdicts
 def _variant_verdict(rows, sea_rm=None, sea_plain=None):
     """Best-band verdict for one RM variant.
@@ -217,7 +289,25 @@ def _variant_verdict(rows, sea_rm=None, sea_plain=None):
     return v, best
 
 
-def build(gen: Path, oracle_dir, tau_grid, reports_dir: Path, sha: str):
+def _matched_sea_method(qdf, rm_method, tau_grid):
+    """SeaCache method whose mean achieved speedup is closest to rm_method's (fair visual)."""
+    rsub = qdf[qdf.method == rm_method]
+    if rsub.empty:
+        return None
+    rsp = float(rsub.compute_speedup.mean())
+    best, bestd = None, 1e9
+    for t in tau_grid:
+        m = f"seacache_t{t:g}"
+        s = qdf[qdf.method == m]
+        if s.empty:
+            continue
+        d = abs(float(s.compute_speedup.mean()) - rsp)
+        if d < bestd:
+            best, bestd = m, d
+    return best
+
+
+def build(gen: Path, oracle_dir, tau_grid, reports_dir: Path, sha: str, samples_dir=None):
     df = pd.read_csv(gen / "metrics.csv")
     summ = RA.summarize(gen, tau_grid)
     # merge oracle from a dedicated oracle run if provided (higher-quality diagnostic)
@@ -361,6 +451,35 @@ def build(gen: Path, oracle_dir, tau_grid, reports_dir: Path, sha: str):
              "<li><b>Cost</b>: pure tensor arithmetic; the deploy speedup is identical to plain HorizonCache "
              "(no extra forward). Memory: one extra residual (r_prev) held in bf16.</li>"
              "<li>Non-RM path byte-identical to E56/E57; matched-achieved-speedup protocol unchanged.</li></ul></div>")
+    # 3b · methods & baselines glossary — what every method in the plots means
+    H.append("<h3>Methods &amp; baselines — what each one does</h3>"
+             "<div class='card'><table>"
+             "<tr><th>method</th><th>what it does</th><th>cost / role</th></tr>"
+             "<tr><td>full</td><td>Run the whole L-block transformer at every one of the 28 Euler steps — no caching.</td>"
+             "<td>Reference (speedup 1×); PSNR/LPIPS are measured against it.</td></tr>"
+             "<tr><td>SeaCache</td><td>Read one cheap score off the modulated input h (Wiener-filtered relative-L1), "
+             "accumulate it, and <i>refresh</i> (full forward) when it crosses τ; otherwise reuse the frozen block "
+             "residual. The primary baseline / frontier.</td><td>≈1/L per cached step; τ sweeps the speed.</td></tr>"
+             "<tr><td>plain HorizonCache<br>(adaptive_1.25/1.5/2.0)</td><td>E56. Same SeaCache fresh/cache decision, "
+             "but in reuse territory it also <i>jumps</i>: takes a longer σ-stride jf = 1+(jf_max−1)·headroom that "
+             "removes an integration node. jf_max is the cap (1.25/1.5/2.0). Residual stays frozen.</td>"
+             "<td>Free node removal; the E56 STRONG-KEEP baseline this experiment improves on.</td></tr>"
+             "<tr><td><b>ResidualMotion</b><br>(rm&lt;proj&gt;&lt;β&gt;_&lt;base&gt;)</td><td><b>E58.</b> Exactly the "
+             "plain HorizonCache policy, but on cached/jump steps the frozen residual r_anchor is replaced by the "
+             "moved r_pred = r_anchor + β·λ·P(r_anchor−r_prev). Only the residual <i>value</i> changes.</td>"
+             "<td>Free (no extra forward) — identical achieved speedup to its plain base.</td></tr>"
+             "</table>"
+             "<p class='sub' style='margin-top:8px'><b>ResidualMotion knobs.</b> "
+             "<b>base</b> = which plain HorizonCache it sits on (adaptive_1.25/1.5/2.0). "
+             "<b>projection P(Δr)</b>: <code>raw</code> = use the secant as-is (best); <code>lowpass</code> = keep only "
+             "low spatial frequencies (avg-pool+upsample over the token grid); <code>topk</code> = keep only the most "
+             "energetic channels; <code>sea</code> = SeaCache Wiener filter on the residual grid. "
+             "<b>λ(t)</b> = how far to extrapolate as progress since the anchor: <code>sigma</code> (σ-distance, "
+             "default), <code>age</code> (steps since refresh), <code>h</code> (SeaCache h-drift). "
+             "<b>β</b> = shrink factor (0 ≡ plain; 0.5 is the sweet spot; 0.75 starts to overshoot at ~3.4×).</p>"
+             "<p class='sub'><b>Matched achieved speedup.</b> Every comparison is at <i>achieved</i> block-stack-equivalent "
+             "speedup (fresh=1, cached/jump≈1/L), never nominal τ. RM vs SeaCache interpolates the SeaCache PSNR(speedup) "
+             "curve at each image's own speedup (paired per prompt×seed, 5000-sample percentile bootstrap 95% CI).</p></div>")
     # 4 results
     H.append("<h2>4 · Results</h2>")
     for k, cap in [("frontier", "RM (dashed) vs plain HorizonCache (solid) vs SeaCache. Safe band green, "
@@ -383,6 +502,38 @@ def build(gen: Path, oracle_dir, tau_grid, reports_dir: Path, sha: str):
                      f"<td>{r['plain_speedup']:.2f}×</td><td class='{cls}'>{r['mean_delta']:+.3f}</td>"
                      f"<td>{ci}</td><td>{r['win']*100:.0f}%</td></tr>")
     H.append("</table>")
+    # 4b · generated sample comparisons (needs a run with --save-all-images)
+    if samples_dir and (Path(samples_dir) / "samples").exists() and (Path(samples_dir) / "metrics.csv").exists():
+        sdir = Path(samples_dir)
+        qdf = pd.read_csv(sdir / "metrics.csv")
+        qtaus = sorted({float(m[m.rfind("_t") + 2:]) for m in qdf.method if m.startswith("seacache_t")})
+        keys = list(dict.fromkeys(qdf.key.tolist()))
+        rm_m_base = "rmraw0.5_adaptive_1.5"
+        pl_m_base = "adaptive_1.5"
+        grids = []
+        # a safe-band τ (~2.5×) and the overshoot τ (~3.4×) if present
+        picks = []
+        if qtaus:
+            picks.append((min(qtaus), "safe band"))
+            if max(qtaus) != min(qtaus):
+                picks.append((max(qtaus), "overshoot band"))
+        for bi, (tau, label) in enumerate(picks):
+            rm_m = f"horizon_{rm_m_base}_t{tau:g}"
+            pl_m = f"horizon_{pl_m_base}_t{tau:g}"
+            sea_m = _matched_sea_method(qdf, rm_m, qtaus) or f"seacache_t{tau:g}"
+            g = qualitative_grid(sdir / "samples", qdf, label, tau, rm_m, pl_m, sea_m, keys,
+                                 assets / f"samples_{bi}.png")
+            if g:
+                grids.append((g, label, tau))
+        if grids:
+            H.append("<h3>Generated sample comparisons</h3>"
+                     "<p class='sub'>Left→right: full-model reference, SeaCache (at matched achieved speedup), plain "
+                     "HorizonCache, ResidualMotion (raw β0.5), and the |ResidualMotion − full| error heatmap. Each "
+                     "cell is labelled with its achieved speedup and PSNR. ResidualMotion recovers detail the frozen "
+                     "cache smears — visibly so in the overshoot band, where plain HorizonCache degrades but "
+                     "ResidualMotion stays close to the reference.</p>")
+            for g, label, tau in grids:
+                H.append(f"<div class='fig'><img src='{du(g)}'><div class='cap'>{label} (τ={tau:g}).</div></div>")
     # 5 mechanism (oracle)
     H.append("<h2>5 · Mechanism — oracle residual diagnostic</h2>")
     if "oracle" in figs:
@@ -592,11 +743,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gen-dir", required=True)
     ap.add_argument("--oracle-dir", default="")
+    ap.add_argument("--samples-dir", default="", help="a --save-all-images run for the qualitative grids")
     ap.add_argument("--tau-grid", type=float, nargs="+", default=[0.4, 0.5, 0.65])
     ap.add_argument("--reports-dir", default=str(REPO / "reports"))
     a = ap.parse_args()
     reports = Path(a.reports_dir); reports.mkdir(parents=True, exist_ok=True)
-    sj = build(Path(a.gen_dir), a.oracle_dir or None, a.tau_grid, reports, git_hash())
+    sj = build(Path(a.gen_dir), a.oracle_dir or None, a.tau_grid, reports, git_hash(),
+               samples_dir=a.samples_dir or None)
     print(json.dumps({"status": sj["status"], "main_verdict": sj["main_verdict"],
                       "best": sj["best_residual_motion"], "verdicts": sj["verdicts"],
                       "oracle": sj["oracle_residual_diagnostic"]}, indent=2, default=float))
