@@ -1,14 +1,18 @@
 <!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E58 — HorizonCache Residual Motion Cache -- move the cached block residual along its secant</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_58.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E58 — HorizonCache Residual Motion Cache: move the cached block residual along its secant</h1>
 <p><strong>Thread:</strong> fast-edit (caching line) · <strong>Status:</strong> active · <strong>Verdict:</strong> STRONG KEEP (raw secant, β=0.5) ·
-<strong>Models:</strong> FLUX.1-dev (4-bit), 512 px, 28 Euler steps; smoke N=8 → <strong>consolidation N=50 × 2 seeds = 100 paired
-samples</strong> + N=8 oracle residual diagnostic, cluster H100 80 GB (Run:AI). Canonical-fixture v1 + deterministic
-GenEval extras.</p>
+<strong>Models:</strong> FLUX.1-dev (4-bit), 512 px, 28 Euler steps; smoke N=8 → N=50×2 pilot → <strong>headline consolidation
+N=100 × 2 seeds = 200 paired samples</strong> + N=8 oracle residual diagnostic + N=6 qualitative-grid run, cluster
+H100 80 GB (Run:AI). Canonical-fixture v1 + deterministic GenEval extras.</p>
 <blockquote>
-<p><strong>Headline.</strong> Residual Motion Cache beats <strong>plain HorizonCache at matched compute</strong> by <strong>+0.4 to +0.95 dB across
-the entire 2.0–3.4× range</strong> (100 paired samples, every 95 % CI excludes 0), roughly <strong>doubles</strong> the E56 margin
-over SeaCache in the safe band, and — the key result — <strong>flips E56's ~3.4× overshoot</strong>: plain adaptive HorizonCache
-<em>loses</em> to SeaCache there (−0.14 dB, CI excl 0), but RM <em>wins</em> (+0.29 dB, CI [+0.04, +0.53]). It costs <strong>no extra
-forward</strong>. Paper-ready report: <code>reports/horizon_cache_residual_motion.html</code>.</p>
+<p><strong>Headline.</strong> Residual Motion Cache beats <strong>plain HorizonCache at matched compute in every speed band from 2.0×
+to 3.4×</strong> (200 paired samples, every 95 % CI excludes 0), roughly <strong>doubles</strong> the E56 margin over SeaCache in the
+safe band, and — the key result — <strong>flips E56's ~3.4× overshoot</strong>: plain adaptive HorizonCache <em>loses</em> to SeaCache
+there (−0.18 dB, CI excl 0), but RM <em>wins</em> (+0.26 dB, CI [+0.11, +0.42]). It costs <strong>no extra forward</strong>. The two
+paper figures (PSNR-vs-speedup 3-curve frontier; frozen-lag-vs-secant mechanism schematic) and generated-sample
+grids are in <code>reports/horizon_cache_residual_motion.html</code>.</p>
+<p><strong>Bound (do not oversell):</strong> the <strong>&gt;+0.5 dB</strong> RM−plain gains are concentrated in <strong>2.0–2.8×</strong>; at <strong>3.0–3.4×</strong> the
+RM−plain gain is smaller (<strong>+0.19 to +0.43 dB</strong>, still CI-positive), and the 3×+ story is that gain <em>plus</em> the
+flip of the SeaCache-margin sign at 3.4×.</p>
 </blockquote>
 <h2>Hypothesis</h2>
 <p>E56 established the headroom-adaptive stride as a STRONG KEEP in ~1.7–2.7×, overshooting at ~3.4×. E57 tried to fix
@@ -41,96 +45,85 @@ to plain HorizonCache.</p>
 <li>Same regrid scheduler, matched-achieved-speedup comparison, and percentile bootstrap as E56.</li>
 </ul>
 <p>Grammar <code>rm&lt;proj&gt;&lt;beta&gt;_&lt;base&gt;</code> (e.g. <code>rmraw0.5_adaptive_1.5</code>). λ-mode / λ-max / gate ρ are run-level flags.</p>
-<h2>Result — consolidation (N=50 × 2 seeds = 100 paired, τ ∈ {0.3, 0.4, 0.5, 0.65})</h2>
-<p><strong>1. RM beats plain HorizonCache at matched compute, everywhere, significantly.</strong> Paired per-image (RM − plain, same
-base/τ). At τ where no downstream refresh flips (the low/mid-τ regime), the action sequence <em>and</em> achieved speedup
-are <strong>byte-identical</strong> to plain — a pure residual-value ablation:</p>
+<h2>Result — headline consolidation (N=100 × 2 seeds = 200 paired, τ ∈ {0.3, 0.4, 0.5, 0.575, 0.65})</h2>
+<p>τ=0.575 (~3.0×) was added to populate the <strong>2.8–3.2× band</strong> that was a gap in the N=50 pilot.</p>
+<p><strong>1. RM beats plain HorizonCache at matched compute in every band, significantly.</strong> Paired per-image (RM − plain,
+same base/τ). At τ where no downstream refresh flips, the action sequence <em>and</em> achieved speedup are <strong>byte-identical</strong>
+to plain — a pure residual-value ablation:</p>
 <table>
 <thead>
 <tr>
 <th>variant</th>
-<th>2.0× (τ0.3)</th>
-<th>2.5× (τ0.4)</th>
-<th>2.74× (τ0.5)</th>
-<th>3.4× (τ0.65)</th>
+<th>2.02×</th>
+<th>2.50×</th>
+<th>2.74×</th>
+<th><strong>3.03×</strong></th>
+<th>3.40×</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>rmraw0.5_adaptive_1.25</td>
-<td>+0.97 [0.71,1.24]</td>
-<td>+0.91 [0.67,1.16]</td>
-<td>+0.63 [0.33,0.93]</td>
-<td>+0.43 [0.19,0.67]</td>
+<td>+0.96 [0.77,1.14]</td>
+<td>+0.88 [0.69,1.06]</td>
+<td>+0.54 [0.35,0.73]</td>
+<td>+0.19 [0.04,0.35]</td>
+<td>+0.42 [0.27,0.58]</td>
 </tr>
 <tr>
 <td>rmraw0.5_adaptive_1.5</td>
-<td>+0.86 [0.58,1.13]</td>
-<td>+0.95 [0.70,1.21]</td>
-<td>+0.67 [0.37,0.98]</td>
-<td>+0.42 [0.18,0.68]</td>
-</tr>
-<tr>
-<td>rmraw0.5_adaptive_2.0</td>
-<td>+0.85 [0.57,1.12]</td>
-<td>+0.93 [0.68,1.18]</td>
-<td>+0.65 [0.36,0.95]</td>
-<td>+0.42 [0.18,0.67]</td>
-</tr>
-<tr>
-<td>rmlowpass0.5_adaptive_1.5</td>
-<td>+0.44 [0.26,0.61]</td>
-<td>+0.52 [0.34,0.71]</td>
-<td>+0.45 [0.20,0.70]</td>
-<td>+0.33 [0.13,0.52]</td>
-</tr>
-<tr>
-<td>rmraw0.75_adaptive_1.5</td>
-<td>+0.90 [0.55,1.26]</td>
-<td>+0.91 [0.58,1.24]</td>
-<td>+0.62 [0.24,1.01]</td>
-<td>+0.16 [−0.13,0.45]</td>
+<td>+0.93 [0.74,1.11]</td>
+<td>+0.90 [0.71,1.08]</td>
+<td>+0.56 [0.37,0.75]</td>
+<td>+0.19 [0.03,0.34]</td>
+<td>+0.43 [0.28,0.59]</td>
 </tr>
 </tbody>
 </table>
-<p>Every raw β=0.5 CI excludes 0. <strong>raw &gt; lowpass</strong> (raw keeps the full secant; lowpass discards useful residual
-motion). <strong>β = 0.5 is the sweet spot</strong>: β = 0.75 still wins in the safe band but starts to <strong>overshoot at 3.4×</strong>
-(+0.16, CI includes 0).</p>
+<p>Every CI excludes 0. The <strong>&gt;+0.5 dB</strong> gains are concentrated in <strong>2.0–2.8×</strong>; in the <strong>2.8–3.2× band the gain is
++0.19 dB</strong> (small but CI-positive), and it rises again to <strong>+0.42 dB at 3.40×</strong>. (N=50 pilot established <strong>raw &gt;
+lowpass</strong> and <strong>β=0.5 as the sweet spot</strong> — β=0.75 overshoots at 3.4×, +0.16 CI incl 0.)</p>
 <p><strong>2. vs SeaCache at matched achieved speedup (E56 fair protocol) — the frontier extension.</strong> RM roughly <strong>doubles</strong>
 the E56 margin in the safe band and <strong>flips the overshoot</strong>:</p>
 <table>
 <thead>
 <tr>
 <th>speedup</th>
-<th>plain adaptive vs SeaCache</th>
+<th>plain adaptive_1.5 vs SeaCache</th>
 <th><strong>RM (raw 0.5) vs SeaCache</strong></th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>2.01×</td>
-<td>+0.89 [0.64, 1.16]</td>
-<td><strong>+1.87 [1.41, 2.36]</strong></td>
+<td>2.02×</td>
+<td>+0.94 [0.73, 1.17]</td>
+<td><strong>+1.94 [1.63, 2.26]</strong></td>
 </tr>
 <tr>
 <td>2.50×</td>
-<td>+2.19 [1.78, 2.62]</td>
-<td><strong>+3.14 [2.65, 3.63]</strong></td>
+<td>+1.99 [1.72, 2.27]</td>
+<td><strong>+2.90 [2.57, 3.23]</strong></td>
 </tr>
 <tr>
 <td>2.74×</td>
-<td>+1.26 [1.01, 1.49]</td>
-<td><strong>+1.93 [1.55, 2.29]</strong></td>
+<td>+2.18 [1.82, 2.55]</td>
+<td><strong>+2.74 [2.34, 3.16]</strong></td>
+</tr>
+<tr>
+<td>3.03×</td>
+<td>+0.43 [0.32, 0.55]</td>
+<td><strong>+0.62 [0.43, 0.82]</strong></td>
 </tr>
 <tr>
 <td><strong>3.40×</strong></td>
-<td><strong>−0.14 [−0.18, −0.10]</strong> (loss)</td>
-<td><strong>+0.29 [+0.04, +0.53]</strong> (win)</td>
+<td><strong>−0.17 [−0.20, −0.13]</strong> (loss)</td>
+<td><strong>+0.26 [+0.11, +0.42]</strong> (win)</td>
 </tr>
 </tbody>
 </table>
-<p>At 3.40× (≈3.0× SeaCache-equivalent) plain HorizonCache <strong>loses</strong> to SeaCache — this is E56's overshoot — while RM
-turns it into a <strong>significant win</strong>. LPIPS improves everywhere too (ΔLPIPS +0.012 to +0.046, sign = better).</p>
+<p>Through 3.0× both HorizonCache variants still beat SeaCache (RM by more). At 3.40× (E56's overshoot) plain
+HorizonCache <strong>loses</strong> to SeaCache while RM turns it into a <strong>significant win</strong> — the SeaCache-margin sign flips.
+LPIPS improves everywhere too.</p>
 <p><strong>3. Mechanism — the honest nuance (oracle, N=8).</strong> The secant does <strong>not</strong> better-predict the instantaneous true
 residual: frozen error <strong>0.269</strong> vs residual-motion error <strong>0.285</strong> → <strong>−5.6 %</strong> (slightly <em>worse</em> pointwise). This
 is not a contradiction with the quality gain — it is the mechanism:</p>
@@ -143,10 +136,13 @@ a better per-step predictor.</strong> Residual motion is real but small — extr
 ‖r_anchor‖.</p>
 </blockquote>
 <h2>Verdict</h2>
-<p><strong>STRONG KEEP (raw secant, β = 0.5).</strong> <code>rmraw0.5</code> over adaptive_1.25/1.5/2.0: beats plain HorizonCache by +0.4–0.95 dB
-at matched compute (100 pairs, all CI &gt; 0) <strong>and</strong> extends the positive SeaCache margin past 2.7× to ~3.4×, flipping
-E56's overshoot from a measured loss into a measured win. <code>lowpass</code> secant KEEP (same sign, ~half the gain). β = 0.75
-KEEP but begins to overshoot at 3.4×. <code>topk</code> / <code>sea</code> projections and the safety gate: not yet run.</p>
+<p><strong>STRONG KEEP (raw secant, β = 0.5) — holds at N=200 paired.</strong> <code>rmraw0.5</code> over adaptive_1.25/1.5: beats plain
+HorizonCache at matched compute in <strong>every</strong> band (all CI &gt; 0) <strong>and</strong> flips E56's ~3.4× overshoot from a measured
+loss into a measured win vs SeaCache. The <strong>pre-registered success condition</strong> (RM &gt; +0.5 dB with CI &gt; 0 <em>and</em> extends
+the positive SeaCache margin toward 3×+) holds — with the honest caveat that the <strong>&gt;+0.5 dB gains are in 2.0–2.8×</strong>,
+while the 3×+ story is the smaller (+0.19–0.43 dB) but significant RM−plain gain <em>plus</em> the SeaCache-sign flip at 3.4×.
+<code>lowpass</code> secant KEEP (~half the gain, N=50). β = 0.75 KEEP but begins to overshoot at 3.4×. <code>topk</code> / <code>sea</code> projections
+and the safety gate: not yet run.</p>
 <p><strong>Bounded claim (do not oversell):</strong> this is a <strong>matched-compute quality gain plus a frontier extension to ~3.4× on
 FLUX text2img</strong>, obtained for free (no extra forward). It is <strong>not</strong> a better per-step residual predictor
 (oracle-negative), and the mechanism is <strong>accumulated-drift correction</strong> — it should be stated that way. Not yet

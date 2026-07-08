@@ -1,0 +1,22 @@
+run_id: "20260708_091415__horizon_rm_e58_n100__07bd1de"
+job_name: "horizon-e58-rm-n100-07bd1de"
+status: "done"
+created_at: "2026-07-08T09:14:15+03:00"
+git_commit: "07bd1de"
+git_branch: "e58-residual-motion"
+repo_root: "/storage/nada/colorful-noise-e58"
+experiment: "E58 Residual Motion Cache — HEADLINE consolidation N=100 x2 seeds"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+stage:
+  n: 100
+  seeds_per_prompt: 2
+  paired_samples: 200
+  tau_grid: [0.3, 0.4, 0.5, 0.575, 0.65]
+  tau_note: "0.575 (~3.0x) added to populate the 2.8-3.2x band (a gap in the N=50 pilot)"
+  variants: [adaptive_1.25, adaptive_1.5, rmraw0.5_adaptive_1.25, rmraw0.5_adaptive_1.5]
+  primary_pairs: ["adaptive_1.25 vs rmraw0.5_adaptive_1.25", "adaptive_1.5 vs rmraw0.5_adaptive_1.5"]
+  out: "results/horizon_rm_n100"
+result_dir: "results/horizon_rm_n100/gen_20260708_061610"
+headline: "RM-plain positive every band (all CI>0): adaptive_1.5 +0.93@2.02x, +0.90@2.50x, +0.56@2.74x, +0.19@3.03x, +0.43@3.40x. Overshoot flip at 3.40x: plain -0.17/-0.18 vs SeaCache -> RM +0.26 (CI [0.11,0.42]). STRONG KEEP holds at N=200."
+tarball: "/storage/nada/colorful-noise-e58/e58_n100_light.tar.gz"

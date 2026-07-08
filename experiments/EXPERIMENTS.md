@@ -1568,25 +1568,29 @@ block residual. E58 moves the residual itself: `r_pred = r_anchor + β·λ(t)·P
 == plain HorizonCache.** Non-RM path byte-identical to E56/E57; matched-achieved-speedup + bootstrap unchanged.
 Oracle diagnostic (`--rm-oracle`) scores `r_pred` against the true residual `r_true = B(h_t)`.
 
-**Key result (consolidation N=50×2 seeds = 100 paired, τ 0.3/0.4/0.5/0.65).** RM (raw, β=0.5) beats **plain
-HorizonCache at matched compute** by **+0.4 to +0.95 dB across the whole 2.0–3.4× range — every 95% CI excludes
-0** (e.g. rmraw0.5_adaptive_1.5: +0.86@2.01×, +0.95@2.50×, +0.67@2.74×, +0.42@3.40×); at τ where no refresh
-flips, the action sequence + speedup are byte-identical to plain (a pure residual-value ablation). vs SeaCache
-(matched speedup): RM roughly **doubles** the E56 margin in the safe band (2.50×: plain +2.19 → RM +3.14 dB) and
-**flips the ~3.4× overshoot** — plain adaptive *loses* to SeaCache (−0.14 dB, CI excl 0) but RM *wins* (+0.29 dB,
-CI [+0.04,+0.53]). LPIPS improves everywhere. β=0.5 sweet spot (0.75 overshoots at 3.4×); raw > lowpass.
-**Honest nuance (oracle N=8):** the secant does **not** better-predict the instantaneous true residual (frozen
-0.269 vs motion 0.285, −5.6%) — the gain is **accumulated-drift correction** (global trajectory fidelity), not
-per-step residual accuracy. Residual motion is small (extrap ratio p50≈13%, p95≈36% of ‖r_anchor‖).
+**Key result (headline consolidation N=100×2 seeds = 200 paired, τ 0.3/0.4/0.5/0.575/0.65).** RM (raw, β=0.5)
+beats **plain HorizonCache at matched compute in every band — every 95% CI excludes 0** (rmraw0.5_adaptive_1.5:
++0.93@2.02×, +0.90@2.50×, +0.56@2.74×, +0.19@3.03×, +0.43@3.40×); at τ where no refresh flips, actions + speedup
+are byte-identical to plain (a pure residual-value ablation). vs SeaCache (matched speedup): RM roughly **doubles**
+the E56 margin in the safe band (2.50×: plain +1.99 → RM +2.90 dB) and **flips the ~3.4× overshoot** — plain
+adaptive *loses* to SeaCache (−0.17/−0.18 dB, CI excl 0) but RM *wins* (+0.26 dB, CI [+0.11,+0.42]); at 3.03× both
+still beat SeaCache. LPIPS improves everywhere. Honest bound: **>+0.5 dB gains are concentrated in 2.0–2.8×**; at
+3.0–3.4× the RM−plain gain is smaller (+0.19–0.43) but CI-positive, and the SeaCache-sign flip is the 3×+ story.
+β=0.5 sweet spot (0.75 overshoots at 3.4×); raw > lowpass (N=50 pilot). **Honest nuance (oracle N=8):** the secant
+does **not** better-predict the instantaneous true residual (frozen 0.269 vs motion 0.285, −5.6%) — the gain is
+**accumulated-drift correction** (global trajectory fidelity), not per-step residual accuracy.
 
-**Verdict.** **STRONG KEEP** (raw secant, β=0.5): beats plain HorizonCache at matched compute (100 pairs, all
-CI>0) **and** extends the positive SeaCache margin past 2.7× to ~3.4×, for free. lowpass KEEP (~half the gain);
-β=0.75 KEEP but begins to overshoot; topk/sea/gate not yet run. Bounded: a matched-compute quality gain + frontier
-extension on FLUX text2img, *not* a per-step residual predictor (oracle-negative). Next: fold into the E56 frontier
-(RM strictly dominates plain), sweep β×λ, N=100 + qualitative grids, SD3 replication.
+**Verdict.** **STRONG KEEP** (raw secant, β=0.5), holds at N=200 pairs: beats plain HorizonCache at matched compute
+in every band (all CI>0) **and** flips E56's ~3.4× overshoot vs SeaCache, for free. Pre-registered success condition
+(RM>+0.5 dB CI>0 AND extends SeaCache margin to 3×+) holds, caveated that the >+0.5 dB gains sit in 2.0–2.8×.
+lowpass KEEP; topk/sea/gate not yet run. Bounded: matched-compute quality gain + frontier extension on FLUX
+text2img, *not* a per-step residual predictor (oracle-negative). Report ships the two paper figures (3-curve
+PSNR-vs-speedup frontier + frozen-lag-vs-secant mechanism schematic) and generated-sample grids. Next: sweep β×λ,
+topk/sea + a 3.4×+ gate, SD3 replication.
 
 **Artifacts.** `reports/horizon_cache_residual_motion.{html,md,json}`,
-`reports/horizon_cache_residual_motion_assets/`; `results/horizon_rm_n50/gen_20260707_164658/`,
-`results/horizon_rm_smoke/gen_20260707_163300/`, `results/horizon_rm_oracle_n8/gen_20260707_181928/`;
+`reports/horizon_cache_residual_motion_assets/`; `results/horizon_rm_n100/gen_20260708_061610/`,
+`results/horizon_rm_n50/gen_20260707_164658/`, `results/horizon_rm_smoke/gen_20260707_163300/`,
+`results/horizon_rm_oracle_n8/gen_20260707_181928/`, `results/horizon_rm_qual/gen_20260708_055203/`;
 code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,rm_analysis,rm_report}.py`; manifest
 `experiments/manifests/E58.json`; doc `docs/experiment-reports/EXPERIMENT_58.md`.

@@ -1141,8 +1141,9 @@ EXPERIMENTS = [
      "results": None, "image": None},
 
     {"id": "E58", "title": "HorizonCache Residual Motion Cache -- move the cached block residual along its secant",
-     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 -> consolidation "
-               "N=50 x2 seeds = 100 paired samples + N=8 oracle residual diagnostic, cluster H100 (Run:AI)",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 -> N=50x2 pilot -> "
+               "HEADLINE consolidation N=100 x2 seeds = 200 paired samples + N=8 oracle residual diagnostic + N=6 "
+               "qualitative-grid run, cluster H100 (Run:AI)",
      "status": "active",
      "motivation": "E56 headroom-adaptive stride is STRONG KEEP in ~1.7-2.7x but overshoots at ~3.4x; E57 proved a cached "
                    "ENDPOINT correction is a near-no-op because re-querying the cheap head reuses the FROZEN block residual "
@@ -1158,25 +1159,29 @@ EXPERIMENTS = [
                "bootstrap protocol unchanged. Variant grammar rm<proj><beta>_<base>. ORACLE diagnostic (--rm-oracle): also run "
                "the TRUE residual r_true=B(h_t) at cached steps to score ||r_pred-r_true|| vs ||r_anchor-r_true||. "
                "Analysis rm_analysis.py, report rm_report.py.",
-     "result": "CONSOLIDATION N=50 x2 seeds (100 paired), tau 0.3/0.4/0.5/0.65, raw/lowpass beta 0.5 + raw beta 0.75 over "
-               "adaptive_1.25/1.5/2.0. RM (raw, beta=0.5) beats PLAIN HorizonCache at MATCHED compute by +0.4 to +0.95 dB "
-               "across the ENTIRE 2.0-3.4x range -- EVERY 95% CI excludes 0 (e.g. rmraw0.5_adaptive_1.5: +0.86@2.01x, "
-               "+0.95@2.50x, +0.67@2.74x, +0.42@3.40x). At tau where no downstream refresh flips, the action sequence + achieved "
-               "speedup are BYTE-IDENTICAL to plain -- a pure residual-value ablation. vs SeaCache (matched achieved speedup): RM "
-               "roughly DOUBLES the E56 margin in the safe band (2.50x: plain +2.19 -> RM +3.14 dB; 2.74x: +1.26 -> +1.93) and "
-               "-- the headline -- FLIPS the ~3.4x OVERSHOOT: plain adaptive_* LOSES to SeaCache (-0.14/-0.16 dB, CI excl 0 "
-               "NEGATIVE) but RM WINS (+0.27/+0.29 dB, CI [+0.04,+0.53]). LPIPS improves everywhere too. beta=0.5 is the sweet "
-               "spot: beta=0.75 overshoots at 3.4x (+0.16, CI incl 0). raw > lowpass projection. HONEST NUANCE (oracle N=8): the "
-               "secant does NOT better-predict the instantaneous true residual -- frozen err 0.269 vs motion err 0.285, "
-               "-5.6% (i.e. slightly WORSE pointwise). So the gain is NOT a better per-step residual predictor; it is correction "
-               "of ACCUMULATED cache-staleness DRIFT over the cached trajectory -- the oracle is a local metric, PSNR is global. "
-               "Residual motion magnitude: extrapolation ratio p50~13%, p95~36% of ||r_anchor||.",
-     "verdict": "STRONG KEEP (raw secant, beta=0.5). rmraw0.5 over adaptive_1.25/1.5/2.0: STRONG KEEP -- beats plain "
-                "HorizonCache by +0.4-0.95 dB at matched compute (100 pairs, all CI>0) AND extends the positive SeaCache margin "
-                "past 2.7x to ~3.4x, flipping E56's overshoot from a measured loss into a measured win. lowpass secant KEEP "
-                "(same sign, ~half the gain). beta=0.75 KEEP but starts to overshoot at 3.4x. The claim stays bounded: this is a "
-                "matched-compute quality gain + a frontier extension to ~3.4x on FLUX text2img; it is NOT a per-step residual "
-                "predictor (oracle-negative), and the mechanism is drift correction, which should be stated as such.",
+     "result": "HEADLINE CONSOLIDATION N=100 x2 seeds (200 paired), tau 0.3/0.4/0.5/0.575/0.65 (0.575~3.0x added to fill the "
+               "2.8-3.2x band). Primary pairs adaptive_1.25 vs rmraw0.5_adaptive_1.25 and adaptive_1.5 vs rmraw0.5_adaptive_1.5. "
+               "RM (raw, beta=0.5) beats PLAIN HorizonCache at MATCHED compute in EVERY band, EVERY 95% CI excludes 0 "
+               "(adaptive_1.5: +0.93@2.02x, +0.90@2.50x, +0.56@2.74x, +0.19@3.03x[CI 0.03,0.34], +0.43@3.40x; adaptive_1.25 "
+               "near-identical). At tau where no downstream refresh flips, actions+achieved speedup are BYTE-IDENTICAL to plain -- "
+               "a pure residual-value ablation. vs SeaCache (matched achieved speedup): RM roughly DOUBLES the E56 margin in the "
+               "safe band (2.50x: plain +1.99 -> RM +2.90 dB; 2.74x: +2.18 -> +2.74) and -- the headline -- FLIPS the ~3.4x "
+               "OVERSHOOT: plain adaptive_* LOSES to SeaCache (-0.17/-0.19 dB, CI excl 0 NEGATIVE) but RM WINS (+0.25/+0.26 dB, "
+               "CI [+0.11,+0.42]); at 3.03x both still beat SeaCache (plain +0.43, RM +0.62). LPIPS improves everywhere. "
+               "HONEST BOUND: the >+0.5 dB RM-plain gains are CONCENTRATED in 2.0-2.8x; at 3.0-3.4x the RM-plain gain is smaller "
+               "(+0.19 to +0.43) though still CI-positive, and it is the SeaCache-margin SIGN that flips at 3.4x. HONEST NUANCE "
+               "(oracle N=8): the secant does NOT better-predict the instantaneous true residual -- frozen 0.269 vs motion 0.285, "
+               "-5.6% (slightly WORSE pointwise). So the gain is NOT a per-step residual predictor; it is correction of "
+               "ACCUMULATED cache-staleness DRIFT (oracle=local metric, PSNR=global). N=50 pilot: beta=0.5 sweet spot (0.75 "
+               "overshoots at 3.4x), raw > lowpass. Report has the two paper figures: PSNR-vs-speedup 3-curve headline + the "
+               "frozen-lag-vs-secant mechanism schematic, plus generated-sample grids (safe + overshoot bands).",
+     "verdict": "STRONG KEEP (raw secant, beta=0.5) -- holds at N=200 paired. rmraw0.5 over adaptive_1.25/1.5: beats plain "
+                "HorizonCache at matched compute in every band (all CI>0) AND flips E56's ~3.4x overshoot from a measured loss to "
+                "a measured win vs SeaCache. Pre-registered success condition (RM>+0.5 dB CI>0 AND extends positive SeaCache "
+                "margin to 3x+): both clauses hold, with the honest caveat that the >+0.5 dB gains sit in 2.0-2.8x while the 3x+ "
+                "story is the smaller-but-significant RM-plain gain plus the SeaCache-sign flip. lowpass KEEP (~half the gain, "
+                "N=50). Bounded: a matched-compute quality gain + frontier extension to ~3.4x on FLUX text2img; NOT a per-step "
+                "residual predictor (oracle-negative); mechanism is accumulated-drift correction, stated as such.",
      "nxt": "(1) Fold RM into the E56 consolidated frontier as the new headline (RM is free, so it strictly dominates plain "
             "HorizonCache). (2) Sweep beta in [0.4,0.6] x lambda-mode {sigma,h} for a tuned operating curve, and test the topk/sea "
             "projections + a per-step gate at 3.4x+ to push past the overshoot further. (3) Multi-seed / N=100 headline + "
