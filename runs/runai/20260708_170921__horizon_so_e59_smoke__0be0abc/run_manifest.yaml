@@ -1,0 +1,41 @@
+run_id: "20260708_170921__horizon_so_e59_smoke__0be0abc"
+job_name: "horizon-e59-so-smoke-0be0abc"
+status: "submitted"
+created_at: "2026-07-08T17:09:21+03:00"
+git_commit: "0be0abc"
+git_branch: "e59-second-order"
+repo_root: "/storage/nada/colorful-noise-e59"
+experiment: "E59 Second-Order Residual Hold + extreme-speed SeaCache comparison — SMOKE"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+dataset: "canonical_prompts fixture v1 (+ geneval extras to reach N) — same prompt/noise set as E58 smoke"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+stages:
+  - name: math_preflight
+    what: "horizon_cache/test_e59_math.py — beta2=0 identity, quadratic exactness (uniform Newton + nonuniform Lagrange), gates"
+  - name: micro
+    n: 2
+    tau_grid: [0.5, 1.2]
+    variants: [rm2raw0.5b0.1_adaptive_1.25, rmqraw0.5_adaptive_1.25]
+    what: "pipeline check for the new SO code paths at extreme tau; asserts SO applications + so_rho2 in traces"
+  - name: so_smoke
+    n: 8
+    seeds_per_prompt: 1
+    steps: 28
+    resolution: "512x512"
+    tau_grid: [0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2]
+    tau_note: "extended grid targets ~2.1/2.7/3.0/3.4/4.1/5.1/6.0x SeaCache achieved speedups (extreme-speed comparison)"
+    variants: [adaptive_1.25, adaptive_1.5,
+               rmraw0.5_adaptive_1.25, rmraw0.5_adaptive_1.5,
+               rm2raw0.5b0.05_adaptive_1.25, rm2raw0.5b0.1_adaptive_1.25, rm2raw0.5b0.25_adaptive_1.25,
+               rm2raw0.5b0.1g0.25r0.5_adaptive_1.25, rmqraw0.5_adaptive_1.25]
+    rm_lambda_mode: sigma
+    rm_lambda_max: 1.5
+    save_all_images: true
+    out: "results/horizon_so_smoke"
+smoke_tests: {math_preflight: "passed_local", pipeline_micro: "in_job_fail_fast"}
+expected_outputs:
+  light_tarball: "/storage/nada/colorful-noise-e59/e59_smoke_light.tar.gz"
+  samples_tarball: "/storage/nada/colorful-noise-e59/e59_smoke_samples.tar.gz"
+notes: "Smoke gates the N>=50 consolidation. Decision rule: proceed with SO if SO-FO > +0.2dB in any band
+  w/o LPIPS regression OR SO extends the positive-vs-SeaCache band; proceed with extreme-speed comparison
+  for FO regardless if E58 gains reproduce."
