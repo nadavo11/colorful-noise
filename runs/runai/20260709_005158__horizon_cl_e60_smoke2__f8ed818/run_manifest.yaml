@@ -1,0 +1,45 @@
+run_id: "20260709_005158__horizon_cl_e60_smoke2__f8ed818"
+job_name: "horizon-e60-cl-smoke2-f8ed818"
+status: "done"
+created_at: "2026-07-09T00:52:00+03:00"
+git_commit: "f8ed818"
+git_branch: "e60-closed-loop"
+repo_root: "/storage/nada/colorful-noise-e60"
+experiment: "E60 smoke2 — gate/scale recalibration of the closed-loop gain"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+dataset: "canonical_prompts fixture v1, N=8 x1 seed (same as smoke1)"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+smoke1_findings: |
+  runs/runai/20260709_001535__horizon_cl_e60_smoke__43b301d (rc=0):
+  - beta_hat is a clean regime detector: p50 0.29->0.03 monotone in speed; innovation<->gain
+    corr -0.60 (n=64, prediction b PASS); fixed-beta penalty removed at >=4.9x (+0.33*/+0.45*
+    cl-fixed) and cl-plain never CI-negative.
+  - BUT the LS-optimal gain (~0.2 in-band) under-corrects vs the PSNR-optimal 0.5:
+    cl-fixed -0.87*/-0.64* at 2-2.7x. Pointwise-MMSE != PSNR objective (E58 oracle dissonance
+    made quantitative). Raw beta^-as-gain fails proceed criterion (c) first clause.
+  - midpoint-lambda on cl: +0.24*/+0.25* in-band; on fixed: no gain (mostly negative).
+  - w=1.0 vs w=0.85 indistinguishable.
+variants:
+  - adaptive_1.25                      # plain baseline
+  - rmraw0.5_adaptive_1.25             # fixed-beta baseline (E58)
+  - rmcl0.5m0.25g0.08_adaptive_1.25    # SWITCH: beta=0.5 while beta_hat>=0.08 else 0 (Q4 rule)
+  - rmcl0.5m0.25g0.12_adaptive_1.25    # SWITCH: stricter gate
+  - rmcl0.2m0.25k2.5_adaptive_1.25     # RESCALE: beta_used=2.5*beta_hat (start 0.5)
+  - rmcl0.2m0.25k2.5mid_adaptive_1.25  # RESCALE + midpoint-lambda
+tau_grid: [0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4]
+proceed_criteria: |
+  Consolidate the best recalibrated variant if it (i) matches fixed-beta in-band
+  (cl-fixed not CI-negative at <3.7x) AND (ii) keeps the high-speed penalty removed
+  (cl-plain not CI-negative at >=4.3x). Prediction (b) already passed in smoke1.
+expected_outputs:
+  light_tarball: "/storage/nada/colorful-noise-e60/e60_smoke2_light.tar.gz"
+  samples_tarball: "/storage/nada/colorful-noise-e60/e60_smoke2_samples.tar.gz"
+notes: "392 runs, est ~1h. mu=0.25 speeds adaptation (few anchors at extreme tau)."
+result_dir: "results/horizon_cl_smoke2/gen_20260708_214213"
+headline: |
+  rc=0. NO recalibration matches fixed-beta in-band: gate0.08 best (-0.20*..-0.51*), k2.5
+  -0.57*/-0.66*; all keep penalty removal (+0.31..0.48* at >=5.2x) and cl-plain CI+ in-band
+  (k2.5+mid best: +1.10*/+0.77*). used-vs-final beta gap shows beta^ is LOW mid-trajectory and
+  rises late -> drift coherence is sigma-dependent; attenuation bias (errors-in-variables on the
+  noisy secant) explains LS ~0.2 << PSNR-optimal 0.5. Proceed to N=200 consolidation for the
+  definitive verdict + oracle smoking gun.

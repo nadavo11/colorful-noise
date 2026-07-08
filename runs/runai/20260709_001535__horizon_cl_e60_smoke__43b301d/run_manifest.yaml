@@ -1,0 +1,46 @@
+run_id: "20260709_001535__horizon_cl_e60_smoke__43b301d"
+job_name: "horizon-e60-cl-smoke-43b301d"
+status: "done"
+created_at: "2026-07-09T00:15:35+03:00"
+git_commit: "43b301d"
+git_branch: "e60-closed-loop"
+repo_root: "/storage/nada/colorful-noise-e60"
+experiment: "E60 smoke — Closed-Loop Residual Motion: online innovation-fit secant gain β̂ + midpoint-λ"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+dataset: "canonical_prompts fixture v1, N=8 x1 seed (same prompts/noise as E58/E59 smoke)"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+stages:
+  - name: math_preflight
+    tests: [test_e60_math.py, test_e59_math.py]
+  - name: micro
+    n: 2
+    tau_grid: [0.5, 1.4]
+    variants: [rmcl0.5_adaptive_1.25, rmcl0.5mid_adaptive_1.25, rmraw0.5mid_adaptive_1.25]
+    asserts: "cl_beta_hat_final in metrics rows; beta adapts within trajectory; cl_innov_rel in
+      fresh traces; midpoint lambda differs from point on jump steps"
+    out: "results/horizon_cl_micro"
+  - name: smoke
+    n: 8
+    tau_grid: [0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4]
+    variants: [adaptive_1.25, adaptive_1.5, rmraw0.5_adaptive_1.25, rmraw0.5_adaptive_1.5,
+               rmcl0.5_adaptive_1.25, rmcl0.5_adaptive_1.5, rmcl0.5mid_adaptive_1.25,
+               rmcl0.5mid_adaptive_1.5, rmraw0.5mid_adaptive_1.25, rmcl0.5w1.0_adaptive_1.25]
+    out: "results/horizon_cl_smoke"
+proceed_criteria: |
+  Pre-registered (from docs/methods/closed_loop_residual_motion.md):
+  (a) β̂ distributes around ~0.5 in the 2-2.7x band with no sweep, falls toward 0 above ~4x;
+  (b) per-image innovation norm anti-correlates with the per-image RM-plain gain;
+  (c) rmcl >= rmraw (paired PSNR) at low tau AND rmcl recovers plain at tau>=1.2 (no E58-style
+      -0.97 penalty). Consolidate if (c) holds and at least one of (a)/(b); otherwise diagnose.
+expected_outputs:
+  smoke_tarball: "/storage/nada/colorful-noise-e60/e60_smoke_light.tar.gz"
+  samples_tarball: "/storage/nada/colorful-noise-e60/e60_smoke_samples.tar.gz"
+notes: "648 method runs + 8 full refs; est ~1.5-2.5h at the E59 smoke rate."
+result_dir: "results/horizon_cl_smoke/gen_20260708_212013"
+headline: |
+  rc=0, 712 rows. beta_hat = clean regime DETECTOR (p50 0.29->0.03 monotone in speed;
+  innovation<->gain corr -0.60 PASS; fixed-beta penalty removed >=4.9x: cl-fixed +0.33*/+0.45*;
+  cl-plain never CI-negative) but miscalibrated GAIN (LS-optimal ~0.2 in-band vs PSNR-optimal
+  0.5 -> cl-fixed -0.87*/-0.64* at 2-2.7x). Proceed gate: criterion (c) first clause FAILED for
+  raw beta-as-gain -> iterate with gate/scale recalibration (smoke2, f8ed818) before consolidation.
+  midpoint-lambda: +0.24*/+0.25* in-band on cl, no gain on fixed. w1.0 == w0.85.

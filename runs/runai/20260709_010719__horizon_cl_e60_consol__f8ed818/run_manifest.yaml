@@ -1,0 +1,40 @@
+run_id: "20260709_010719__horizon_cl_e60_consol__f8ed818"
+job_name: "horizon-e60-cl-consol-f8ed818"
+status: "submitted"
+created_at: "2026-07-09T01:07:19+03:00"
+git_commit: "f8ed818"
+git_branch: "e60-closed-loop"
+repo_root: "/storage/nada/colorful-noise-e60"
+experiment: "E60 consolidation — closed-loop RM definitive verdict (gain KILL / detector value) + oracle smoking gun"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+dataset: "canonical_prompts fixture v1 (+ geneval extras), N=100 x2 seeds = 200 paired"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+smoke_gate:
+  smoke1: "runs/runai/20260709_001535__horizon_cl_e60_smoke__43b301d — detector PASS (corr -0.60,
+    beta^ monotone 0.29->0.03, penalty removed >=4.9x) but raw beta^-as-gain KILL in-band
+    (-0.87*/-0.64*; LS-optimal ~0.2 << PSNR-optimal 0.5)"
+  smoke2: "runs/runai/20260709_005158__horizon_cl_e60_smoke2__f8ed818 — gate/scale recalibrations
+    keep penalty removal (+0.31..0.48* at >=5.2x) and in-band cl-plain CI+ but NONE matches fixed
+    in-band (best gate0.08 -0.20*..-0.51*); beta^ low mid-trajectory rises late (sigma-dependent
+    coherence); attenuation bias (errors-in-variables) explains the level gap"
+  decision: "consolidate at N=200 to nail the science: Q1-Q4 answers + oracle smoking gun
+    (LS beta^ should be pointwise-BETTER yet PSNR-WORSE than fixed 0.5)"
+stages:
+  - name: consolidation
+    n: 100
+    seeds_per_prompt: 2
+    tau_grid: [0.3, 0.4, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4]
+    variants: [adaptive_1.25, rmraw0.5_adaptive_1.25, rmcl0.5_adaptive_1.25,
+               rmcl0.5m0.25g0.08_adaptive_1.25, rmcl0.2m0.25k2.5mid_adaptive_1.25]
+    out: "results/horizon_cl_consol"
+  - name: oracle
+    n: 4
+    tau_grid: [0.5, 1.0]
+    variants: [rmraw0.5_adaptive_1.25, rmcl0.5_adaptive_1.25]
+    rm_oracle: true
+    out: "results/horizon_cl_oracle"
+expected_outputs:
+  consol_tarball: "/storage/nada/colorful-noise-e60/e60_consol_light.tar.gz"
+  samples_tarball: "/storage/nada/colorful-noise-e60/e60_consol_samples.tar.gz"
+  oracle_tarball: "/storage/nada/colorful-noise-e60/e60_oracle_light.tar.gz"
+notes: "~9.4k sampler runs (200 keys x (5 variants x 9 tau + 9 sea/tea + 1 full)); est 4-6h."
