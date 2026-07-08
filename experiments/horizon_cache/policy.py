@@ -96,6 +96,18 @@ class HorizonV0Config:
     rm_lowpass_pool: int = 2         # lowpass: avg-pool kernel over the token grid
     rm_gate_rho: float = 0.0         # optional safety gate: cancel motion if extrap ratio > rho (0 = off)
     rm_oracle_diag: bool = False     # diagnostic only: also run the TRUE block residual to score r_pred
+    # --- E59 second-order residual hold ---
+    # Three fresh anchors r_{a-2}, r_{a-1}, r_a. 'uniform' adds a Newton-backward curvature term:
+    #   r_pred = r_a + β1·λ·P1(Δr_a) + β2·λ(λ+1)/2·P2(Δ²r_a),  Δ²r_a = r_a − 2r_{a-1} + r_{a-2}
+    # 'quad' fits the exact σ-nonuniform Lagrange quadratic through the three anchors and damps:
+    #   r_pred = r_a + β_quad·(r_quad(σ) − r_a)   (replaces the first-order term)
+    # rm_so_mode='none' or β2=0 (uniform) recovers E58 first-order RM exactly. Still NO extra forward.
+    rm_so_mode: str = "none"         # "none" | "uniform" | "quad"
+    rm_beta2: float = 0.0            # curvature shrink (uniform mode); 0 ≡ first-order RM
+    rm_beta_quad: float = 0.5        # damping toward r_anchor (quad mode)
+    rm_projection2: str = "raw"      # P2 applied to Δ²r (same options as rm_projection)
+    rm_so_gate_gamma: float | None = None    # enable SO only if cos(Δr_a, Δr_{a-1}) > γ
+    rm_so_gate_rho_max: float | None = None  # ... and ρ2 = ‖Δ²r‖₁/‖Δr_a‖₁ < ρ_max
 
     def headroom(self, acc: float) -> float:
         return max(0.0, 1.0 - acc / max(1e-9, self.tau_cache))

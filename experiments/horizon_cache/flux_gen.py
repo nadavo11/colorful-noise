@@ -71,6 +71,12 @@ class FluxCacheState:
         self.h_prev_filt: torch.Tensor | None = None
         self.steps_since_anchor: int = 0
         self.steps_prev_to_anchor: int = 1
+        # --- E59 second-order residual hold: third fresh anchor r_{a-2} + its sigma, and the
+        # anchor-triple curvature diagnostics (scalars, refreshed on every fresh forward when a
+        # second-order mode is enabled). None for first-order RM — E58 path untouched.
+        self.r_prev2: torch.Tensor | None = None
+        self.sigma_prev2: float | None = None
+        self.so_diag: dict | None = None
 
 
 # ------------------------- E58 residual-motion primitives -------------------------
@@ -80,11 +86,13 @@ def _grid_hw(image_ids: torch.Tensor) -> tuple[int, int]:
     return int(ids[:, 1].max().item() + 1), int(ids[:, 2].max().item() + 1)
 
 
-def _project_residual(dr: torch.Tensor, image_ids: torch.Tensor, sigma: float, cfg) -> torch.Tensor:
+def _project_residual(dr: torch.Tensor, image_ids: torch.Tensor, sigma: float, cfg,
+                      proj: str | None = None) -> torch.Tensor:
     """Stable-subspace projection P(Δr) of the residual secant.
     raw = identity · lowpass = avg-pool+upsample over token grid · topk = keep most energetic
-    channels · sea = SeaCache Wiener filter (a,b)=(1-σ,σ) on the residual grid."""
-    proj = getattr(cfg, "rm_projection", "raw")
+    channels · sea = SeaCache Wiener filter (a,b)=(1-σ,σ) on the residual grid.
+    `proj` overrides cfg.rm_projection (E59 uses it for the P2 curvature projection)."""
+    proj = proj if proj is not None else getattr(cfg, "rm_projection", "raw")
     if proj == "raw":
         return dr
     if proj == "topk":
@@ -124,9 +132,37 @@ def _rm_lambda(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float, cfg)
     return lam, float(lam_sigma), float(lam_age), float(lam_h)
 
 
+def _anchor_triple_diag(r_a: torch.Tensor, r_am1: torch.Tensor, r_am2: torch.Tensor) -> dict:
+    """E59 curvature diagnostics on three fresh residual anchors (scalars, computed once per
+    refresh). ρ2 = ‖Δ²r‖₁/‖Δr_a‖₁ (curvature-to-velocity), cosΔ = cos(Δr_a, Δr_{a-1})
+    (directional stability), ρ_anchor = ‖Δ²r‖₁/‖r_a‖₁."""
+    eps = 1e-8
+    dr_a = (r_a - r_am1).float()
+    dr_am1 = (r_am1 - r_am2).float()
+    d2r = dr_a - dr_am1
+    dr_l1 = float(dr_a.abs().sum().item())
+    d2r_l1 = float(d2r.abs().sum().item())
+    cos = float((dr_a.flatten() @ dr_am1.flatten()).item()
+                / (float(dr_a.norm().item()) * float(dr_am1.norm().item()) + eps))
+    return {
+        "so_rho2": d2r_l1 / (dr_l1 + eps),
+        "so_cos_delta": cos,
+        "so_rho_anchor": d2r_l1 / (float(r_a.abs().float().sum().item()) + eps),
+        "so_dr_l1": dr_l1,
+        "so_d2r_l1": d2r_l1,
+    }
+
+
 def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float,
                      image_ids: torch.Tensor, cfg):
-    """Predict the moved residual r_pred = r_anchor + β·λ·P(Δr) and return (r_pred, diag)."""
+    """Predict the moved residual and return (r_pred, diag).
+
+    First order (E58):        r_pred = r_anchor + β1·λ·P1(Δr_a)
+    Second order  (E59 'uniform', Newton backward on 3 anchors, uniform spacing):
+                              r_pred = r_anchor + β1·λ·P1(Δr_a) + β2·λ(λ+1)/2·P2(Δ²r_a)
+    Quadratic     (E59 'quad', exact nonuniform Lagrange through (σ_k, r_k), damped):
+                              r_pred = r_anchor + β_quad·(r_quad(σ) − r_anchor)
+    β2 = 0 (or missing anchors) keeps the E58 first-order path bit-identical."""
     r_anchor = state.prev_residual
     dr = r_anchor - state.r_prev
     P = _project_residual(dr, image_ids, sigma, cfg)
@@ -135,6 +171,43 @@ def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float
     denom = float(r_anchor.abs().float().sum().item()) + 1e-8
     secant_norm = float(P.abs().float().sum().item()) / denom
     motion = beta * lam * P
+    # ---- E59 second-order residual hold ----
+    so_mode = getattr(cfg, "rm_so_mode", "none")
+    beta2 = float(getattr(cfg, "rm_beta2", 0.0))
+    so_coeff = lam * (lam + 1.0) / 2.0
+    so_used = False
+    so_gated_off = False
+    so_term_ratio = 0.0
+    if so_mode != "none" and state.r_prev2 is not None:
+        d = state.so_diag or {}
+        gamma = getattr(cfg, "rm_so_gate_gamma", None)
+        rho_max = getattr(cfg, "rm_so_gate_rho_max", None)
+        gate_ok = ((gamma is None or d.get("so_cos_delta", 1.0) > float(gamma)) and
+                   (rho_max is None or d.get("so_rho2", 0.0) < float(rho_max)))
+        if not gate_ok:
+            so_gated_off = True
+        elif so_mode == "uniform" and beta2 != 0.0:
+            d2r = r_anchor - 2.0 * state.r_prev + state.r_prev2
+            P2 = _project_residual(d2r, image_ids, sigma, cfg,
+                                   proj=getattr(cfg, "rm_projection2", "raw"))
+            so_term = (beta2 * so_coeff) * P2
+            so_term_ratio = float(so_term.abs().float().sum().item()) / denom
+            motion = motion + so_term
+            so_used = True
+        elif so_mode == "quad":
+            # Lagrange quadratic in σ through the three fresh anchors, evaluated at σ_i;
+            # replaces the first-order term entirely (damped toward r_anchor by β_quad).
+            s0, s1, s2 = float(state.sigma_prev2), float(state.sigma_prev), float(state.sigma_anchor)
+            si = float(sigma)
+            eps = 1e-12
+            L0 = ((si - s1) * (si - s2)) / ((s0 - s1) * (s0 - s2) + eps)
+            L1 = ((si - s0) * (si - s2)) / ((s1 - s0) * (s1 - s2) + eps)
+            L2 = ((si - s0) * (si - s1)) / ((s2 - s0) * (s2 - s1) + eps)
+            r_quad = L0 * state.r_prev2 + L1 * state.r_prev + L2 * r_anchor
+            bq = float(getattr(cfg, "rm_beta_quad", 0.5))
+            motion = bq * (r_quad - r_anchor)
+            so_term_ratio = float(motion.abs().float().sum().item()) / denom
+            so_used = True
     extrap_ratio = float(motion.abs().float().sum().item()) / denom
     cancelled = False
     rho = float(getattr(cfg, "rm_gate_rho", 0.0) or 0.0)
@@ -149,6 +222,14 @@ def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float
         "rm_lambda_sigma": lam_s, "rm_lambda_age": lam_a, "rm_lambda_h": lam_h,
         "rm_residual_secant_norm": secant_norm, "rm_residual_extrapolation_ratio": extrap_ratio,
     }
+    if so_mode != "none":
+        diag.update({
+            "rm_so_mode": so_mode, "rm_beta2": beta2, "rm_so_used": so_used,
+            "rm_so_gated_off": so_gated_off, "rm_so_coeff": so_coeff,
+            "rm_so_term_ratio": so_term_ratio,
+        })
+        if state.so_diag:
+            diag.update(state.so_diag)
     return r_pred, diag
 
 
@@ -158,7 +239,7 @@ def _rm_event_kv(rm_diag, feat, cfg) -> dict[str, Any]:
         return {}
     head = cfg.headroom(feat.get("acc_rel_l1")) if cfg is not None else None
     er = rm_diag["rm_residual_extrapolation_ratio"]
-    return {
+    kv = {
         "rm_used": True, "rm_was_cancelled": rm_diag["rm_was_cancelled"],
         "rm_beta": rm_diag["rm_beta"], "rm_projection": rm_diag["rm_projection"],
         "rm_lambda": rm_diag["rm_lambda"], "rm_lambda_sigma": rm_diag["rm_lambda_sigma"],
@@ -167,6 +248,11 @@ def _rm_event_kv(rm_diag, feat, cfg) -> dict[str, Any]:
         "rm_residual_extrapolation_ratio": er,
         "rm_motion_per_headroom": (er / (head + 1e-8)) if head is not None else None,
     }
+    if "rm_so_mode" in rm_diag:   # E59 second-order fields
+        kv.update({k: rm_diag.get(k) for k in
+                   ("rm_so_mode", "rm_beta2", "rm_so_used", "rm_so_gated_off", "rm_so_coeff",
+                    "rm_so_term_ratio", "so_rho2", "so_cos_delta", "so_rho_anchor")})
+    return kv
 
 
 @torch.no_grad()
@@ -209,7 +295,9 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
         if rm_on and state.r_prev is not None:
             r_pred, rm_diag = _residual_motion(state, h_filt, sigma, image_ids, rm_cfg)
             if ledger is not None:
-                ledger.record_resmotion(cancelled=rm_diag["rm_was_cancelled"])
+                ledger.record_resmotion(cancelled=rm_diag["rm_was_cancelled"],
+                                        so_used=rm_diag.get("rm_so_used", False),
+                                        so_gated_off=rm_diag.get("rm_so_gated_off", False))
             # optional oracle: score r_pred against the TRUE residual at this cached state
             if getattr(rm_cfg, "rm_oracle_diag", False):
                 r_true = (_full_stack(hs) - hs).detach()
@@ -227,7 +315,11 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
         cur = _full_stack(hs)
         new_res = (cur - ori).detach()
         if rm_on and state.prev_residual is not None:
-            # shift fresh-residual history for the secant (penultimate ← previous anchor)
+            # shift fresh-residual history for the secant (penultimate ← previous anchor);
+            # E59 second-order additionally keeps the third anchor r_{a-2}
+            if getattr(rm_cfg, "rm_so_mode", "none") != "none":
+                state.r_prev2 = state.r_prev
+                state.sigma_prev2 = state.sigma_prev
             state.r_prev = state.prev_residual
             state.sigma_prev = state.sigma_anchor
             state.h_prev_filt = state.h_anchor_filt
@@ -237,6 +329,10 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
             state.sigma_anchor = float(sigma)
             state.h_anchor_filt = h_filt.detach()
             state.steps_since_anchor = 0
+            # E59: refresh the anchor-triple curvature diagnostics at every new anchor
+            if (getattr(rm_cfg, "rm_so_mode", "none") != "none"
+                    and state.r_prev is not None and state.r_prev2 is not None):
+                state.so_diag = _anchor_triple_diag(new_res, state.r_prev, state.r_prev2)
         hs2 = cur
         ran_full = True
 
@@ -484,6 +580,10 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
             trace.update(rm_diag)
             trace["rm_motion_per_headroom"] = (
                 rm_diag["rm_residual_extrapolation_ratio"] / (head + 1e-8) if head is not None else None)
+        elif (ran_full and cfg is not None and getattr(cfg, "rm_so_mode", "none") != "none"
+              and state.so_diag is not None):
+            # E59: anchor-triple curvature diagnostics logged at the fresh anchor that formed them
+            trace.update(state.so_diag)
         traces.append(trace)
         step_index += 1
 

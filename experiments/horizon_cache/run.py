@@ -37,29 +37,56 @@ from horizon_cache.scheduler import ACTIONS
 def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | None = None) -> HorizonV0Config:
     """Parse a variant name into a HorizonV0Config.
 
-    Grammar: [rm<proj><beta>_ | pc<alpha>_]<base>[_cancel<kappa>|_shrink<kappa>]
+    Grammar: [rm-token_ | pc<alpha>_]<base>[_cancel<kappa>|_shrink<kappa>]
       base   = regrid_1.25 | regrid_1.5 | adaptive_1.25 | adaptive_1.5 | adaptive_2.0
       pc     = HorizonCache-PC cached-endpoint predictor-corrector, alpha in [0,1]  (E57)
-      rm     = E58 Residual Motion Cache: proj in {raw,lowpass,topk,sea}, beta the shrink factor
-               (λ-mode / λ-max / gate ρ / top-k frac / pool come from rm_defaults, run-level)
+      rm-token (proj in {raw,lowpass,topk,sea}; λ-mode / λ-max / gate ρ / top-k frac / pool /
+      P2 projection come from rm_defaults, run-level):
+        rm<proj><beta>                        E58 first-order secant (β1 the shrink factor)
+        rm2<proj><b1>b<b2>[g<γ>][r<ρmax>]     E59 second-order uniform hold; optional gate:
+                                              SO on only if cosΔ>γ and ρ2<ρmax
+        rmq<proj><βquad>                      E59 damped nonuniform Lagrange quadratic
       gate   = optional curvature accept/reject on the jump
-    Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · rmraw0.5_adaptive_1.5 · rmlowpass0.25_adaptive_2.0
+    Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · rmraw0.5_adaptive_1.5 ·
+              rm2raw0.5b0.1_adaptive_1.25 · rm2raw0.5b0.1g0.25r0.5_adaptive_1.25 ·
+              rmqraw0.5_adaptive_1.25
     """
+    import re as _re
     v = variant
     rm = dict(rm_enabled=False)
     if v.startswith("rm"):
-        rest = v[2:]
+        so_mode = "none"
+        if v.startswith("rm2"):
+            so_mode, rest = "uniform", v[3:]
+        elif v.startswith("rmq"):
+            so_mode, rest = "quad", v[3:]
+        else:
+            rest = v[2:]
         proj = "raw"
         for cand in ("lowpass", "topk", "sea", "raw"):
             if rest.startswith(cand):
                 proj = cand
                 rest = rest[len(cand):]
                 break
-        beta_str, _, base = rest.partition("_")
-        try:
-            beta = float(beta_str)
-        except ValueError:
-            beta = 0.5
+        num_str, _, base = rest.partition("_")
+        beta, beta2, beta_quad = 0.5, 0.0, 0.5
+        gamma, rho_max = None, None
+        if so_mode == "uniform":
+            m = _re.match(r"^([0-9.]+)b([0-9.]+)(?:g([0-9.]+))?(?:r([0-9.]+))?$", num_str)
+            if m:
+                beta, beta2 = float(m.group(1)), float(m.group(2))
+                gamma = float(m.group(3)) if m.group(3) else None
+                rho_max = float(m.group(4)) if m.group(4) else None
+        elif so_mode == "quad":
+            try:
+                beta_quad = float(num_str)
+            except ValueError:
+                pass
+        else:
+            try:
+                beta = float(num_str)
+            except ValueError:
+                pass
         d = rm_defaults or {}
         rm = dict(rm_enabled=True, rm_projection=proj, rm_beta=beta,
                   rm_lambda_mode=d.get("rm_lambda_mode", "sigma"),
@@ -67,7 +94,10 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                   rm_topk_frac=d.get("rm_topk_frac", 0.25),
                   rm_lowpass_pool=d.get("rm_lowpass_pool", 2),
                   rm_gate_rho=d.get("rm_gate_rho", 0.0),
-                  rm_oracle_diag=d.get("rm_oracle_diag", False))
+                  rm_oracle_diag=d.get("rm_oracle_diag", False),
+                  rm_so_mode=so_mode, rm_beta2=beta2, rm_beta_quad=beta_quad,
+                  rm_projection2=d.get("rm_projection2", "raw"),
+                  rm_so_gate_gamma=gamma, rm_so_gate_rho_max=rho_max)
         v = base
     pc_enabled = False
     pc_alpha = 0.5
@@ -168,6 +198,7 @@ def build_methods(args, num_steps: int, seed: int) -> dict[str, Any]:
         rm_lowpass_pool=getattr(args, "rm_lowpass_pool", 2),
         rm_gate_rho=getattr(args, "rm_gate_rho", 0.0),
         rm_oracle_diag=getattr(args, "rm_oracle", False),
+        rm_projection2=getattr(args, "rm_projection2", "raw"),
     )
     for tau in args.tau_grid:
         methods[f"seacache_t{tau:g}"] = SeaCachePolicy(tau)
@@ -412,6 +443,8 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--rm-topk-frac", type=float, default=0.25)
     ap.add_argument("--rm-lowpass-pool", type=int, default=2)
     ap.add_argument("--rm-gate-rho", type=float, default=0.0)
+    ap.add_argument("--rm-projection2", choices=["raw", "lowpass", "topk", "sea"], default="raw",
+                    help="E59: P2 projection applied to the curvature term Δ²r")
     ap.add_argument("--rm-oracle", action="store_true",
                     help="diagnostic: score r_pred vs the TRUE residual (extra full forward, N<=4 only)")
     ap.add_argument("--v1-bundle", default="")

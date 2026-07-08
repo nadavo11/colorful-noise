@@ -70,6 +70,9 @@ class ComputeLedger:
     num_residual_motion_applications: int = 0
     num_residual_motion_cancelled: int = 0
     num_rm_oracle_full_forwards: int = 0    # diagnostic-only true-residual evals (not in deploy cost)
+    # E59 second-order residual hold: also pure tensor arithmetic (no extra forward)
+    num_second_order_applications: int = 0
+    num_second_order_gated_off: int = 0
 
     def record(self, action: str, skipped: int = 0) -> None:
         self.num_executed_nodes += 1
@@ -89,11 +92,16 @@ class ComputeLedger:
         """Oracle ablation: endpoint velocity is a FULL forward (full block stack ≈ cost 1)."""
         self.num_pc_oracle_full_forwards += n
 
-    def record_resmotion(self, cancelled: bool = False) -> None:
+    def record_resmotion(self, cancelled: bool = False, so_used: bool = False,
+                         so_gated_off: bool = False) -> None:
         """One residual-motion application on a cached/jump step (free tensor arithmetic)."""
         self.num_residual_motion_applications += 1
         if cancelled:
             self.num_residual_motion_cancelled += 1
+        if so_used:
+            self.num_second_order_applications += 1
+        if so_gated_off:
+            self.num_second_order_gated_off += 1
 
     def record_rm_oracle(self, n: int = 1) -> None:
         """Diagnostic true-residual full forward (measured, NOT charged to deploy cost)."""
@@ -137,6 +145,8 @@ class ComputeLedger:
             "num_residual_motion_applications": self.num_residual_motion_applications,
             "num_residual_motion_cancelled": self.num_residual_motion_cancelled,
             "num_rm_oracle_full_forwards": self.num_rm_oracle_full_forwards,
+            "num_second_order_applications": self.num_second_order_applications,
+            "num_second_order_gated_off": self.num_second_order_gated_off,
         }
 
 
@@ -196,6 +206,16 @@ class JumpEvent:
     rm_motion_per_headroom: float | None = None
     rm_used: bool = False
     rm_was_cancelled: bool = False
+    # --- E59 second-order residual hold diagnostics; None when SO disabled ---
+    rm_so_mode: str | None = None
+    rm_beta2: float | None = None
+    rm_so_used: bool = False
+    rm_so_gated_off: bool = False
+    rm_so_coeff: float | None = None
+    rm_so_term_ratio: float | None = None
+    so_rho2: float | None = None
+    so_cos_delta: float | None = None
+    so_rho_anchor: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
