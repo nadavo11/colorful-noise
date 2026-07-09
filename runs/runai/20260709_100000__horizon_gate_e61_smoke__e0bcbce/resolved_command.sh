@@ -41,8 +41,12 @@ d = pathlib.Path(sys.argv[1])
 rows = json.loads((d / "metrics.json").read_text())
 assert len(rows) >= 8, f"micro produced only {len(rows)} rows"
 gate_rows = [r for r in rows if "rmg" in r["method"] or "rmbg" in r["method"]]
-assert gate_rows and all(r.get("gate_n_obs", 0) > 0 or "betahat_gate" in r["method"] for r in gate_rows), \
-    f"gate aggregates missing: {[(r['method'], r.get('gate_n_obs')) for r in gate_rows]}"
+def _ok(r):
+    if "rmbg" in r["method"]:
+        return r.get("rm_beta_used_mean") is not None
+    return r.get("gate_n_obs", 0) > 0
+assert gate_rows and all(_ok(r) for r in gate_rows), \
+    f"gate aggregates missing: {[(r['method'], r.get('gate_n_obs'), r.get('rm_beta_used_mean')) for r in gate_rows]}"
 t = next((d / "traces").glob("*rmgh0.08*.json"))
 tr = json.loads(t.read_text())["traces"]
 assert any("gate_g" in x for x in tr), "gate_g missing from fresh-anchor traces"

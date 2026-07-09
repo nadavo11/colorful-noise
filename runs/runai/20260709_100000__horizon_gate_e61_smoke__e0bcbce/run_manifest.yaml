@@ -34,3 +34,11 @@ expected_outputs:
   smoke_tarball: "/storage/nada/colorful-noise-e61/e61_smoke_light.tar.gz"
   samples_tarball: "/storage/nada/colorful-noise-e61/e61_smoke_samples.tar.gz"
 notes: "7 variants x 8 tau + full + seacache/teacache baselines, N=8; est ~1.5-2h at E59/E60 smoke rate."
+retry_1: |
+  FAILED (crashlooped, 4 attempts, all identical): the micro-stage preflight's own assertion
+  script had a bug -- it checked for the literal substring "betahat_gate" in the method name,
+  but the actual method name is "rmbg0.25_..." (never contains that substring), so the
+  assertion always failed regardless of whether the gate math worked. Logs show the underlying
+  gate mechanism WAS correct (gate_n_obs=8/3 for rmgh/rmgs/rmgf micro rows) -- this was a test
+  script bug, not an implementation bug. Fixed the assertion to check rm_beta_used_mean for
+  rmbg rows and gate_n_obs for rmg rows; resubmitted under the same job name.
