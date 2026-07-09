@@ -1624,3 +1624,39 @@ construction.
 `results/horizon_so_smoke/gen_20260708_141648/`, `results/horizon_so_oracle/gen_20260708_182803/`;
 code `experiments/horizon_cache/{flux_gen,scheduler,policy,run,so_analysis,so_report,test_e59_math}.py`;
 manifest `experiments/manifests/E59.json`; doc `docs/experiment-reports/EXPERIMENT_59.md`.
+
+## E60 — Closed-Loop Residual Motion: online innovation-fit β̂ + midpoint-λ (FLUX)
+
+**Method.** The sampler computes the true block residual at every refresh; the previous anchor pair
+implies a forecast of exactly that tensor, so the innovation e_k = r_k − r̂(σ_k) is a free, causal,
+per-trajectory error signal. Fit the secant gain online — exponentially-forgetting regularized LS
+over anchors, one normalized observation per refresh, β̂ clamped to [0, β_max] so stale secants
+recover plain HorizonCache by construction — and optionally evaluate λ at the stride midpoint
+(midpoint quadrature of the moving residual). `rm_beta_mode="fixed"` bit-identical to E58
+(unit-tested). Grammar `rmcl<prior>[w][m][x][g<gate>][k<κ>][mid]_<base>`; gate = β̂-as-switch,
+κ = LS→PSNR rescale (added after smoke 1). Smoke N=8 ×2 rounds → consolidation N=100×2 = 200
+paired (τ 0.3–1.4, 11,000 runs) + N=4 oracle stage. Zero extra forwards; E56/E58 protocol intact.
+
+**Key result.** β̂ is an excellent regime **detector** — p50 falls monotonically 0.22→0.03 across
+2.1×→5.3×, per-image innovation↔RM-gain corr −0.44 (n=1800, prediction b PASS) — but a
+miscalibrated **gain**: the LS optimum (~0.2) under-corrects vs the PSNR-optimal 0.5 in-band
+(cl−fixed −0.59*/−0.55*/−0.26* at 2.1–2.7×), while beating fixed exactly where it inverts
+(+0.17* @4.47×, +0.39* @τ1.4; best method vs SeaCache in the >5.2× band, +0.82*). Neither a
+switch (g0.08) nor a κ=2.5 rescale closes the in-band gap (β̂ is low mid-trajectory, rises late —
+σ-dependent coherence). **Oracle smoking gun**: fixed β=0.5 makes the pointwise residual
+prediction WORSE than frozen (−8.8%/−26.0% at τ 0.5/1.0) yet wins PSNR; LS β̂ is pointwise
+≈neutral (+1.3%/−3.4%) yet loses PSNR — direct proof the pointwise-MMSE gain ≠ the PSNR-optimal
+gain (the benefit is accumulated drift correction the anchor-consistency objective cannot see).
+
+**Verdict.** Closed-loop β̂ as in-band gain **KILL** (objective mismatch, measured — not tuning);
+closed-loop at extreme speed **KEEP** (automates the E59 band rule at the high end, zero cost);
+midpoint-λ **KILL**. The gain lever is now closed both ways (E59: no better basis; E60: no
+self-calibrated scalar). The innovation's validated home is the jump policy (innovation-gated
+stride), not the gain.
+
+**Artifacts.** `reports/horizon_cache_closed_loop.{html,_summary.md,_summary.json}`,
+`reports/horizon_cache_closed_loop_assets/`; `results/horizon_cl_consol/gen_20260708_215716/`,
+`results/horizon_cl_smoke/gen_20260708_212013/`, `results/horizon_cl_smoke2/gen_20260708_214213/`,
+`results/horizon_cl_oracle/gen_20260709_015416/`;
+code `experiments/horizon_cache/{flux_gen,policy,scheduler,run,cl_analysis,cl_report,test_e60_math}.py`;
+manifest `experiments/manifests/E60.json`; doc `docs/experiment-reports/EXPERIMENT_60.md`.

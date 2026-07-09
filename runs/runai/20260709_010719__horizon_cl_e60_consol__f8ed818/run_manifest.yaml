@@ -1,6 +1,6 @@
 run_id: "20260709_010719__horizon_cl_e60_consol__f8ed818"
 job_name: "horizon-e60-cl-consol-f8ed818"
-status: "submitted"
+status: "done"
 created_at: "2026-07-09T01:07:19+03:00"
 git_commit: "f8ed818"
 git_branch: "e60-closed-loop"
@@ -38,3 +38,14 @@ expected_outputs:
   samples_tarball: "/storage/nada/colorful-noise-e60/e60_consol_samples.tar.gz"
   oracle_tarball: "/storage/nada/colorful-noise-e60/e60_oracle_light.tar.gz"
 notes: "~9.4k sampler runs (200 keys x (5 variants x 9 tau + 9 sea/tea + 1 full)); est 4-6h."
+result_dirs:
+  consolidation: "results/horizon_cl_consol/gen_20260708_215716"
+  oracle: "results/horizon_cl_oracle/gen_20260709_015416"
+headline: |
+  N=200 (11,000 rows) + oracle, both rc=0. VERDICT: closed-loop beta^ as in-band gain KILL
+  (cl-fixed -0.59*/-0.55*/-0.26* at 2.1-2.7x; LS-optimal ~0.2 << PSNR-optimal 0.5), at extreme
+  speed KEEP (cl-fixed +0.17* @4.47x, +0.28* @5.22x, +0.39* @tau1.4; best vs SeaCache >5.2x band
+  +0.82*). Detector validated: beta^ p50 0.22->0.03 monotone; innovation<->gain corr -0.44
+  (n=1800). ORACLE SMOKING GUN: fixed 0.5 pointwise-WORSE than frozen (-8.8%/-26.0%) yet
+  PSNR-better; LS beta^ pointwise ~neutral (+1.3%/-3.4%) yet PSNR-worse -> pointwise-MMSE !=
+  PSNR objective, gain lever closed both ways.

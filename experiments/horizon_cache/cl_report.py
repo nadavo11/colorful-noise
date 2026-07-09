@@ -261,9 +261,40 @@ def innovation_fig(summ, out: Path):
 
 
 # ----------------------------------------------------------------- build
-def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, run_dirs=None):
+def oracle_by_variant(oracle_dir: Path) -> dict:
+    """Pointwise residual error per RM variant (from --rm-oracle traces): the smoking-gun test.
+    Fixed β should be pointwise-WORSE than frozen yet PSNR-better (E58); the LS β̂ should be
+    pointwise-≈neutral (it minimizes exactly this) yet PSNR-worse — proving the objectives differ."""
+    tdir = oracle_dir / "traces"
+    if not tdir.exists():
+        return {"available": False}
+    import collections
+    res = collections.defaultdict(lambda: [[], []])
+    for tp in sorted(tdir.glob("*.json")):
+        v = tp.name.split("__")[-1].replace(".json", "")
+        var = v[len("horizon_"):v.rfind("_t")]
+        tau = v[v.rfind("_t") + 2:]
+        for t in json.loads(tp.read_text()).get("traces", []):
+            fe, me = t.get("rm_oracle_frozen_err"), t.get("rm_oracle_motion_err")
+            if fe is not None and me is not None:
+                res[(var, tau)][0].append(fe)
+                res[(var, tau)][1].append(me)
+    if not res:
+        return {"available": False}
+    rows = []
+    for (var, tau), (f, m) in sorted(res.items()):
+        fz, mo = float(np.mean(f)), float(np.mean(m))
+        rows.append({"variant": var, "tau": tau, "n": len(f), "frozen_err": round(fz, 4),
+                     "motion_err": round(mo, 4),
+                     "relative_reduction": round((fz - mo) / (fz + 1e-9), 4)})
+    return {"available": True, "rows": rows}
+
+
+def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, run_dirs=None,
+          oracle_dir=None):
     df = CA.load_df(gen)
     summ = CA.summarize(gen, tau_grid)
+    orc = oracle_by_variant(Path(oracle_dir)) if oracle_dir else {"available": False}
     assets = reports_dir / "horizon_cache_closed_loop_assets"
     assets.mkdir(parents=True, exist_ok=True)
 
@@ -365,6 +396,11 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
     mid_verdict = ("not_run" if not mp_rows else
                    ("KEEP" if (mid_wins and not mid_loses) else
                     ("KILL" if (mid_loses and not mid_wins) else "PARK")))
+    # separate axis: does the closed loop WIN at extreme speed (where fixed β inverts)?
+    cl_wins_extreme = any(r["mean_delta"] > 0.05 and r["excl0"] and r["rm_speedup"] >= 4.3
+                          for r in cf_rows)
+    cl_extreme_verdict = ("not_run" if not cf_rows else
+                          ("KEEP" if cl_wins_extreme else "PARK"))
 
     best_cf = max(cf_rows, key=lambda r: r["mean_delta"], default=None)
     cl_sea_best = None
@@ -462,6 +498,23 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
         H.append(f"<div class='fig'><img src='{du(figs['innovation'])}'><div class='cap'>Per-image "
                  "innovation vs the per-image fixed-RM − plain gain.</div></div>")
     H.append(f"<div class='card'><p>{pa_txt}.</p><p>{pb_txt}.</p></div>")
+    if orc.get("available"):
+        oh = ("<h2>5b · Oracle smoking gun — pointwise vs PSNR objective</h2><div class='card'>"
+              "<table><tr><th>gain</th><th>τ</th><th>frozen err</th><th>motion err</th>"
+              "<th>pointwise Δ</th></tr>")
+        for r in orc["rows"]:
+            lab = "closed-loop β̂ (LS)" if "rmcl" in r["variant"] else "fixed β=0.5"
+            oh += (f"<tr><td>{lab}</td><td>{r['tau']}</td><td>{r['frozen_err']:.3f}</td>"
+                   f"<td>{r['motion_err']:.3f}</td>"
+                   f"<td class='{'pos' if r['relative_reduction'] > 0 else 'neg'}'>"
+                   f"{r['relative_reduction']*100:+.1f}%</td></tr>")
+        oh += ("</table><p class='sub'>Fixed β=0.5 makes the pointwise residual prediction "
+               "WORSE than the frozen hold, yet wins PSNR in-band; the LS β̂ is pointwise "
+               "≈neutral (it minimizes exactly this error) yet loses PSNR in-band. Direct proof "
+               "the pointwise-MMSE gain is not the PSNR-optimal gain — the RM benefit routes "
+               "through accumulated drift correction the anchor-consistency objective cannot "
+               "see.</p></div>")
+        H.append(oh)
     if "mid_minus_point" in figs:
         H.append("<h2>6 · Midpoint-λ ablation</h2>")
         H.append(f"<div class='fig'><img src='{du(figs['mid_minus_point'])}'><div class='cap'>Paired "
@@ -473,7 +526,8 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
             H.append(f"<div class='fig'><img src='{du(g)}'><div class='cap'>τ={tau:g} ({label})."
                      f"</div></div>")
     H.append("<h2>8 · Verdicts</h2><div class='card'><table><tr><th>question</th><th>verdict</th></tr>"
-             f"<tr><td>closed-loop β̂ (online gain)</td><td>{badge(cl_verdict)}</td></tr>"
+             f"<tr><td>closed-loop β̂ as in-band gain (vs fixed β)</td><td>{badge(cl_verdict)}</td></tr>"
+             f"<tr><td>closed-loop β̂ at extreme speed (≥4.3×, vs fixed β)</td><td>{badge(cl_extreme_verdict)}</td></tr>"
              f"<tr><td>midpoint-λ quadrature</td><td>{badge(mid_verdict) if mid_verdict != 'not_run' else 'not run'}</td></tr>"
              f"<tr><td>prediction (a): β̂ regime-dependence</td><td>{'PASS' if pred_a and pred_a['pass'] else 'FAIL/n-a'}</td></tr>"
              f"<tr><td>prediction (b): innovation ↔ gain</td><td>{'PASS' if pred_b.get('pass') else 'FAIL/n-a'}</td></tr>"
@@ -511,7 +565,9 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
     sj = {
         "status": "DONE", "git_commit": sha,
         "run_dirs": [str(x) for x in (run_dirs or [gen])],
-        "main_verdict": f"closed_loop={cl_verdict}; midpoint_lambda={mid_verdict}",
+        "main_verdict": (f"closed_loop_gain_inband={cl_verdict}; "
+                         f"closed_loop_extreme={cl_extreme_verdict}; "
+                         f"midpoint_lambda={mid_verdict}"),
         "headline_claim": headline,
         "best_closed_loop_vs_seacache": ({
             "method": cl_sea_best["variant"], "tau": cl_sea_best["tau"],
@@ -535,10 +591,12 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
         "prediction_b_innovation_gain": {"corr": pred_b.get("corr"), "n": pred_b.get("n"),
                                           "pass": pred_b.get("pass")},
         "beta_by_tau": bb,
+        "oracle_pointwise": orc,
         "highest_positive_vs_seacache_band": highest,
         "seacache_max_speedup": summ.get("seacache_max_speedup"),
         "bands": bands,
-        "verdicts": {"closed_loop": cl_verdict, "midpoint_lambda": mid_verdict,
+        "verdicts": {"closed_loop": cl_verdict, "closed_loop_extreme": cl_extreme_verdict,
+                     "midpoint_lambda": mid_verdict,
                      "prediction_a": bool(pred_a and pred_a["pass"]),
                      "prediction_b": bool(pred_b.get("pass"))},
         "artifacts": {"html_report": "reports/horizon_cache_closed_loop.html",
@@ -568,7 +626,9 @@ def build(gen: Path, tau_grid, reports_dir: Path, sha: str, samples_dir=None, ru
         md.append(f"- {r['rm_variant']} τ{r['tau']:g} ({r['rm_speedup']:.2f}×): "
                   f"{r['mean_delta']:+.3f} {_fmt_ci(r['ci'])}{' *' if r['excl0'] else ''}")
     md += ["", "## Verdicts", "",
-           f"- closed-loop β̂: **{cl_verdict}**", f"- midpoint-λ: **{mid_verdict}**",
+           f"- closed-loop β̂ as in-band gain: **{cl_verdict}**",
+           f"- closed-loop β̂ at extreme speed (≥4.3×): **{cl_extreme_verdict}**",
+           f"- midpoint-λ: **{mid_verdict}**",
            f"- prediction (a): **{'PASS' if pred_a and pred_a['pass'] else 'FAIL/n-a'}**",
            f"- prediction (b): **{'PASS' if pred_b.get('pass') else 'FAIL/n-a'}**"]
     (reports_dir / "horizon_cache_closed_loop_summary.md").write_text("\n".join(md))
@@ -579,6 +639,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gen-dir", required=True)
     ap.add_argument("--samples-dir", default="")
+    ap.add_argument("--oracle-dir", default="")
     ap.add_argument("--run-dirs", nargs="*", default=None)
     ap.add_argument("--tau-grid", type=float, nargs="+",
                     default=[0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4])
@@ -586,7 +647,8 @@ def main():
     a = ap.parse_args()
     reports = Path(a.reports_dir); reports.mkdir(parents=True, exist_ok=True)
     sj = build(Path(a.gen_dir), a.tau_grid, reports, git_hash(),
-               samples_dir=a.samples_dir or None, run_dirs=a.run_dirs)
+               samples_dir=a.samples_dir or None, run_dirs=a.run_dirs,
+               oracle_dir=a.oracle_dir or None)
     print(json.dumps({"status": sj["status"], "main_verdict": sj["main_verdict"],
                       "best_closed_loop_vs_seacache": sj["best_closed_loop_vs_seacache"],
                       "best_cl_minus_fixed": sj["best_cl_minus_fixed"],

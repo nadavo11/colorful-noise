@@ -1236,4 +1236,53 @@ EXPERIMENTS = [
             "falsifiable (beta_hat ~0.5 in 2-2.7x, ->0 above 4x). Then SD3 (MMDiT harness) remains the transfer question.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_59.md",
      "results": None, "image": None},
+
+    {"id": "E60", "title": "Closed-Loop Residual Motion -- online innovation-fit secant gain + midpoint-lambda",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 x2 rounds -> "
+               "consolidation N=100 x2 seeds = 200 paired (tau 0.3..1.4, 11k sampler runs) + N=4 oracle stage, "
+               "cluster H100 (Run:AI)",
+     "status": "done",
+     "motivation": "E59 killed higher-order residual extrapolation; the remaining lever is the FIXED GAIN beta=0.5 "
+                   "(regime-dependent per the E58 pilot: ~0.75 optimal in-band, harmful at speed). The sampler computes the "
+                   "true residual at every refresh anyway, so the innovation e_k = r_k - r_hat(sigma_k) is a free, causal, "
+                   "per-trajectory error signal nothing used. E60: fit beta online from it (exponentially-forgetting "
+                   "regularized LS over anchors, clamp [0,beta_max]) so beta_hat->0 on stale secants recovers plain "
+                   "HorizonCache BY CONSTRUCTION; plus midpoint-lambda (stride-midpoint quadrature of the moving residual). "
+                   "Pre-registered: (a) beta_hat ~0.5 in 2-2.7x falling to 0 above 4x; (b) innovation anti-correlates with "
+                   "the per-image RM-plain gain. Zero extra forwards; E56/E58 protocol unchanged.",
+     "method": "rm_beta_mode='cl' in flux_gen.py: at each fresh anchor, one normalized LS observation "
+               "beta_obs=<dr,y>/|dr|^2 with weight lam^2 and forgetting w; beta_hat=(mu*prior+num)/(mu+den). 'fixed' mode "
+               "bit-identical to E58 (unit-tested, test_e60_math.py: recovery of synthetic beta*, clamp-to-plain on "
+               "reversing secants, forgetting tracks regime change, midpoint-lambda exactness). Grammar "
+               "rmcl<prior>[w..][m..][x..][g<gate>][k<kappa>][mid]_<base>: g = SWITCH (beta=0.5 while beta_hat>=gate else "
+               "0), k = RESCALE (beta=kappa*beta_hat) -- added after smoke1 showed the raw LS level is miscalibrated. "
+               "Analysis cl_analysis.py, report cl_report.py.",
+     "result": "The closed loop is an excellent regime DETECTOR but a miscalibrated GAIN, and the oracle proves why. "
+               "DETECTOR (N=200): beta_hat p50 falls monotonically 0.22->0.03 as speed goes 2.1x->5.3x; per-image innovation "
+               "vs fixed-RM-minus-plain gain corr = -0.44 (n=1800; prediction b PASS). At extreme speed the closed loop "
+               "beats fixed beta where fixed inverts: cl-fixed +0.17* @4.47x, +0.28* @5.22x, +0.39* @tau1.4, and softens the "
+               "E59 penalty (cl-plain -0.58* @tau1.4 vs fixed's -0.97*; ns at 3.9-4.5x) -- best method vs SeaCache in the "
+               ">5.2x band (+0.82* vs fixed +0.53*). GAIN (in-band): KILL -- the LS optimum (~0.2) systematically "
+               "under-corrects vs the PSNR-optimal 0.5: cl-fixed -0.59*/-0.55*/-0.26* at 2.1-2.7x; neither a switch "
+               "(g0.08: -0.40*..-0.14*) nor a kappa=2.5 rescale (+midpoint: reintroduces the high-tau penalty -0.76* @tau1.4) "
+               "closes it, because beta_hat is low mid-trajectory and rises late (drift coherence is sigma-dependent -- no "
+               "per-trajectory scalar matches a fixed 0.5). ORACLE SMOKING GUN (prediction a level-failure explained): fixed "
+               "beta=0.5 makes the POINTWISE residual prediction WORSE than frozen (-8.8% @tau0.5, -26.0% @tau1.0) yet wins "
+               "PSNR in-band; the LS beta_hat is pointwise ~neutral (+1.3%/-3.4% -- it minimizes exactly that error) yet "
+               "loses PSNR in-band. Direct proof the pointwise-MMSE gain is NOT the PSNR-optimal gain: the RM benefit routes "
+               "through accumulated drift correction that the anchor-consistency objective cannot see (attenuation bias on "
+               "the noisy secant compounds it). prediction (a): shape PASS, level FAIL (in-band p50 0.185, fast 0.022).",
+     "verdict": "Closed-loop beta_hat as in-band gain KILL (pointwise-optimal != PSNR-optimal; measured, not a tuning "
+                "failure). Closed-loop at extreme speed KEEP: it automates the E59 band rule at the high end (cl>fixed CI+ "
+                "at >=4.47x, best-in-band >5.2x vs SeaCache) at zero cost. Midpoint-lambda KILL (helps only the "
+                "under-corrected cl in-band; hurts at speed). Operating rule stands: fixed-beta RM <=3.5x, plain beyond -- "
+                "now with the mechanism quantified: any gain calibrated from anchor-consistency signals will under-correct.",
+     "nxt": "The gain lever is now closed both ways (E59: no better basis; E60: no self-calibrated scalar gain). What the "
+            "innovation IS good for: a per-image regime detector (corr -0.44). Two candidates: (1) innovation-gated "
+            "STRIDE -- feed |e|/|r| into the jump policy's headroom so strides shrink when the residual stops being "
+            "predictable (policy-side, orthogonal to the gain); (2) SD3/MMDiT transfer of the E56/E58 stack (the standing "
+            "question since E56). A sigma-scheduled beta profile (calibrated offline per band, not per-trajectory) is the "
+            "remaining cheap gain idea but expected value is low given E60's level finding.",
+     "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_60.md",
+     "results": None, "image": None},
 ]

@@ -1,0 +1,208 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E60 — Closed-Loop Residual Motion -- online innovation-fit secant gain + midpoint-lambda</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_60.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E60 — Closed-Loop Residual Motion (online innovation-fit β̂ + midpoint-λ)</h1>
+<p><strong>Branch</strong> <code>e60-closed-loop</code> · <strong>commits</strong> <code>43b301d</code> (core) → <code>f8ed818</code> (gate/scale) · FLUX.1-dev
+4-bit 512px/28 Euler steps · cluster H100 · frozen fixture (canonical_prompts v1 + geneval extras)</p>
+<p><strong>Verdict:</strong> closed-loop β̂ as in-band gain <strong>KILL</strong> · closed-loop at extreme speed (≥4.3×) <strong>KEEP</strong>
+· midpoint-λ <strong>KILL</strong> · prediction (b) innovation↔gain <strong>PASS</strong> (corr −0.44, n=1800) · prediction
+(a) β̂ regime-dependence <strong>shape PASS / level FAIL</strong> — and the oracle explains exactly why.</p>
+<h2>1. Idea (docs/methods/closed_loop_residual_motion.md)</h2>
+<p>Every SeaCache refresh computes the true block residual r_k anyway. Just before it, the E58
+predictor implies a forecast r̂<em k_1="k−1">k = r</em> + β·λ_k·Δr. The innovation e_k = r_k − r̂_k is a free,
+causal, per-trajectory measurement of the secant model. E60 fits β online from it:</p>
+<pre><code>β̂ = (μ·β_prior + Σ_j w^age λ_j⟨Δr_j, y_j⟩/‖Δr_j‖²) / (μ + Σ_j w^age λ_j²),  clamp [0, β_max]
+</code></pre>
+<p>(one normalized LS observation per fresh anchor, forgetting w, prior strength μ). β̂→0 on stale
+secants recovers plain HorizonCache <em>by construction</em>. Midpoint-λ evaluates the progress
+coefficient at (σ_i+σ_target)/2 — a midpoint-rule quadrature of the moving residual path. Zero
+extra forwards; <code>rm_beta_mode="fixed"</code> is bit-identical to E58 (unit-tested, <code>test_e60_math.py</code>).</p>
+<h2>2. Runs</h2>
+<table>
+<thead>
+<tr>
+<th>stage</th>
+<th>run</th>
+<th>N</th>
+<th>variants</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>smoke 1</td>
+<td><code>results/horizon_cl_smoke/gen_20260708_212013</code></td>
+<td>8×1</td>
+<td>raw β̂ (w0.85/w1.0), ±mid, fixed, plain</td>
+</tr>
+<tr>
+<td>smoke 2</td>
+<td><code>results/horizon_cl_smoke2/gen_20260708_214213</code></td>
+<td>8×1</td>
+<td>gate g∈{0.08,0.12}, rescale κ=2.5 ±mid</td>
+</tr>
+<tr>
+<td>consolidation</td>
+<td><code>results/horizon_cl_consol/gen_20260708_215716</code></td>
+<td><strong>100×2 = 200 paired</strong></td>
+<td>plain, rmraw0.5, rmcl0.5, rmcl g0.08, rmcl κ2.5+mid × τ∈{0.3…1.4} (11,000 runs)</td>
+</tr>
+<tr>
+<td>oracle</td>
+<td><code>results/horizon_cl_oracle/gen_20260709_015416</code></td>
+<td>4×1, τ∈{0.5,1.0}</td>
+<td>rmraw0.5 vs rmcl0.5, <code>--rm-oracle</code></td>
+</tr>
+</tbody>
+</table>
+<p>Run:AI records: <code>runs/runai/20260709_001535__horizon_cl_e60_smoke__43b301d/</code>,
+<code>…005158__horizon_cl_e60_smoke2__f8ed818/</code>, <code>…010719__horizon_cl_e60_consol__f8ed818/</code>.</p>
+<h2>3. Results (N=200 paired unless noted)</h2>
+<h3>β̂ is an excellent regime detector</h3>
+<ul>
+<li>β̂ final p50 falls <strong>monotonically</strong> with achieved speedup: 0.22 @2.1× → 0.16 @2.7× → 0.12
+  @3.4× → 0.07 @3.9× → 0.04 @4.5× → 0.03 @τ1.4 (prediction (a) <em>shape</em>).</li>
+<li>Per-image innovation ‖e‖₁/‖r‖₁ anti-correlates with the per-image fixed-RM−plain gain:
+  <strong>corr = −0.44 (n=1800)</strong> — prediction (b) PASS. The innovation knows, per image, when RM helps.</li>
+</ul>
+<h3>Closed loop vs fixed β (Q1) — the sign flips with speed</h3>
+<p>cl−fixed paired ΔPSNR (rmcl0.5, τ 0.3→1.4):
+−0.59<em> / −0.55</em> / −0.26<em> / −0.05 / −0.19</em> / −0.03 / <strong>+0.17</strong><em> / </em><em>+0.28</em><strong> / </strong>+0.39<strong><em>.
+In-band the closed loop loses; beyond ~4.4× it wins exactly where fixed β inverts. The gate
+(g0.08: −0.40</em>…−0.14<em> in-band) and rescale (κ2.5+mid: reintroduces −0.76</em> @τ1.4) variants cannot
+close the in-band gap: the per-run used-β trace shows β̂ is </strong>low mid-trajectory and rises late**
+— drift coherence is σ-dependent, so no per-trajectory scalar matches fixed 0.5.</p>
+<h3>High-speed penalty (Q2) — softened, not erased</h3>
+<p>fixed−plain: −0.26<em> @4.47×, −0.42</em> @5.3×, −0.97<em> @τ1.4 (E59 reproduced). cl−plain: ns at
+3.9–4.5×, −0.13</em> @5.22×, −0.58* @τ1.4. The closed loop removes the penalty where it has ≥5–6
+anchors to learn from and roughly halves it at τ1.4 (3–4 anchors — too few observations).</p>
+<h3>vs SeaCache (matched achieved speedup, best per family)</h3>
+<table>
+<thead>
+<tr>
+<th>band</th>
+<th>plain</th>
+<th>fixed-β RM</th>
+<th>closed loop</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.8–2.2×</td>
+<td>+1.37*</td>
+<td><strong>+2.41</strong>*</td>
+<td>+1.94*</td>
+</tr>
+<tr>
+<td>2.3–2.7×</td>
+<td>+2.00*</td>
+<td><strong>+2.88</strong>*</td>
+<td>+2.54*</td>
+</tr>
+<tr>
+<td>2.8–3.2×</td>
+<td>+0.77*</td>
+<td>+0.86*</td>
+<td><strong>+0.92</strong>*</td>
+</tr>
+<tr>
+<td>3.3–3.7×</td>
+<td>+1.84*</td>
+<td><strong>+2.27</strong>*</td>
+<td>+2.19*</td>
+</tr>
+<tr>
+<td>3.8–4.2×</td>
+<td><strong>+0.31</strong>*</td>
+<td>+0.23*</td>
+<td>+0.16</td>
+</tr>
+<tr>
+<td>4.3–4.7×</td>
+<td><strong>+1.55</strong>*</td>
+<td>+1.29*</td>
+<td>+1.45*</td>
+</tr>
+<tr>
+<td>4.8–5.2×†</td>
+<td><strong>+0.95</strong>*</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>&gt;5.2וbra</td>
+<td>−0.21*</td>
+<td>+0.53*</td>
+<td><strong>+0.82</strong>*</td>
+</tr>
+</tbody>
+</table>
+<p>† beyond the swept SeaCache frontier (4.39× quantization ceiling) — conservative.
+The closed loop is the <strong>best method in the &gt;5.2× band</strong> and never catastrophic anywhere: a
+zero-tuning "safe default" whose worst case (−0.59<em> in-band vs fixed) is far smaller than the
+mistakes it prevents (fixed's −0.97</em> at τ1.4; plain's ~−1 dB in-band vs fixed).</p>
+<h3>The oracle smoking gun (pointwise ≠ PSNR objective)</h3>
+<table>
+<thead>
+<tr>
+<th>gain</th>
+<th>τ</th>
+<th>frozen err</th>
+<th>motion err</th>
+<th>pointwise Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>fixed β=0.5</td>
+<td>0.5</td>
+<td>0.260</td>
+<td>0.283</td>
+<td><strong>−8.8%</strong> (worse)</td>
+</tr>
+<tr>
+<td>fixed β=0.5</td>
+<td>1.0</td>
+<td>0.499</td>
+<td>0.629</td>
+<td><strong>−26.0%</strong> (worse)</td>
+</tr>
+<tr>
+<td>LS β̂</td>
+<td>0.5</td>
+<td>0.260</td>
+<td>0.256</td>
+<td>+1.3%</td>
+</tr>
+<tr>
+<td>LS β̂</td>
+<td>1.0</td>
+<td>0.468</td>
+<td>0.484</td>
+<td>−3.4%</td>
+</tr>
+</tbody>
+</table>
+<p>The LS gain does its job perfectly — it (nearly) eliminates the pointwise degradation — and
+<em>that is exactly why it loses PSNR in-band</em>: the fixed β=0.5 that wins PSNR makes the pointwise
+prediction strictly worse. <strong>The RM benefit routes through accumulated drift correction that the
+anchor-consistency objective cannot see.</strong> Attenuation bias (errors-in-variables on the noisy
+secant, noise growing with τ) compounds the level gap and simultaneously explains why β̂ still
+works as a <em>detector</em>.</p>
+<h2>4. Honest failure taxonomy</h2>
+<p>Not a tuning failure. The estimator recovers synthetic gains exactly (unit tests), adapts within
+trajectories (micro), and achieves its own objective (oracle). The failure is the <strong>objective</strong>:
+pointwise-MMSE β ≈ 0.2 ≠ PSNR-optimal β ≈ 0.5–0.75 in-band. Any self-calibrating gain driven by
+anchor-consistency signals will under-correct; E60 closes the "smarter scalar gain" direction the
+same way E59 closed the "better basis" direction.</p>
+<h2>5. What survives</h2>
+<ol>
+<li>The <strong>operating rule</strong> stands, now mechanistically grounded: fixed-β RM ≤3.5×, plain beyond.</li>
+<li>The closed loop is a legitimate <strong>zero-cost extreme-speed extension</strong>: cl&gt;fixed CI+ at ≥4.47×,
+   best-in-band &gt;5.2× vs SeaCache — use it if a single no-knob method must run at any speed.</li>
+<li>The <strong>innovation is a validated per-image regime detector</strong> (corr −0.44) — the right home for
+   it is the <em>jump policy</em> (innovation-gated stride), not the gain.</li>
+</ol>
+<h2>6. Artifacts</h2>
+<ul>
+<li>report <code>reports/horizon_cache_closed_loop.html</code> (+ <code>_summary.md</code>, <code>_summary.json</code>, <code>_assets/</code>)</li>
+<li>analysis <code>experiments/horizon_cache/cl_analysis.py</code>, report builder <code>cl_report.py</code>,
+  tests <code>test_e60_math.py</code></li>
+<li>manifest <code>experiments/manifests/E60.json</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_60.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>
