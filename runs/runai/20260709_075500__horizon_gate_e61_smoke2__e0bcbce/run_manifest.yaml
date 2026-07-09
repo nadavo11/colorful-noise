@@ -1,0 +1,38 @@
+run_id: "20260709_075500__horizon_gate_e61_smoke2__e0bcbce"
+job_name: "horizon-e61-gate-smoke2-e0bcbce"
+status: "submitted"
+created_at: "2026-07-09T07:55:00+03:00"
+git_commit: "e0bcbce"
+git_branch: "e61-innovation-gate"
+repo_root: "/storage/nada/colorful-noise-e61"
+experiment: "E61 smoke2 — kappa recalibrated to the measured I_a scale"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+dataset: "canonical_prompts fixture v1, N=8 x1 seed (same as smoke1)"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+smoke1_findings: |
+  runs/runai/20260709_100000__horizon_gate_e61_smoke__e0bcbce (rc=0): innovation diagnostic
+  strong (corr -0.61, n=64, improves on E60's -0.44); binned E[gain|I] crosses zero at
+  I~0.75-0.78. But kappa=0.08/0.15/0.20 << measured I_a scale (0.43-1.0+) -> hard/soft gates
+  ALWAYS CLOSED (g~0, -1.51*/-1.09* in-band vs fixed), floor STUCK AT FLOOR (constant
+  beta~0.25, -0.62*/-0.48* in-band). No variant tested the actual gating hypothesis.
+variants:
+  - adaptive_1.25                # plain baseline
+  - rmraw0.5_adaptive_1.25       # fixed-beta baseline (E58)
+  - rmgh0.65_adaptive_1.25       # hard gate below the measured crossover (should mostly close)
+  - rmgh0.75_adaptive_1.25       # hard gate AT the measured crossover
+  - rmgh0.85_adaptive_1.25       # hard gate above the crossover (should mostly stay open)
+  - rmgs0.7_adaptive_1.25        # soft gate, ramp centered below crossover
+  - rmgs0.9_adaptive_1.25        # soft gate, ramp centered above crossover
+  - rmgf0.8g0.5_adaptive_1.25    # floor gate at the crossover, gmin=0.5 (beta in [0.25,0.5])
+  - rmgf0.8g0.5a0.5_adaptive_1.25 # floor gate + EMA alpha=0.5 (spec's primary candidate, recalibrated)
+tau_grid: [0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4]
+proceed_criteria: |
+  Same as smoke1: gate-fixed > -0.1dB in 2.0-3.5x AND (gate-fixed > +0.2dB CI+ above 4.3x OR
+  gate-plain improves on fixed-plain's high-speed penalty). Consolidate the best 1-3 variants
+  if any passes; otherwise report honestly which failure mode applies (innovation too stale /
+  gate too conservative in-band / fixed threshold beats innovation / plain+fixed selection
+  already sufficient).
+expected_outputs:
+  smoke2_tarball: "/storage/nada/colorful-noise-e61/e61_smoke2_light.tar.gz"
+  samples_tarball: "/storage/nada/colorful-noise-e61/e61_smoke2_samples.tar.gz"
+notes: "9 variants x 8 tau, N=8; est ~1.5-2h."

@@ -1,6 +1,6 @@
 run_id: "20260709_100000__horizon_gate_e61_smoke__e0bcbce"
 job_name: "horizon-e61-gate-smoke-e0bcbce"
-status: "submitted"
+status: "done"
 created_at: "2026-07-09T10:00:00+03:00"
 git_commit: "e0bcbce"
 git_branch: "e61-innovation-gate"
@@ -42,3 +42,17 @@ retry_1: |
   gate mechanism WAS correct (gate_n_obs=8/3 for rmgh/rmgs/rmgf micro rows) -- this was a test
   script bug, not an implementation bug. Fixed the assertion to check rm_beta_used_mean for
   rmbg rows and gate_n_obs for rmg rows; resubmitted under the same job name.
+result_dir: "results/horizon_gate_smoke/gen_20260709_072453"
+headline: |
+  rc=0, 520 rows. Innovation diagnostic REPRODUCES/IMPROVES E60: corr(Ibar, RM-plain gain) =
+  -0.61 (n=64) vs E60's -0.44; binned E[gain|I] crosses zero at I~0.75-0.78 (clean monotone
+  ramp from +1.67 at I~0.43 to -0.78 at I~1.0). BUT the tested kappa values (0.08 hard /
+  0.15 soft / 0.20 floor) are WAY below the measured I_a scale (0.43-1.0+): at these kappa,
+  hard/soft gates are essentially ALWAYS CLOSED (g~0 -> beta~0, behaves like "always off",
+  loses badly to fixed in-band: -1.51*/-1.09* at 2.1-2.7x) and floor is stuck AT ITS FLOOR
+  (beta~0.25 constant, -0.62*/-0.48* in-band) -- neither is actually gating adaptively at
+  these settings. None satisfy the -0.1dB in-band proceed clause as literally tested.
+  DECISION: this is a miscalibration, not evidence against the mechanism -- the crossover
+  point (I~0.75) IS the informative signal the spec's diagnostic step was meant to produce.
+  Recalibrating kappa to bracket the measured crossover (smoke2, same branch) before judging
+  proceed/kill, exactly as E60's smoke1->smoke2 recalibration.
