@@ -127,6 +127,19 @@ class HorizonV0Config:
     # λ evaluation point for the motion term: "point" = left endpoint σ_i (E58);
     # "mid" = stride midpoint (σ_i+σ_target)/2 — midpoint-rule quadrature of the moving residual.
     rm_lambda_eval: str = "point"    # "point" | "mid"
+    # --- E61 Innovation-Gated Fixed RM ---
+    # E60 showed the LS β̂ is a good regime DETECTOR but a miscalibrated in-band GAIN (pointwise
+    # objective ≠ PSNR objective). E61 keeps the fixed β=0.5 in-band and only throttles it with a
+    # causal gate g_a ∈ [0,1] computed from the innovation of the FIXED-β prediction at the last
+    # fresh anchor: r̂_a = r_{a-1} + 0.5·λ_a·Δr_{a-1}, ε_a = r_a − r̂_a, I_a = ‖ε_a‖₁/‖r_a‖₁ (or a
+    # Δr-/pred-normalized variant). g_a is known BEFORE any cached step after anchor a (causal).
+    # rm_beta_mode="gate" -> β_i = 0.5·g_a ; "betahat_gate" -> reuses the E60 LS β̂ only as the
+    # gate signal (g_a = clip(β̂/0.5, 0,1)), never as the gain itself.
+    rm_gate_type: str = "soft"       # "hard" | "soft" | "floor"
+    rm_gate_kappa: float = 0.15      # threshold/softness scale on I_a (or Ī_a)
+    rm_gate_gmin: float = 0.0        # floor gate: g = gmin + (1-gmin)*soft(I_a); betahat_gate: β=gmin+(0.5-gmin)*g
+    rm_gate_ema_alpha: float = 1.0   # EMA on I_a across anchors; 1.0 = no smoothing (raw I_a)
+    rm_gate_norm: str = "r"          # "r"=‖r_a‖₁ · "d"=‖Δr_{a-1}‖₁ · "p"=‖r̂_a−r_{a-1}‖₁
 
     def headroom(self, acc: float) -> float:
         return max(0.0, 1.0 - acc / max(1e-9, self.tau_cache))

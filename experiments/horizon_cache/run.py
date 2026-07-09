@@ -53,11 +53,23 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                                               defaults 0.85/1.0/1.0; raw projection).
                                               g: SWITCH mode — β=0.5 while β̂≥gate else 0;
                                               k: β_used = κ·β̂ (LS→PSNR gain recalibration)
+        rmg<h|s|f><κ>[g<gmin>][a<α>][n<r|d|p>]_<base>
+                                              E61 innovation-gated fixed RM: β_i = 0.5·g_a with
+                                              g_a from the FIXED-β=0.5 forecast innovation I_a at
+                                              the last fresh anchor (causal). h=hard 1[I<κ],
+                                              s=soft clip(1-I/κ,0,1), f=floor gmin+(1-gmin)·soft;
+                                              g<gmin> only meaningful for f; a<α> EMA on I_a
+                                              (α=1 default = no smoothing); n = I_a normalization
+                                              (r=‖r_a‖₁ default, d=‖Δr_{a-1}‖₁, p=‖r̂_a-r_{a-1}‖₁)
+        rmbg<gmin>_<base>                    E61 β̂-as-gate (optional/lower priority): reuses the
+                                              E60 LS β̂ only as a risk signal, g=clip(β̂/0.5,0,1),
+                                              β=gmin+(0.5-gmin)·g (gmin=0 → β=0.5·g)
       gate   = optional curvature accept/reject on the jump
     Examples: adaptive_1.5 · pc0.5_adaptive_2.0 · rmraw0.5_adaptive_1.5 ·
               rm2raw0.5b0.1_adaptive_1.25 · rmqraw0.5_adaptive_1.25 ·
               rmcl0.5_adaptive_1.25 · rmcl0.5mid_adaptive_1.5 · rmraw0.5mid_adaptive_1.25 ·
-              rmcl0.5w1.0m0.5x1.0_adaptive_1.25
+              rmcl0.5w1.0m0.5x1.0_adaptive_1.25 · rmgh0.08_adaptive_1.25 ·
+              rmgf0.20g0.5a0.5_adaptive_1.25 · rmbg0.25_adaptive_1.25
     """
     import re as _re
     v = variant
@@ -65,12 +77,19 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
     if v.startswith("rm"):
         so_mode = "none"
         beta_mode = "fixed"
+        gate_type = "soft"
         if v.startswith("rm2"):
             so_mode, rest = "uniform", v[3:]
         elif v.startswith("rmq"):
             so_mode, rest = "quad", v[3:]
         elif v.startswith("rmcl"):
             beta_mode, rest = "cl", v[4:]
+        elif v.startswith("rmg"):
+            beta_mode = "gate"
+            gate_type = {"h": "hard", "s": "soft", "f": "floor"}.get(v[3], "soft")
+            rest = v[4:]
+        elif v.startswith("rmbg"):
+            beta_mode, rest = "betahat_gate", v[4:]
         else:
             rest = v[2:]
         proj = "raw"
@@ -84,6 +103,7 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
         gamma, rho_max = None, None
         cl_prior, cl_forget, cl_mu, cl_beta_max = 0.5, 0.85, 1.0, 1.0
         cl_gate, cl_scale = 0.0, 1.0
+        gate_kappa, gate_gmin, gate_alpha, gate_norm = 0.15, 0.0, 1.0, "r"
         lambda_eval = "point"
         if num_str.endswith("mid"):
             lambda_eval = "mid"
@@ -103,6 +123,21 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                     cl_gate = float(m.group(5))
                 if m.group(6):
                     cl_scale = float(m.group(6))
+        elif beta_mode == "gate":
+            m = _re.match(r"^([0-9.]+)(?:g([0-9.]+))?(?:a([0-9.]+))?(?:n([rdp]))?$", num_str)
+            if m:
+                gate_kappa = float(m.group(1))
+                if m.group(2):
+                    gate_gmin = float(m.group(2))
+                if m.group(3):
+                    gate_alpha = float(m.group(3))
+                if m.group(4):
+                    gate_norm = m.group(4)
+        elif beta_mode == "betahat_gate":
+            try:
+                gate_gmin = float(num_str)
+            except ValueError:
+                pass
         elif so_mode == "uniform":
             m = _re.match(r"^([0-9.]+)b([0-9.]+)(?:g([0-9.]+))?(?:r([0-9.]+))?$", num_str)
             if m:
@@ -132,7 +167,9 @@ def _variant_cfg(variant: str, tau: float, jump_mode: str, rm_defaults: dict | N
                   rm_so_gate_gamma=gamma, rm_so_gate_rho_max=rho_max,
                   rm_beta_mode=beta_mode, rm_cl_prior=cl_prior, rm_cl_forget=cl_forget,
                   rm_cl_mu=cl_mu, rm_cl_beta_max=cl_beta_max, rm_lambda_eval=lambda_eval,
-                  rm_cl_gate=cl_gate, rm_cl_scale=cl_scale)
+                  rm_cl_gate=cl_gate, rm_cl_scale=cl_scale,
+                  rm_gate_type=gate_type, rm_gate_kappa=gate_kappa,
+                  rm_gate_gmin=gate_gmin, rm_gate_ema_alpha=gate_alpha, rm_gate_norm=gate_norm)
         v = base
     pc_enabled = False
     pc_alpha = 0.5
@@ -315,6 +352,19 @@ def run_generation(args) -> dict[str, Any]:
                 used = [t["rm_beta"] for t in res["traces"] if t.get("rm_beta_mode") == "cl"]
                 if used:
                     row["rm_beta_used_mean"] = sum(used) / len(used)
+                # E61 innovation-gated per-run aggregates
+                gate_obs = [t for t in res["traces"] if "gate_g" in t]
+                if gate_obs:
+                    row["gate_n_obs"] = len(gate_obs)
+                    row["gate_g_final"] = gate_obs[-1]["gate_g"]
+                    row["gate_g_mean"] = sum(t["gate_g"] for t in gate_obs) / len(gate_obs)
+                    row["gate_Ibar_mean"] = sum(t["gate_I_bar"] for t in gate_obs) / len(gate_obs)
+                gate_used = [t["rm_beta"] for t in res["traces"]
+                            if t.get("rm_beta_mode") in ("gate", "betahat_gate")]
+                if gate_used:
+                    row["rm_beta_used_mean"] = sum(gate_used) / len(gate_used)
+                    row["frac_beta_lt_0p5"] = sum(1 for b in gate_used if b < 0.5 - 1e-9) / len(gate_used)
+                    row["frac_beta_eq_0"] = sum(1 for b in gate_used if b < 1e-9) / len(gate_used)
                 rows.append(row)
                 # persist trace for timeline/scatter figures
                 (run_dir / "traces" / f"{key}__{name}.json").write_text(json.dumps(

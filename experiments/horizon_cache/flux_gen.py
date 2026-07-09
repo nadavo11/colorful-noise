@@ -84,6 +84,11 @@ class FluxCacheState:
         self.cl_n_obs: int = 0
         self.cl_beta_hat: float | None = None   # UNclamped posterior mean (clamped at use site)
         self.cl_diag: dict | None = None         # last-refresh innovation diagnostics
+        # --- E61 innovation gate: causal g_a computed at each fresh anchor from the FIXED-β=0.5
+        # prediction error (independent of the E60 LS estimator), applied to cached steps after.
+        self.gate_ibar: float | None = None      # EMA state on the chosen I_a normalization
+        self.gate_g: float | None = None         # gate value in force for the current anchor
+        self.gate_diag: dict | None = None       # last-refresh gate diagnostics
 
 
 # ------------------------- E58 residual-motion primitives -------------------------
@@ -205,6 +210,43 @@ def _cl_update(state: "FluxCacheState", new_res: torch.Tensor, h_filt: torch.Ten
     }
 
 
+def _gate_update(state: "FluxCacheState", new_res: torch.Tensor, h_filt: torch.Tensor,
+                 sigma: float, cfg) -> None:
+    """E61: one causal innovation observation at a fresh anchor a, BEFORE the history shift.
+    Uses the FIXED β=0.5 forecast (independent of any E60 LS estimate): r̂_a = r_{a-1} +
+    0.5·λ_a·Δr_{a-1}, ε_a = r_a − r̂_a. g_a (computed here) governs β_i = 0.5·g_a for every
+    cached step AFTER this anchor — it cannot see r_a's own cached steps (causal)."""
+    lam_a = _rm_lambda(state, h_filt, sigma, cfg)[0]
+    dr = (state.prev_residual - state.r_prev).float()          # Δr_{a-1} = r_{a-1} - r_{a-2}
+    y = (new_res.float() - state.prev_residual.float())         # r_a - r_{a-1}
+    r_hat_delta = 0.5 * lam_a * dr                               # r̂_a - r_{a-1}
+    eps = y - r_hat_delta
+    eps_l1 = float(eps.abs().sum().item())
+    denom = {"r": float(new_res.abs().float().sum().item()),
+             "d": float(dr.abs().float().sum().item()),
+             "p": float(r_hat_delta.abs().float().sum().item())}
+    I_r = eps_l1 / (denom["r"] + 1e-8)
+    I_d = eps_l1 / (denom["d"] + 1e-8)
+    I_p = eps_l1 / (denom["p"] + 1e-8)
+    chosen = {"r": I_r, "d": I_d, "p": I_p}[getattr(cfg, "rm_gate_norm", "r")]
+    alpha = float(getattr(cfg, "rm_gate_ema_alpha", 1.0))
+    ibar = chosen if (state.gate_ibar is None or alpha >= 1.0) else \
+        alpha * chosen + (1.0 - alpha) * state.gate_ibar
+    state.gate_ibar = ibar
+    gtype = getattr(cfg, "rm_gate_type", "soft")
+    kappa = float(getattr(cfg, "rm_gate_kappa", 0.15))
+    gmin = float(getattr(cfg, "rm_gate_gmin", 0.0))
+    if gtype == "hard":
+        g = 1.0 if ibar < kappa else 0.0
+    else:
+        soft = float(min(max(1.0 - ibar / kappa, 0.0), 1.0))
+        g = soft if gtype == "soft" else (gmin + (1.0 - gmin) * soft)
+    state.gate_g = g
+    state.gate_diag = {"gate_I_r": I_r, "gate_I_delta": I_d, "gate_I_pred": I_p,
+                       "gate_I_used": chosen, "gate_I_bar": ibar, "gate_g": g,
+                       "gate_lambda": lam_a}
+
+
 def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float,
                      image_ids: torch.Tensor, cfg, sigma_target: float | None = None):
     """Predict the moved residual and return (r_pred, diag).
@@ -226,9 +268,22 @@ def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float
         lam = _rm_lambda(state, h_filt, 0.5 * (sigma + float(sigma_target)), cfg)[0]
     else:
         lam = lam_pt
-    # E60 closed-loop gain: β̂ from the online innovation fit instead of the fixed rm_beta
+    # E60 closed-loop gain: β̂ from the online innovation fit instead of the fixed rm_beta.
+    # E61: keep the fixed β=0.5 in force but throttle it by a causal gate g_a ∈ [0,1].
     beta_mode = getattr(cfg, "rm_beta_mode", "fixed")
-    beta = _cl_beta_used(state, cfg) if beta_mode == "cl" else float(getattr(cfg, "rm_beta", 0.5))
+    if beta_mode == "cl":
+        beta = _cl_beta_used(state, cfg)
+    elif beta_mode == "gate":
+        g = state.gate_g if state.gate_g is not None else 1.0
+        beta = 0.5 * g
+    elif beta_mode == "betahat_gate":
+        prior = float(getattr(cfg, "rm_cl_prior", 0.5))
+        bh = state.cl_beta_hat if state.cl_beta_hat is not None else prior
+        g = float(min(max(bh / 0.5, 0.0), 1.0))
+        gmin = float(getattr(cfg, "rm_gate_gmin", 0.0))
+        beta = gmin + (0.5 - gmin) * g
+    else:
+        beta = float(getattr(cfg, "rm_beta", 0.5))
     denom = float(r_anchor.abs().float().sum().item()) + 1e-8
     secant_norm = float(P.abs().float().sum().item()) / denom
     motion = beta * lam * P
@@ -283,13 +338,15 @@ def _residual_motion(state: "FluxCacheState", h_filt: torch.Tensor, sigma: float
         "rm_lambda_sigma": lam_s, "rm_lambda_age": lam_a, "rm_lambda_h": lam_h,
         "rm_residual_secant_norm": secant_norm, "rm_residual_extrapolation_ratio": extrap_ratio,
     }
-    if beta_mode == "cl" or lambda_eval != "point":   # E60 fields
+    if beta_mode != "fixed" or lambda_eval != "point":   # E60/E61 fields
         diag.update({
             "rm_beta_mode": beta_mode, "rm_lambda_eval": lambda_eval,
             "rm_lambda_point": lam_pt,
             "rm_cl_beta_hat": (None if state.cl_beta_hat is None else float(state.cl_beta_hat)),
             "rm_cl_n_obs": state.cl_n_obs,
         })
+        if beta_mode in ("gate", "betahat_gate"):
+            diag["rm_gate_g"] = state.gate_g
     if so_mode != "none":
         diag.update({
             "rm_so_mode": so_mode, "rm_beta2": beta2, "rm_so_used": so_used,
@@ -320,10 +377,12 @@ def _rm_event_kv(rm_diag, feat, cfg) -> dict[str, Any]:
         kv.update({k: rm_diag.get(k) for k in
                    ("rm_so_mode", "rm_beta2", "rm_so_used", "rm_so_gated_off", "rm_so_coeff",
                     "rm_so_term_ratio", "so_rho2", "so_cos_delta", "so_rho_anchor")})
-    if "rm_beta_mode" in rm_diag:   # E60 closed-loop fields
+    if "rm_beta_mode" in rm_diag:   # E60/E61 fields
         kv.update({k: rm_diag.get(k) for k in
                    ("rm_beta_mode", "rm_lambda_eval", "rm_lambda_point",
                     "rm_cl_beta_hat", "rm_cl_n_obs")})
+        if "rm_gate_g" in rm_diag:
+            kv["rm_gate_g"] = rm_diag.get("rm_gate_g")
     return kv
 
 
@@ -390,9 +449,11 @@ def _flux_node(pipe, tr, latents, timestep, guidance, ppe, pe, text_ids, image_i
         if rm_on and state.prev_residual is not None:
             # E60 closed-loop: absorb this anchor's innovation into β̂ BEFORE the history shift
             # (needs the outgoing pair r_{k-1}, r_{k-2} plus the new residual r_k)
-            if (getattr(rm_cfg, "rm_beta_mode", "fixed") == "cl"
-                    and state.r_prev is not None):
+            beta_mode_now = getattr(rm_cfg, "rm_beta_mode", "fixed")
+            if beta_mode_now in ("cl", "betahat_gate") and state.r_prev is not None:
                 _cl_update(state, new_res, h_filt, sigma, rm_cfg)
+            if beta_mode_now == "gate" and state.r_prev is not None:
+                _gate_update(state, new_res, h_filt, sigma, rm_cfg)
             # shift fresh-residual history for the secant (penultimate ← previous anchor);
             # E59 second-order additionally keeps the third anchor r_{a-2}
             if getattr(rm_cfg, "rm_so_mode", "none") != "none":
@@ -674,10 +735,14 @@ def sample_flux(pipe, prompt: str, seed: int, steps: int, height: int, width: in
               and state.so_diag is not None):
             # E59: anchor-triple curvature diagnostics logged at the fresh anchor that formed them
             trace.update(state.so_diag)
-        if (ran_full and cfg is not None and getattr(cfg, "rm_beta_mode", "fixed") == "cl"
+        if (ran_full and cfg is not None and getattr(cfg, "rm_beta_mode", "fixed") in ("cl", "betahat_gate")
                 and state.cl_diag is not None):
             # E60: β̂/innovation observation logged at the fresh anchor that produced it
             trace.update(state.cl_diag)
+        if (ran_full and cfg is not None and getattr(cfg, "rm_beta_mode", "fixed") == "gate"
+                and state.gate_diag is not None):
+            # E61: causal gate observation logged at the fresh anchor that produced it
+            trace.update(state.gate_diag)
         traces.append(trace)
         step_index += 1
 

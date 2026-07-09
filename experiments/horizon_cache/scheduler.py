@@ -222,6 +222,8 @@ class JumpEvent:
     rm_lambda_point: float | None = None
     rm_cl_beta_hat: float | None = None
     rm_cl_n_obs: int | None = None
+    # --- E61 innovation-gated fixed RM diagnostics; None when disabled ---
+    rm_gate_g: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
