@@ -1,6 +1,6 @@
 run_id: "20260709_075500__horizon_gate_e61_smoke2__e0bcbce"
 job_name: "horizon-e61-gate-smoke2-e0bcbce"
-status: "submitted"
+status: "done"
 created_at: "2026-07-09T07:55:00+03:00"
 git_commit: "e0bcbce"
 git_branch: "e61-innovation-gate"
@@ -16,23 +16,28 @@ smoke1_findings: |
   ALWAYS CLOSED (g~0, -1.51*/-1.09* in-band vs fixed), floor STUCK AT FLOOR (constant
   beta~0.25, -0.62*/-0.48* in-band). No variant tested the actual gating hypothesis.
 variants:
-  - adaptive_1.25                # plain baseline
-  - rmraw0.5_adaptive_1.25       # fixed-beta baseline (E58)
-  - rmgh0.65_adaptive_1.25       # hard gate below the measured crossover (should mostly close)
-  - rmgh0.75_adaptive_1.25       # hard gate AT the measured crossover
-  - rmgh0.85_adaptive_1.25       # hard gate above the crossover (should mostly stay open)
-  - rmgs0.7_adaptive_1.25        # soft gate, ramp centered below crossover
-  - rmgs0.9_adaptive_1.25        # soft gate, ramp centered above crossover
-  - rmgf0.8g0.5_adaptive_1.25    # floor gate at the crossover, gmin=0.5 (beta in [0.25,0.5])
-  - rmgf0.8g0.5a0.5_adaptive_1.25 # floor gate + EMA alpha=0.5 (spec's primary candidate, recalibrated)
+  - adaptive_1.25
+  - rmraw0.5_adaptive_1.25
+  - rmgh0.65_adaptive_1.25
+  - rmgh0.75_adaptive_1.25
+  - rmgh0.85_adaptive_1.25
+  - rmgs0.7_adaptive_1.25
+  - rmgs0.9_adaptive_1.25
+  - rmgf0.8g0.5_adaptive_1.25
+  - rmgf0.8g0.5a0.5_adaptive_1.25
 tau_grid: [0.3, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4]
 proceed_criteria: |
   Same as smoke1: gate-fixed > -0.1dB in 2.0-3.5x AND (gate-fixed > +0.2dB CI+ above 4.3x OR
-  gate-plain improves on fixed-plain's high-speed penalty). Consolidate the best 1-3 variants
-  if any passes; otherwise report honestly which failure mode applies (innovation too stale /
-  gate too conservative in-band / fixed threshold beats innovation / plain+fixed selection
-  already sufficient).
-expected_outputs:
-  smoke2_tarball: "/storage/nada/colorful-noise-e61/e61_smoke2_light.tar.gz"
-  samples_tarball: "/storage/nada/colorful-noise-e61/e61_smoke2_samples.tar.gz"
-notes: "9 variants x 8 tau, N=8; est ~1.5-2h."
+  gate-plain improves on fixed-plain's high-speed penalty).
+result_dir: "results/horizon_gate_smoke2/gen_20260709_074002"
+headline: |
+  rc=0. PASS: rmgh0.85 (hard gate, kappa=0.85) matches fixed RM in-band (2.0-3.5x deltas:
+  +0.000/-0.034/+0.001/+0.101, none CI-negative) AND beats fixed RM at high speed with CI+
+  exceeding +0.2dB (+0.269* @5.20x, +0.434* @5.29x). beta_i profile textbook: p50=0.5 @2.1x,
+  0.39-0.43 through 3.4x, declining to 0.23-0.31 @4.5-5.3x. Softens (not fully inverts) the
+  E59 tau1.4 fixed-vs-plain penalty: -1.088* (fixed-plain, significant) -> -0.655 (gate85-plain,
+  ns). rmgh0.75 close second (t0.3 -0.140* CI-negative, marginal in-band fail). Soft (rmgs) and
+  floor (rmgf) gates still lose meaningfully in-band even recalibrated (continuous ramp
+  discounts beta before I reaches kappa) -- hard gate's binary on/off is what matches fixed
+  almost exactly in-band. DECISION: consolidate rmgh0.85 (primary) + rmgh0.75 (robustness
+  check) at N=200, alongside rmcl0.5 (E60 baseline, cheap/already coded).

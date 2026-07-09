@@ -1,0 +1,29 @@
+run_id: "20260709_082000__horizon_gate_e61_consol__e0bcbce"
+job_name: "horizon-e61-gate-consol-e0bcbce"
+status: "submitted"
+created_at: "2026-07-09T08:20:00+03:00"
+git_commit: "e0bcbce"
+git_branch: "e61-innovation-gate"
+repo_root: "/storage/nada/colorful-noise-e61"
+experiment: "E61 consolidation — Innovation-Gated Fixed RM definitive verdict"
+model: "FLUX.1-dev (bf16, 4-bit transformer), 512px, 28 Euler steps"
+dataset: "canonical_prompts fixture v1 (+ geneval extras), N=100 x2 seeds = 200 paired"
+resources: {gpu_memory: "48G", node_pool: "bengal", image: "pytorch/pytorch:2.10.0-cuda12.8-cudnn9-runtime"}
+smoke_gate: |
+  smoke1 (runs/runai/20260709_100000__horizon_gate_e61_smoke__e0bcbce): tested kappa far below
+  the measured I_a scale -- diagnostic strong (corr -0.61) but no gate variant actually gated.
+  smoke2 (runs/runai/20260709_075500__horizon_gate_e61_smoke2__e0bcbce): recalibrated kappa to
+  the measured crossover (~0.75-0.85) -- rmgh0.85 PASSES both proceed clauses (in-band match,
+  high-speed win with CI+). rmgh0.75 close second.
+variants: [adaptive_1.25, rmraw0.5_adaptive_1.25, rmcl0.5_adaptive_1.25, rmgh0.85_adaptive_1.25,
+           rmgh0.75_adaptive_1.25]
+tau_grid: [0.3, 0.4, 0.5, 0.575, 0.65, 0.8, 1.0, 1.2, 1.4]
+priority_rationale: |
+  Per user spec section 8 priority: 1) fixed RM 2) plain HorizonCache 3) SeaCache (always run)
+  4) best innovation-gated RM (rmgh0.85) 5) E60 closed-loop (rmcl0.5, cheap/already coded).
+  rmgh0.75 added as a robustness check on the kappa choice (2 gate variants, within the "top
+  1-3" and "don't over-sweep at N=100" guidance).
+expected_outputs:
+  consol_tarball: "/storage/nada/colorful-noise-e61/e61_consol_light.tar.gz"
+  samples_tarball: "/storage/nada/colorful-noise-e61/e61_consol_samples.tar.gz"
+notes: "~9k sampler runs (200 keys x (5 variants x 9 tau + 9 sea/tea + 1 full)); est 4-6h."
