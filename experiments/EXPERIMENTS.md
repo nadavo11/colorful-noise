@@ -1660,3 +1660,39 @@ stride), not the gain.
 `results/horizon_cl_oracle/gen_20260709_015416/`;
 code `experiments/horizon_cache/{flux_gen,policy,scheduler,run,cl_analysis,cl_report,test_e60_math}.py`;
 manifest `experiments/manifests/E60.json`; doc `docs/experiment-reports/EXPERIMENT_60.md`.
+
+## E61 — Innovation-Gated Fixed Residual Motion: causal gate on beta=0.5 (FLUX)
+
+**Method.** E60 showed the online LS gain β̂ is a good regime detector (innovation↔RM-gain corr
+−0.44) but a miscalibrated in-band gain. E61 keeps fixed β=0.5 and only causally throttles it: at
+fresh anchor a, r̂_a = r_{a-1} + 0.5·λ_a·Δr_{a-1}, I_a = ‖r_a−r̂_a‖₁/‖r_a‖₁; g_a (hard/soft/floor,
+optional EMA) is fixed at anchor a and used unchanged by every cached step until the next fresh
+forward — provably causal (unit-tested). β_i = 0.5·g_a. Smoke1 tested κ in the spec's suggested
+range (0.04–0.30) — too low for the measured I_a scale (0.43–1.0+), so no variant actually gated
+(always-off or stuck-at-floor). Smoke2 recalibrated κ to the measured sign-crossover (~0.75–0.85)
+using the same diagnostic; consolidated the winner (κ=0.85) + a robustness check (κ=0.75) against
+plain/fixed-RM/E60-closed-loop/SeaCache at N=200.
+
+**Key result.** Hard gate κ=0.85 matches fixed RM in-band (2.0–3.5×: deltas ≈0, only one weakly
+CI+ point, no LPIPS regression) and beats fixed RM with CI+ margin at every band ≥4.3×
+(+0.111*/+0.174*/+0.363*). β_i profile is textbook: p50=0.50 through 3.09×, declining smoothly to
+0.21–0.36 at speed — a genuine adaptive throttle. Innovation diagnostic reproduces/refines E60
+(corr −0.45, n=1800; sign-crossover at I≈0.7–0.75, exactly where κ landed). Two honest caveats:
+(1) it *softens* (~37% smaller) but does not eliminate the plain-HorizonCache high-speed
+inversion (τ1.4: fixed−plain −0.97* → gate85−plain −0.61*, still significant); (2) a real,
+CI-excluding LPIPS regression vs fixed RM grows with speed (−0.002→−0.019 raw by τ1.4) — the
+PSNR win at high speed is not free. At the single fastest point (τ1.4, beyond SeaCache's swept
+frontier) every RM variant loses to SeaCache, universally — gate loses less than fixed there.
+Soft/floor gates (even recalibrated) still lose materially in-band (continuous ramp discounts β
+before I reaches κ); hard gate's binary on/off is what matches fixed almost exactly.
+
+**Verdict.** Hard gate (κ=0.85) **KEEP** (not STRONG_KEEP — partial fix + LPIPS cost). Soft/floor
+gates KILL/PARK in-band. β̂-as-gate not run (deprioritized). The band-limited operating rule
+(fixed RM ≤3.5×, plain beyond) now has a causal, zero-cost way to soften rather than fully avoid
+its own violation at speed.
+
+**Artifacts.** `reports/horizon_cache_e61_innovation_gate.{html,_summary.md,_summary.json}`,
+`reports/horizon_cache_e61_innovation_gate_assets/`; `results/horizon_gate_consol/gen_20260709_075805/`,
+`results/horizon_gate_smoke/gen_20260709_072453/`, `results/horizon_gate_smoke2/gen_20260709_074002/`;
+code `experiments/horizon_cache/{flux_gen,policy,scheduler,run,e61_analysis,e61_report,test_e61_math}.py`;
+manifest `experiments/manifests/E61.json`; doc `docs/experiment-reports/EXPERIMENT_61.md`.

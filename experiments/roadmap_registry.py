@@ -1285,4 +1285,58 @@ EXPERIMENTS = [
             "remaining cheap gain idea but expected value is low given E60's level finding.",
      "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_60.md",
      "results": None, "image": None},
+
+    {"id": "E61", "title": "Innovation-Gated Fixed Residual Motion -- causal gate on beta=0.5 from the fixed-beta forecast innovation",
+     "thread": "fast-edit", "models": "FLUX.1-dev text2img, 4-bit, 512px, 28 Euler steps; smoke N=8 x2 rounds (kappa "
+               "recalibration) -> consolidation N=100 x2 seeds = 200 paired (tau 0.3..1.4, 11k sampler runs), cluster H100 (Run:AI)",
+     "status": "done",
+     "motivation": "E60: online LS beta_hat is a great regime DETECTOR (innovation corr -0.44 with the RM-plain gain) "
+                   "but a miscalibrated in-band GAIN (pointwise-MMSE != PSNR-optimal). E61 keeps fixed beta=0.5 (E58/E59 "
+                   "STRONG KEEP) in-band and only CAUSALLY throttles it when the previous-anchor innovation signals the "
+                   "secant is unreliable: at fresh anchor a, r_hat_a = r_{a-1} + 0.5*lam_a*Delta r_{a-1}, "
+                   "I_a = |r_a - r_hat_a|/|r_a|; g_a (hard/soft/floor, optional EMA) is fixed at anchor a and used "
+                   "unchanged by every cached step until the next fresh forward -- provably causal. beta_i = 0.5*g_a. "
+                   "Goal: match fixed RM in-band, soften/remove its >=4.3x penalty vs plain (E59/E60).",
+     "method": "rm_beta_mode='gate' in flux_gen.py (_gate_update); grammar rmg<h|s|f><kappa>[g<gmin>][a<alpha>][n<norm>]_"
+               "<base>, plus optional rmbg<gmin>_<base> (beta_hat-as-gate, reuses E60's LS signal only as a risk score, "
+               "never as the gain). Unit-tested (8 groups: exact hard/soft/floor math, EMA recursion, causality -- "
+               "identical beta_i across all cached steps following one anchor -- grammar). Smoke1 tested kappa in the "
+               "spec's suggested range (0.04-0.30); smoke2 recalibrated kappa to the MEASURED I_a scale (crossover "
+               "where E[gain|I] changes sign, ~0.75-0.85) after smoke1's diagnostic (corr -0.61, n=64) showed the "
+               "suggested range was off by ~5x. Consolidated the winning hard-gate kappa=0.85 (+0.75 as a robustness "
+               "check) against plain/fixed-RM/E60-closed-loop/SeaCache.",
+     "result": "Kappa recalibration was necessary and revealing: at the spec's suggested kappa (0.08-0.20), hard/soft "
+               "gates are ALWAYS CLOSED relative to the measured I_a distribution (0.43-1.0+) -- not gating at all, just "
+               "'always off' (loses -1.51*/-1.09* in-band) or 'stuck at floor' (-0.62*/-0.48*). Recalibrating to the "
+               "measured crossover (kappa=0.85) fixes this: at N=200, gate85-fixed is ~0 through 3.5x (-0.000/+0.010/"
+               "+0.008/+0.027/+0.004, only the 2.74x point CI-positive at +0.008*) -- matches fixed almost exactly "
+               "in-band -- and beats fixed with CI+ margin at every band >=4.3x: +0.111* @4.47x, +0.174* @5.28x, "
+               "+0.363* @tau1.4. Innovation diagnostic reproduces/improves E60 at N=200: corr(I_a, RM-plain gain) = "
+               "-0.45 (n=1800), binned E[gain|I] crosses zero at I~0.7-0.75, exactly where kappa was set. beta_i "
+               "profile is textbook: p50=0.50 through 3.09x, declining to 0.21-0.36 at >=4.3x (mean 0.24-0.34), never "
+               "collapsing to a constant. HONEST CAVEAT (do not oversell): gate-vs-plain does NOT flip the E59/60 "
+               "high-speed inversion, only softens it -- fixed-vs-plain tau1.4 is -0.972* (significant loss), "
+               "gate85-vs-plain tau1.4 is -0.609* (still significant, ~37% smaller). And gate85 vs fixed shows a real, "
+               "CI-excluding LPIPS regression that GROWS with speed (-0.002 @0.65x -> -0.019 raw @tau1.4) -- PSNR wins "
+               "at high speed come with a measurable (if small) perceptual-quality cost fixed RM does not have. At the "
+               "single fastest point (tau1.4, 5.29x, beyond SeaCache's 4.39x swept-frontier ceiling) EVERY RM variant "
+               "loses to SeaCache's clamped frontier point (fixed -1.18*, closed-loop -0.79*, gate85 -0.82*) -- "
+               "universal, not gate-specific; gate85 loses LESS than fixed there.",
+     "verdict": "Innovation-gated fixed RM (hard gate, kappa=0.85) KEEP: matches fixed RM in-band (no LPIPS "
+                "regression there) and beats it with CI+ margin at every band >=4.3x -- but NOT strong-keep, because "
+                "(a) the LPIPS cost at high speed is real and grows with speed, and (b) it softens rather than removes "
+                "the plain-HorizonCache high-speed penalty. Soft/floor gates (even recalibrated) still lose materially "
+                "in-band (continuous ramp discounts beta before I reaches kappa) -- hard gate's binary on/off is what "
+                "matches fixed almost exactly; soft_gate/floor_gate/beta_hat_gate: not run at N=200 (deprioritized "
+                "after smoke2 showed hard gate dominates; consolidating only the winner + one robustness check per "
+                "'do not over-sweep at N=100/200').",
+     "nxt": "Two candidates, both flagged by E60/E61 as the validated remaining lever (the innovation signal, not the "
+            "gain): (1) innovation-gated STRIDE -- feed I_a into the jump policy's headroom so strides shrink exactly "
+            "when the residual stops being predictable, attacking the >=4.3x band from the policy side instead of the "
+            "gain side, which may avoid the LPIPS cost E61 incurs by staying in residual-space; (2) SD3/MMDiT transfer "
+            "of the whole E56-E61 stack -- the standing external-validity question since E56. Given E61's LPIPS "
+            "caveat, a PSNR-plus-LPIPS joint gate criterion (not PSNR alone) would be the honest next refinement if "
+            "the gate direction is pursued further.",
+     "script": "experiments/horizon_cache/run.py", "doc": "docs/experiment-reports/EXPERIMENT_61.md",
+     "results": None, "image": None},
 ]

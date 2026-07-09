@@ -1,0 +1,304 @@
+{
+  "eid": "E61",
+  "logged": "2026-07-09",
+  "git_commit": "9e5771b",
+  "source": "run",
+  "config": {
+    "model": "FLUX.1-dev bf16, 4-bit transformer, 512px, 28 Euler steps",
+    "fixture": "canonical_prompts v1 + geneval extras",
+    "fixture_version": 1,
+    "branch": "e61-innovation-gate",
+    "commit": "e0bcbce",
+    "consolidation": {
+      "n": 100,
+      "seeds_per_prompt": 2,
+      "tau_grid": [
+        0.3,
+        0.4,
+        0.5,
+        0.575,
+        0.65,
+        0.8,
+        1.0,
+        1.2,
+        1.4
+      ],
+      "variants": [
+        "adaptive_1.25",
+        "rmraw0.5_adaptive_1.25",
+        "rmcl0.5_adaptive_1.25",
+        "rmgh0.85_adaptive_1.25",
+        "rmgh0.75_adaptive_1.25"
+      ]
+    },
+    "gate": {
+      "type": "hard",
+      "kappa_winner": 0.85,
+      "kappa_robustness_check": 0.75,
+      "norm": "r (||r_a||_1)",
+      "ema_alpha": 1.0,
+      "recalibration": "smoke1 kappa 0.04-0.20 (spec suggested range) always-closed given measured I_a scale 0.43-1.0+; smoke2 recalibrated to the measured E[gain|I] sign-crossover ~0.75-0.85"
+    }
+  },
+  "metrics": {
+    "main_verdict": "hard_gate=KEEP; soft_gate=not_run; floor_gate=not_run; beta_hat_gate=not_run; ema_floor_gate=not_run",
+    "best_gate": {
+      "method": "rmgh0.75_adaptive_1.25",
+      "gate_type": "gate_hard",
+      "kappa": 0.75,
+      "ema_alpha": 1.0,
+      "g_min": 0.0,
+      "speedup": 5.291,
+      "psnr": 18.278,
+      "lpips": 0.3646,
+      "delta_psnr_vs_fixed_rm": 0.414,
+      "ci95_vs_fixed_rm": [
+        0.354,
+        0.473
+      ],
+      "delta_psnr_vs_plain_horizon": -0.558,
+      "ci95_vs_plain_horizon": [
+        -0.703,
+        -0.417
+      ],
+      "delta_psnr_vs_seacache": -0.766,
+      "ci95_vs_seacache": [
+        -0.917,
+        -0.623
+      ]
+    },
+    "speed_band_results": [
+      {
+        "band": "1.8-2.2x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmgh0.85_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": -0.0,
+        "ci95_gate_minus_fixed_rm": [
+          -0.001,
+          0.0
+        ],
+        "gate_minus_plain_delta_psnr": 0.956,
+        "ci95_gate_minus_plain": [
+          0.779,
+          1.139
+        ],
+        "gate_minus_seacache_delta_psnr": 2.406,
+        "ci95_gate_minus_seacache": [
+          2.025,
+          2.794
+        ],
+        "mean_beta": 0.4960833333333333,
+        "frac_beta_lt_0p5": 0.007833333333333333,
+        "verdict": "gate matches/beats fixed"
+      },
+      {
+        "band": "2.3-2.7x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmgh0.85_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": 0.01,
+        "ci95_gate_minus_fixed_rm": [
+          -0.002,
+          0.028
+        ],
+        "gate_minus_plain_delta_psnr": 0.888,
+        "ci95_gate_minus_plain": [
+          0.699,
+          1.064
+        ],
+        "gate_minus_seacache_delta_psnr": 2.887,
+        "ci95_gate_minus_seacache": [
+          2.563,
+          3.21
+        ],
+        "mean_beta": 0.47665909090909087,
+        "frac_beta_lt_0p5": 0.046681818181818185,
+        "verdict": "gate matches/beats fixed"
+      },
+      {
+        "band": "2.8-3.2x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmgh0.85_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": 0.027,
+        "ci95_gate_minus_fixed_rm": [
+          -0.011,
+          0.067
+        ],
+        "gate_minus_plain_delta_psnr": 0.215,
+        "ci95_gate_minus_plain": [
+          0.056,
+          0.372
+        ],
+        "gate_minus_seacache_delta_psnr": 0.936,
+        "ci95_gate_minus_seacache": [
+          0.725,
+          1.166
+        ],
+        "mean_beta": 0.42572115384615383,
+        "frac_beta_lt_0p5": 0.14855769230769234,
+        "verdict": "gate matches/beats fixed"
+      },
+      {
+        "band": "3.3-3.7x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmgh0.85_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": 0.004,
+        "ci95_gate_minus_fixed_rm": [
+          -0.032,
+          0.039
+        ],
+        "gate_minus_plain_delta_psnr": 0.429,
+        "ci95_gate_minus_plain": [
+          0.279,
+          0.575
+        ],
+        "gate_minus_seacache_delta_psnr": 2.27,
+        "ci95_gate_minus_seacache": [
+          1.921,
+          2.632
+        ],
+        "mean_beta": 0.4010622710622711,
+        "frac_beta_lt_0p5": 0.1978754578754579,
+        "verdict": "gate matches/beats fixed"
+      },
+      {
+        "band": "3.8-4.2x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmgh0.85_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": 0.026,
+        "ci95_gate_minus_fixed_rm": [
+          -0.017,
+          0.066
+        ],
+        "gate_minus_plain_delta_psnr": 0.0,
+        "ci95_gate_minus_plain": [
+          0.0,
+          0.0
+        ],
+        "gate_minus_seacache_delta_psnr": 0.248,
+        "ci95_gate_minus_seacache": [
+          0.041,
+          0.449
+        ],
+        "mean_beta": 0.29605952380952383,
+        "frac_beta_lt_0p5": 0.40788095238095234,
+        "verdict": "gate matches/beats fixed"
+      },
+      {
+        "band": "4.3-4.7x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmcl0.5_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": 0.166,
+        "ci95_gate_minus_fixed_rm": [
+          0.098,
+          0.233
+        ],
+        "gate_minus_plain_delta_psnr": 0.0,
+        "ci95_gate_minus_plain": [
+          0.0,
+          0.0
+        ],
+        "gate_minus_seacache_delta_psnr": 1.398,
+        "ci95_gate_minus_seacache": [
+          1.189,
+          1.6
+        ],
+        "mean_beta": 0.21363020833333338,
+        "frac_beta_lt_0p5": 0.5727395833333333,
+        "verdict": "gate matches/beats fixed"
+      },
+      {
+        "band": "4.8-5.2x",
+        "fixed_rm_best": "",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "",
+        "gate_minus_fixed_rm_delta_psnr": null,
+        "ci95_gate_minus_fixed_rm": null,
+        "gate_minus_plain_delta_psnr": 0.0,
+        "ci95_gate_minus_plain": [
+          0.0,
+          0.0
+        ],
+        "gate_minus_seacache_delta_psnr": null,
+        "ci95_gate_minus_seacache": null,
+        "mean_beta": null,
+        "frac_beta_lt_0p5": null,
+        "verdict": ""
+      },
+      {
+        "band": ">5.2x",
+        "fixed_rm_best": "rmraw0.5_adaptive_1.25",
+        "plain_horizon_best": "adaptive_1.25",
+        "gate_best": "rmgh0.75_adaptive_1.25",
+        "gate_minus_fixed_rm_delta_psnr": 0.414,
+        "ci95_gate_minus_fixed_rm": [
+          0.354,
+          0.473
+        ],
+        "gate_minus_plain_delta_psnr": 0.0,
+        "ci95_gate_minus_plain": [
+          0.0,
+          0.0
+        ],
+        "gate_minus_seacache_delta_psnr": 0.718,
+        "ci95_gate_minus_seacache": [
+          0.557,
+          0.878
+        ],
+        "mean_beta": 0.1661424632352941,
+        "frac_beta_lt_0p5": 0.6677150735294117,
+        "verdict": "gate matches/beats fixed"
+      }
+    ],
+    "innovation_diagnostic": {
+      "corr_innovation_rm_minus_plain": -0.44949284964918634,
+      "corr_ema_innovation_rm_minus_plain": -0.44949284964918634,
+      "best_kappa": 0.75,
+      "interpretation": "corr=-0.44949284964918634 (n=1800) vs E60 baseline -0.44"
+    },
+    "verdicts": {
+      "hard_gate": "KEEP",
+      "soft_gate": "not_run",
+      "floor_gate": "not_run",
+      "beta_hat_gate": "not_run",
+      "ema_floor_gate": "not_run"
+    },
+    "gate_minus_plain_tau1p4": {
+      "fixed": -0.972,
+      "gate85": -0.609,
+      "gate75": -0.558
+    },
+    "lpips_regression_vs_fixed_at_speed": {
+      "tau0.65": -0.0019,
+      "tau0.8": -0.0058,
+      "tau1.0": -0.014,
+      "tau1.2": -0.0114,
+      "tau1.4": -0.0189,
+      "note": "raw LPIPS, negative = gate worse"
+    },
+    "universal_seacache_loss_at_tau1p4": {
+      "fixed": -1.179,
+      "closed_loop": -0.785,
+      "gate85": -0.817,
+      "gate75": -0.766,
+      "note": "beyond SeaCache's 4.39x swept frontier"
+    }
+  },
+  "artifacts": [
+    "reports/horizon_cache_e61_innovation_gate.html",
+    "reports/horizon_cache_e61_innovation_gate_summary.md",
+    "reports/horizon_cache_e61_innovation_gate_summary.json",
+    "results/horizon_gate_consol/gen_20260709_075805",
+    "results/horizon_gate_smoke/gen_20260709_072453",
+    "results/horizon_gate_smoke2/gen_20260709_074002",
+    "runs/runai/20260709_100000__horizon_gate_e61_smoke__e0bcbce",
+    "runs/runai/20260709_075500__horizon_gate_e61_smoke2__e0bcbce",
+    "runs/runai/20260709_082000__horizon_gate_e61_consol__e0bcbce",
+    "docs/experiment-reports/EXPERIMENT_61.md"
+  ]
+}

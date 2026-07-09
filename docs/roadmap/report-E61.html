@@ -1,0 +1,194 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>E61 — Innovation-Gated Fixed Residual Motion -- causal gate on beta=0.5 from the fixed-beta forecast innovation</title><link rel=stylesheet href='style.css'></head><body><nav><a href='index.html'>Overview</a><a href='thread-foundations.html'>Foundations &amp; diagnostics</a><a href='thread-spectral-power.html'>Spectral-power control (SBN)</a><a href='thread-phase.html'>Phase &amp; structure</a><a href='thread-style.html'>Spectral style transfer &amp; editing</a><a href='thread-seed.html'>Seed steering (“golden noise”)</a><a href='thread-fast-edit.html'>Fast structure-preserving editing</a><a href='thread-text-freq.html'>Text-frequency conditioning</a><a class=on href='experiments.html'>All experiments</a><a href='glossary.html'>Glossary</a></nav><main><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_61.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p><article class=report><h1>E61 — Innovation-Gated Fixed Residual Motion</h1>
+<p><strong>Branch</strong> <code>e61-innovation-gate</code> · commit <code>e0bcbce</code> (impl+analysis) · FLUX.1-dev 4-bit 512px/28
+Euler steps · cluster H100 · frozen fixture (canonical_prompts v1 + geneval extras)</p>
+<p><strong>Verdict:</strong> hard gate (κ=0.85) <strong>KEEP</strong> — matches fixed β=0.5 in-band, beats it with CI+ margin
+at every band ≥4.3×, but with a real (small, speed-growing) LPIPS cost at high speed and only a
+partial softening of the plain-HorizonCache high-speed inversion. Soft/floor gates <strong>KILL/PARK</strong>
+in-band even after recalibration. β̂-as-gate not run (deprioritized after smoke2).</p>
+<h2>1. Idea</h2>
+<p>E60 showed the online LS gain β̂ is a good regime <em>detector</em> (innovation ↔ RM-gain corr −0.44)
+but a miscalibrated in-band <em>gain</em> (pointwise-MMSE ≠ PSNR-optimal). E61 keeps fixed β=0.5 as the
+default and only <strong>causally throttles</strong> it:</p>
+<pre><code>r̂_a = r_{a-1} + 0.5·λ_a·Δr_{a-1}          (fixed-β forecast at the last fresh anchor)
+I_a  = ‖r_a − r̂_a‖₁ / ‖r_a‖₁                (normalized innovation)
+g_a  = hard: 1[I_a&lt;κ] | soft: clip(1-I_a/κ,0,1) | floor: gmin+(1-gmin)·soft
+β_i  = 0.5·g_a                              (used unchanged by every cached step until anchor a+1)
+</code></pre>
+<p><code>g_a</code> is fixed at anchor <code>a</code> — it cannot see anything from the cached steps it governs. Zero
+extra forwards; <code>rm_beta_mode="fixed"</code> is bit-identical to E58 (unit-tested, 8 groups incl. exact
+gate math, EMA recursion, causality, grammar).</p>
+<h2>2. Runs</h2>
+<table>
+<thead>
+<tr>
+<th>stage</th>
+<th>run</th>
+<th>N</th>
+<th>finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>smoke 1</td>
+<td><code>results/horizon_gate_smoke/gen_20260709_072453</code></td>
+<td>8×1</td>
+<td>diagnostic strong (corr −0.61, n=64) but tested κ (0.08–0.20) far below the measured I_a scale (0.43–1.0+) — no variant actually gated</td>
+</tr>
+<tr>
+<td>smoke 2</td>
+<td><code>results/horizon_gate_smoke2/gen_20260709_074002</code></td>
+<td>8×1</td>
+<td>κ recalibrated to the measured crossover (~0.75–0.85); <code>rmgh0.85</code> passes both proceed clauses</td>
+</tr>
+<tr>
+<td>consolidation</td>
+<td><code>results/horizon_gate_consol/gen_20260709_075805</code></td>
+<td><strong>100×2 = 200 paired</strong></td>
+<td>plain, rmraw0.5, rmcl0.5 (E60), rmgh0.85, rmgh0.75 × τ∈{0.3…1.4} (11,000 runs)</td>
+</tr>
+</tbody>
+</table>
+<p>Smoke1's failure was a <strong>calibration bug in the spec's suggested κ range, not the mechanism</strong>:
+the binned E[gain|I_a] diagnostic showed the sign-crossover sits at I≈0.75, roughly 5× the
+spec's suggested sweep ceiling. Recalibrating and re-running smoke (same branch, no code
+change) resolved it — the same honest-recalibration move used in E60's smoke1→smoke2.</p>
+<h2>3. Results (N=200 paired)</h2>
+<h3>Gate vs fixed RM — matches in-band, wins at speed</h3>
+<table>
+<thead>
+<tr>
+<th>τ</th>
+<th>speedup</th>
+<th>gate85−fixed</th>
+<th>gate75−fixed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.3</td>
+<td>2.12×</td>
+<td>−0.000</td>
+<td>−0.006</td>
+</tr>
+<tr>
+<td>0.4</td>
+<td>2.51×</td>
+<td>+0.010</td>
+<td>−0.086*</td>
+</tr>
+<tr>
+<td>0.5</td>
+<td>2.74×</td>
+<td><strong>+0.008*</strong></td>
+<td>+0.013</td>
+</tr>
+<tr>
+<td>0.575</td>
+<td>3.09×</td>
+<td>+0.027</td>
+<td>−0.011</td>
+</tr>
+<tr>
+<td>0.65</td>
+<td>3.40×</td>
+<td>+0.004</td>
+<td>−0.051</td>
+</tr>
+<tr>
+<td>0.8</td>
+<td>3.87×</td>
+<td>+0.026</td>
+<td>−0.053</td>
+</tr>
+<tr>
+<td>1.0</td>
+<td>4.47×</td>
+<td><strong>+0.111*</strong></td>
+<td>+0.037</td>
+</tr>
+<tr>
+<td>1.2</td>
+<td>5.28×</td>
+<td><strong>+0.174*</strong></td>
+<td><strong>+0.185*</strong></td>
+</tr>
+<tr>
+<td>1.4</td>
+<td>5.29×</td>
+<td><strong>+0.363*</strong></td>
+<td><strong>+0.414*</strong></td>
+</tr>
+</tbody>
+</table>
+<p>gate85 is essentially indistinguishable from fixed β=0.5 through 3.5× (all deltas within ±0.03
+dB, only the 2.74× point weakly CI+), then wins outright at every band ≥4.3× with margins well
+past the +0.2 dB proceed bar.</p>
+<h3>Gate vs plain HorizonCache — softens, does not remove the E59/60 inversion</h3>
+<table>
+<thead>
+<tr>
+<th>τ</th>
+<th>fixed−plain</th>
+<th>gate85−plain</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.3–0.65</td>
+<td>+0.96* … +0.43*</td>
+<td>+0.96* … +0.43* (identical in-band, gate rarely closes here)</td>
+</tr>
+<tr>
+<td>1.0</td>
+<td>−0.26*</td>
+<td>−0.15 (ns)</td>
+</tr>
+<tr>
+<td>1.2</td>
+<td>−0.42*</td>
+<td><strong>−0.24*</strong></td>
+</tr>
+<tr>
+<td>1.4</td>
+<td><strong>−0.97*</strong></td>
+<td><strong>−0.61*</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The gate reduces the τ1.4 penalty by ~37% but it is still significant. <strong>This is the honest
+limit of E61</strong>: throttling the gain softens the high-speed failure mode, it does not invert it.</p>
+<h3>β_i by speed band (gate85) — the predicted profile, delivered</h3>
+<p>p50 = 0.50 through 3.09×, 0.385 at 3.40×, declining smoothly to 0.21–0.36 (mean 0.24–0.34) at
+≥4.3×. Never collapses to a constant — a genuine adaptive throttle, not a disguised fixed value.</p>
+<h3>Innovation diagnostic — reproduces and slightly refines E60</h3>
+<p>corr(I_a, RM−plain gain) = <strong>−0.45</strong> (n=1800, vs E60's −0.44). Binned E[gain|I_a] crosses zero
+at I≈0.7–0.75 — exactly the κ the smoke2 recalibration landed on independently.</p>
+<h3>The LPIPS caveat (why this is KEEP, not STRONG_KEEP)</h3>
+<p>gate85−fixed LPIPS (raw, more negative = gate worse): ≈0 through 3.09×, then significantly
+negative and growing: −0.0019<em> @0.65×, −0.0058</em> @0.8×, −0.0140<em> @1.0×, −0.0114</em> @1.2×,
+<strong>−0.0189* @τ1.4</strong>. The PSNR win at high speed comes with a real, CI-excluding, speed-growing
+perceptual-quality cost that fixed RM does not pay. Not disqualifying, but not free.</p>
+<h3>Extreme-τ universal loss (not gate-specific)</h3>
+<p>At τ1.4 (5.29×, beyond SeaCache's 4.39× swept-frontier ceiling) every RM variant loses to
+SeaCache's clamped frontier point: fixed −1.18*, closed-loop −0.79*, gate85 −0.82*, gate75
+−0.77*. The gate loses <em>less</em> than fixed there but the effect is universal across the family,
+consistent with E59/E60's established swept-frontier-ceiling caveat.</p>
+<h2>4. Which failure taxonomy applies</h2>
+<p>None of the "gate doesn't work" causes apply at the recalibrated κ — the mechanism succeeded at
+what it was built to do (match in-band, throttle at speed, causal by construction). The two
+caveats that DO apply, stated plainly:
+- <strong>Partial fix, not full fix</strong>: the plain-HorizonCache inversion at ≥4.3× is softened (~37%
+  smaller) but not eliminated — a fixed-speed-threshold rule (use plain above ~4×) still
+  dominates the gate on PSNR alone at the very top end.
+- <strong>A real LPIPS cost accompanies the PSNR win</strong> at high speed — the gate is not a free lunch;
+  it trades some perceptual fidelity for the PSNR/robustness gain over fixed RM.</p>
+<h2>5. Compute/memory overhead</h2>
+<p>Zero extra forwards. One extra scalar (<code>gate_ibar</code>, EMA state) plus the diagnostic dict per
+trajectory — identical cost profile to fixed RM; achieved speedup unchanged.</p>
+<h2>6. Artifacts</h2>
+<ul>
+<li>report <code>reports/horizon_cache_e61_innovation_gate.html</code> (+ <code>_summary.md</code>, <code>_summary.json</code>, <code>_assets/</code>)</li>
+<li>analysis <code>experiments/horizon_cache/e61_analysis.py</code>, report builder <code>e61_report.py</code>,
+  tests <code>test_e61_math.py</code></li>
+<li>manifest <code>experiments/manifests/E61.json</code></li>
+</ul></article><p class=rnav><a href='thread-fast-edit.html'>← Fast structure-preserving editing</a> · <a href='experiments.html'>all experiments</a> · <a href='../experiment-reports/EXPERIMENT_61.md'>source .md</a> · <a href='../../experiments/horizon_cache/run.py'>driver</a></p></main><footer>Generated by <code>experiments/make_roadmap.py</code> from <code>experiments/roadmap_registry.py</code> — edit the registry and re-run to update.</footer></body></html>

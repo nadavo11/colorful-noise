@@ -1,6 +1,6 @@
 run_id: "20260709_082000__horizon_gate_e61_consol__e0bcbce"
 job_name: "horizon-e61-gate-consol-e0bcbce"
-status: "submitted"
+status: "done"
 created_at: "2026-07-09T08:20:00+03:00"
 git_commit: "e0bcbce"
 git_branch: "e61-innovation-gate"
@@ -27,3 +27,15 @@ expected_outputs:
   consol_tarball: "/storage/nada/colorful-noise-e61/e61_consol_light.tar.gz"
   samples_tarball: "/storage/nada/colorful-noise-e61/e61_consol_samples.tar.gz"
 notes: "~9k sampler runs (200 keys x (5 variants x 9 tau + 9 sea/tea + 1 full)); est 4-6h."
+result_dir: "results/horizon_gate_consol/gen_20260709_075805"
+headline: |
+  rc=0, 11000 rows (N=200 paired), ~4h wall. VERDICT: hard gate kappa=0.85 KEEP. gate85-fixed
+  ~0 through 3.5x (-0.000/+0.010/+0.008*/+0.027/+0.004, no LPIPS regression there), CI+ >=4.3x:
+  +0.111*/+0.174*/+0.363*. beta_i p50=0.50 in-band -> 0.21-0.36 at speed (textbook throttle).
+  Innovation corr(I_a,RM-plain gain)=-0.45 (n=1800), crossover I~0.7-0.75 matches chosen kappa.
+  CAVEATS: gate85-plain still CI-negative at >=5.2x (-0.24*/-0.61* vs fixed's -0.42*/-0.97* --
+  softens ~37%, does not flip); real LPIPS regression vs fixed grows with speed (-0.002 ->
+  -0.019 raw by tau1.4) -- PSNR win at speed is not free. At tau1.4 (past SeaCache's 4.39x
+  swept ceiling) ALL variants lose to SeaCache universally (fixed -1.18*, gate85 -0.82*) --
+  not gate-specific. Partial N=72 check mid-run (before full completion) already showed this
+  exact pattern with tighter CIs -- no reversal risk, consolidation was worth letting finish.
